@@ -202,6 +202,7 @@ export interface AppConfig {
     mode: TaskMode | null
     defaultProvider: string | null
     concurrency: number
+    tokenBudget: number
     providers: ProviderConfig[]
     taskOverrides: Record<string, string>
   }

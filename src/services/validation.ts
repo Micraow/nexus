@@ -65,6 +65,7 @@ export function parseImportPayload(raw: unknown): { data?: ImportPayload; issues
 export function validateSegmentationResult(
   result: unknown,
   messageCount: number,
+  requiredIndices?: number[],
 ): { data?: SegmentationResult; issues: ValidationIssue[] } {
   const issues: ValidationIssue[] = []
   if (!result || typeof result !== 'object') return { issues: [{ path: '$', message: '结果必须是 JSON 对象' }] }
@@ -76,6 +77,7 @@ export function validateSegmentationResult(
   if (issues.length) return { issues }
 
   const seen = new Map<number, string>()
+  const expected = new Set(requiredIndices ?? Array.from({ length: messageCount }, (_, index) => index))
   const normalizedUnits: SegmentationUnitResult[] = []
   ;(units as unknown[]).forEach((unit, unitIndex) => {
     if (!unit || typeof unit !== 'object') {
@@ -100,6 +102,9 @@ export function validateSegmentationResult(
       if (index < 0 || index >= messageCount) {
         issues.push({ path: `units.${unitIndex}.message_indices`, message: `索引 ${index} 越界` })
       }
+      if (!expected.has(index)) {
+        issues.push({ path: `units.${unitIndex}.message_indices`, message: `索引 ${index} 不属于当前分块` })
+      }
       if (seen.has(index)) {
         issues.push({ path: `units.${unitIndex}.message_indices`, message: `索引 ${index} 重复归属` })
       } else {
@@ -116,6 +121,9 @@ export function validateSegmentationResult(
     if (index < 0 || index >= messageCount) {
       issues.push({ path: 'unassigned_message_indices', message: `索引 ${index} 越界` })
     }
+    if (!expected.has(index)) {
+      issues.push({ path: 'unassigned_message_indices', message: `索引 ${index} 不属于当前分块` })
+    }
     if (seen.has(index)) {
       issues.push({ path: 'unassigned_message_indices', message: `索引 ${index} 已经被知识单元占用` })
     } else {
@@ -123,7 +131,7 @@ export function validateSegmentationResult(
     }
   })
 
-  for (let index = 0; index < messageCount; index += 1) {
+  for (const index of expected) {
     if (!seen.has(index)) issues.push({ path: 'unassigned_message_indices', message: `消息 ${index} 未被分配` })
   }
   if (issues.length) return { issues }

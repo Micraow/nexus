@@ -25,6 +25,8 @@ import {
   Menu,
   Network,
   PanelRight,
+  Pause,
+  Play,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -332,6 +334,21 @@ async function executeApiTask(task: LLMTask): Promise<void> {
   else notify(result.error ?? 'API 任务失败')
 }
 
+function startTaskQueue(): void {
+  store.startQueue()
+  notify('API 任务队列已开始')
+}
+
+function pauseTaskQueue(): void {
+  store.pauseQueue()
+  notify('任务队列将在当前请求完成后暂停')
+}
+
+function resumeTaskQueue(): void {
+  store.resumeQueue()
+  notify('API 任务队列已继续')
+}
+
 function retryTask(task: LLMTask): void {
   store.retryTask(task.id)
   notify('任务已重新排队')
@@ -495,6 +512,18 @@ onMounted(async () => {
       </header>
 
       <section class="content-shell">
+        <div v-if="activeView === 'tasks'" class="queue-toolbar">
+          <span class="queue-status">{{ store.queueRunning ? (store.queuePaused ? '队列已暂停' : `正在处理 ${store.queueActiveCount} 个任务`) : '队列空闲' }}</span>
+          <button v-if="store.config.llm.mode === 'api' && !store.queueRunning" class="button primary-button" @click="startTaskQueue"><Send :size="14" />开始 API 队列</button>
+          <button v-if="store.queueRunning && !store.queuePaused" class="button secondary-button" @click="pauseTaskQueue"><Pause :size="14" />暂停</button>
+          <button v-if="store.queueRunning && store.queuePaused" class="button secondary-button" @click="resumeTaskQueue"><Play :size="14" />继续</button>
+        </div>
+        <div v-if="activeView === 'tasks' && selectedTask" class="task-command-bar">
+          <span>{{ selectedTask.scopeLabel || selectedTask.id }}</span>
+          <button v-if="selectedTask.mode === 'api' && ['pending', 'failed', 'needs_review'].includes(selectedTask.status)" class="button primary-button" @click="selectedTask.status === 'pending' ? executeApiTask(selectedTask) : retryTask(selectedTask)"><Send :size="14" />{{ selectedTask.status === 'pending' ? '执行任务' : '重试任务' }}</button>
+          <button v-if="['failed', 'needs_review', 'stale', 'cancelled'].includes(selectedTask.status)" class="button secondary-button" @click="retryTask(selectedTask)"><RefreshCw :size="14" />重新排队</button>
+          <button v-if="['pending', 'running'].includes(selectedTask.status)" class="button secondary-button" @click="cancelTask(selectedTask)"><X :size="14" />取消</button>
+        </div>
         <div v-if="importFeedback" class="feedback-banner" :class="`feedback-${importFeedback.tone}`"><Check v-if="importFeedback.tone === 'success'" :size="16" /><CircleHelp v-else :size="16" /><span>{{ importFeedback.text }}</span><div v-if="pendingImportRaw" class="feedback-actions"><button class="text-button" @click="resolveChangedImport('replace')">更新变化会话</button><button class="text-button" @click="resolveChangedImport('new')">作为新会话</button><button class="text-button" @click="resolveChangedImport('skip')">跳过</button></div><button class="icon-button" aria-label="关闭提示" @click="importFeedback = null; pendingImportRaw = null"><X :size="15" /></button></div>
 
         <section v-if="activeView === 'overview'" class="view-panel overview-view">

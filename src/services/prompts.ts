@@ -2,7 +2,7 @@ import type { KnowledgeUnit, Message, Session } from '@/types/domain'
 
 export const PROMPT_VERSION = '2026-08-v1'
 
-export function buildSegmentationPrompt(session: Session, messages: Message[]): string {
+export function buildSegmentationPrompt(session: Session, messages: Message[], chunkLabel?: string): string {
   const input = messages.map((message) => ({
     index: message.orderInSession,
     role: message.role,
@@ -16,9 +16,11 @@ export function buildSegmentationPrompt(session: Session, messages: Message[]): 
 - 每条消息必须出现在某个 unit，或明确列入 unassigned_message_indices；
 - 不得改写、制造、删除消息索引；
 - 一个索引不能属于多个 unit；
+- 当前输入可能只是长 Session 的一个分块。只处理本次输入提供的全局消息索引，不要引用其他索引；
 - 只返回 JSON，不要 Markdown 或解释文字。
 
 Session：${session.title}
+${chunkLabel ? `分块：${chunkLabel}\n` : ''}
 输入消息：
 ${JSON.stringify(input, null, 2)}
 

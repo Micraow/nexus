@@ -4,10 +4,11 @@
 
 ## 运行边界
 
-- 当前仓库交付的是 Vue 3 + TypeScript 的可运行前端工作台。Tauri 2 Rust 壳层、Chrome 扩展和桌面文件系统插件尚未进入本仓库，因此浏览器运行时使用 `localStorage` 保存 sql.js 导出的 SQLite 数据，配置使用单独的 `localStorage` 项保存。设置页将这一边界明确标为原型存储；接入 Tauri 后应把同一数据库字节流迁移到 `nexus.db`，并把配置迁移到 `config.yaml`。
+- 桌面运行时由 Tauri 2 Rust 壳层提供 `nexus.db`、`config.yaml`、原子写入和数据库备份命令；直接以 Vite/Chromium 开发时仍回退到 `localStorage`，只用于开发和浏览器验收。Chrome 扩展仍需独立打包，不属于 Tauri 壳层。
 - sql.js 当前发布的是 UMD 入口而不是原生 ESM。浏览器开发运行依赖 Vite 对 `sql.js` 的依赖预构建来提供兼容的默认导出；因此不能把它加入 `optimizeDeps.exclude`，也不应直接以未包装的 `sql-wasm*.js` 文件作为 ESM 导入。
 - 本地数据库和配置使用不同的存储键，完整知识库导出不包含配置或 API Key。恢复知识库会在一个 SQLite 事务中替换业务表，失败时由事务回滚，现有数据不被部分覆盖。
 - 首次启动没有预置 LLM 模式。导入仍然先写入原始 Session/Message 并创建待处理任务；没有选择模式时任务不会自动请求网络。
+- API 任务队列按配置并发数（1～4）批量执行，单任务最多进行三次请求（含超时、429 和 5xx 的指数退避）；Prompt 粘贴任务保持人工逐项应用。长 Session 按估算 token 预算切成带两条消息重叠的分块，只有所有分块通过全局索引校验并成功合并后才创建 KnowledgeUnit。
 
 ## 导入与时间
 

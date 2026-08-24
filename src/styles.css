@@ -130,6 +130,8 @@ textarea { resize: vertical; }
 .view-panel { max-width: 1480px; margin: 0 auto; animation: view-enter var(--motion) ease-out both; }
 @keyframes view-enter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
 .feedback-banner { min-height: 42px; display: flex; align-items: center; gap: 9px; margin-bottom: 18px; padding: 0 12px; border: 1px solid var(--line); border-radius: 7px; font-size: 13px; }
+.queue-toolbar, .task-command-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; margin-bottom: 12px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 7px; }
+.queue-status, .task-command-bar > span { flex: 1; min-width: 180px; color: var(--muted); font-size: 12px; }
 .feedback-banner .icon-button { margin-left: auto; width: 28px; height: 28px; }
 .feedback-success { color: var(--success); background: var(--success-soft); border-color: color-mix(in srgb, var(--success) 22%, var(--line)); }
 .feedback-error { color: var(--danger); background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 22%, var(--line)); }

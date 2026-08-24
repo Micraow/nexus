@@ -27,8 +27,15 @@ import type {
 
 type Row = Record<string, unknown>
 
+interface MessageChunk {
+  messages: Message[]
+  start: number
+  end: number
+  expectedIndices: number[]
+}
+
 const DEFAULT_CONFIG: AppConfig = {
-  llm: { mode: null, defaultProvider: null, concurrency: 2, providers: [], taskOverrides: {} },
+  llm: { mode: null, defaultProvider: null, concurrency: 2, tokenBudget: 8000, providers: [], taskOverrides: {} },
   prompts: { overrideDir: '' },
   ui: { theme: 'system', reducedMotion: false, graph: { showUnits: false, showMessages: false, showProposed: false } },
   storage: { databasePath: '' },
@@ -41,6 +48,35 @@ function text(value: unknown): string {
 function number(value: unknown, fallback = 0): number {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : fallback
+}
+
+function estimateTokens(messages: Message[]): number {
+  return Math.ceil(messages.reduce((total, message) => total + message.content.length, 0) / 4)
+}
+
+function splitMessageChunks(messages: Message[], tokenBudget: number): MessageChunk[] {
+  const budget = Math.max(1000, tokenBudget)
+  if (estimateTokens(messages) <= budget) {
+    return [{ messages, start: 0, end: messages.length, expectedIndices: messages.map((message) => message.orderInSession) }]
+  }
+  const chunks: MessageChunk[] = []
+  let start = 0
+  while (start < messages.length) {
+    let end = start
+    let tokens = 0
+    while (end < messages.length) {
+      const nextTokens = Math.max(1, Math.ceil(messages[end].content.length / 4))
+      if (end > start && tokens + nextTokens > budget) break
+      tokens += nextTokens
+      end += 1
+    }
+    if (end === start) end += 1
+    const chunkMessages = messages.slice(start, end)
+    chunks.push({ messages: chunkMessages, start, end, expectedIndices: chunkMessages.map((message) => message.orderInSession) })
+    if (end >= messages.length) break
+    start = Math.max(start + 1, end - 2)
+  }
+  return chunks
 }
 
 function bool(value: unknown): boolean {
@@ -157,6 +193,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const selectedSessionId = ref<string | null>(null)
   const lastImport = ref<ImportReport | null>(null)
   const graphCache = new Map<string, GraphSnapshot>()
+  const queueRunning = ref(false)
+  const queuePaused = ref(false)
+  const queueActiveCount = ref(0)
+  const abortControllers = new Map<string, AbortController>()
 
   const activeSessions = computed(() => sessions.value.filter((session) => !session.deletedAt))
   const activeSessionIds = computed(() => new Set(activeSessions.value.map((session) => session.id)))
@@ -395,18 +435,22 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, NULL, NULL, ?, 0, ?)', [rootId, sessionId, conversation.title?.trim() || '起始对话', now])
         const session = sessionFromRow(db.query<Row>('SELECT * FROM sessions WHERE id = ?', [sessionId])[0])
         const importedMessages = db.query<Row>('SELECT * FROM messages WHERE session_id = ? ORDER BY order_in_session', [sessionId]).map(messageFromRow)
-        const taskId = createTask({
-          type: 'segmentation',
-          mode: config.value.llm.mode ?? 'prompt_paste',
-          providerId: config.value.llm.defaultProvider,
-          model: null,
-          promptVersion: PROMPT_VERSION,
-          inputRevision: `${session.id}:${session.revision}`,
-          prompt: buildSegmentationPrompt(session, importedMessages),
-          status: 'pending',
-          scopeLabel: session.title,
+        const chunks = splitMessageChunks(importedMessages, config.value.llm.tokenBudget)
+        chunks.forEach((chunk, chunkIndex) => {
+          const chunkSuffix = chunks.length > 1 ? `:chunk:${chunk.start}:${chunk.end}:${chunks.length}` : ''
+          const taskId = createTask({
+            type: 'segmentation',
+            mode: config.value.llm.mode ?? 'prompt_paste',
+            providerId: config.value.llm.defaultProvider,
+            model: null,
+            promptVersion: PROMPT_VERSION,
+            inputRevision: `${session.id}:${session.revision}${chunkSuffix}`,
+            prompt: buildSegmentationPrompt(session, chunk.messages, chunks.length > 1 ? `${chunkIndex + 1}/${chunks.length}（全局索引 ${chunk.start}～${chunk.end - 1}，含相邻重叠消息）` : undefined),
+            status: 'pending',
+            scopeLabel: chunks.length > 1 ? `${session.title} · 分段 ${chunkIndex + 1}/${chunks.length}` : session.title,
+          })
+          report.taskIds.push(taskId)
         })
-        report.taskIds.push(taskId)
         const originTaskId = createTask({
           type: 'origin_concepts',
           mode: config.value.llm.mode ?? 'prompt_paste',
@@ -599,7 +643,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const task = tasks.value.find((item) => item.id === taskId)
       if (!task) return
       const nextPrompt = status === 'needs_review' && response ? buildRepairPrompt(response, errors ?? []) : task.prompt
-      db.run('UPDATE llm_tasks SET status = ?, response = COALESCE(?, response), validation_errors = ?, prompt = ?, retry_count = retry_count + ?, updated_at = ? WHERE id = ?', [status, response ?? null, errors ? JSON.stringify(errors) : null, nextPrompt, status === 'failed' || status === 'needs_review' ? 1 : 0, isoNow(), taskId])
+      db.run('UPDATE llm_tasks SET status = ?, response = COALESCE(?, response), validation_errors = ?, error_message = ?, prompt = ?, retry_count = retry_count + ?, updated_at = ? WHERE id = ?', [status, response ?? null, errors ? JSON.stringify(errors) : null, errors?.[0] ?? null, nextPrompt, status === 'failed' || status === 'needs_review' ? 1 : 0, isoNow(), taskId])
     })
   }
 
@@ -710,6 +754,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   function cancelTask(taskId: string): void {
     mutate(() => db.run("UPDATE llm_tasks SET status = 'cancelled', updated_at = ? WHERE id = ? AND status IN ('pending', 'running')", [isoNow(), taskId]))
+    abortControllers.get(taskId)?.abort()
   }
 
   async function executeTask(taskId: string): Promise<{ ok: boolean; error?: string }> {
@@ -723,23 +768,158 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const session = sessions.value.find((item) => item.id === (ownerUnit?.sessionId ?? targetId))
     if (session?.localOnly) return { ok: false, error: '仅本地 Session 禁止 API 任务，请切换 Prompt 粘贴模式' }
     mutate(() => db.run("UPDATE llm_tasks SET status = 'running', updated_at = ? WHERE id = ?", [isoNow(), taskId]))
+    let lastError: Error | null = null
     try {
-      const response = await fetch(`${provider.baseUrl.replace(/\/$/, '')}/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.apiKey}` },
-        body: JSON.stringify({ model: task.model || provider.model, temperature: 0, messages: [{ role: 'user', content: task.prompt }] }),
-      })
-      if (!response.ok) throw new Error(`Provider 返回 HTTP ${response.status}`)
-      const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> }
-      const content = payload.choices?.[0]?.message?.content
-      if (!content) throw new Error('Provider 没有返回可用内容')
-      const result = applyTaskResult(taskId, content)
-      return result.ok ? { ok: true } : { ok: false, error: result.errors[0] }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'API 请求失败'
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const controller = new AbortController()
+        abortControllers.set(taskId, controller)
+        const timeout = window.setTimeout(() => controller.abort(), 45_000)
+        try {
+          const response = await fetch(`${provider.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.apiKey}` },
+            body: JSON.stringify({ model: task.model || provider.model, temperature: 0, messages: [{ role: 'user', content: task.prompt }] }),
+            signal: controller.signal,
+          })
+          if (!response.ok) {
+            const retryable = response.status === 408 || response.status === 429 || response.status >= 500
+            throw Object.assign(new Error(`Provider 返回 HTTP ${response.status}`), { retryable })
+          }
+          const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> }
+          const content = payload.choices?.[0]?.message?.content
+          if (!content) throw new Error('Provider 没有返回可用内容')
+          const result = applyTaskResult(taskId, content)
+          return result.ok ? { ok: true } : { ok: false, error: result.errors[0] }
+        } catch (error) {
+          const current = tasks.value.find((item) => item.id === taskId)
+          if (current?.status === 'cancelled') return { ok: false, error: '任务已取消' }
+          if (controller.signal.aborted) lastError = new Error('API 请求超时')
+          else lastError = error instanceof Error ? error : new Error('API 请求失败')
+          const retryable = Boolean((error as { retryable?: boolean })?.retryable) || controller.signal.aborted || lastError.message.includes('Failed to fetch')
+          if (!retryable || attempt === 2) break
+          await new Promise((resolve) => window.setTimeout(resolve, 500 * 2 ** attempt))
+        } finally {
+          window.clearTimeout(timeout)
+          abortControllers.delete(taskId)
+        }
+      }
+      const message = lastError?.message ?? 'API 请求失败'
       markTask(taskId, 'failed', undefined, [message])
       return { ok: false, error: message }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'API 请求失败'
+      const current = tasks.value.find((item) => item.id === taskId)
+      if (current?.status !== 'cancelled') markTask(taskId, 'failed', undefined, [message])
+      return { ok: false, error: message }
     }
+  }
+
+  async function runQueue(): Promise<void> {
+    if (queueRunning.value) return
+    queueRunning.value = true
+    try {
+      while (!queuePaused.value) {
+        const pending = tasks.value.filter((task) => task.status === 'pending' && task.mode === 'api')
+        if (!pending.length) break
+        const batch = pending.slice(0, Math.max(1, Math.min(4, config.value.llm.concurrency)))
+        queueActiveCount.value += batch.length
+        await Promise.all(batch.map((task) => executeTask(task.id)))
+        queueActiveCount.value = Math.max(0, queueActiveCount.value - batch.length)
+      }
+    } finally {
+      queueActiveCount.value = 0
+      queueRunning.value = false
+    }
+  }
+
+  function startQueue(): void {
+    queuePaused.value = false
+    void runQueue()
+  }
+
+  function pauseQueue(): void {
+    queuePaused.value = true
+  }
+
+  function resumeQueue(): void {
+    queuePaused.value = false
+    void runQueue()
+  }
+
+  function segmentationInput(task: LLMTask): { sessionId: string; revision: string; start: number; end: number; total: number } {
+    const parts = task.inputRevision.split(':')
+    if (parts[2] === 'chunk') {
+      return { sessionId: parts[0], revision: parts[1], start: Number(parts[3]), end: Number(parts[4]), total: Number(parts[5]) }
+    }
+    return { sessionId: parts[0], revision: parts[1], start: 0, end: Number.MAX_SAFE_INTEGER, total: 1 }
+  }
+
+  function combineSegmentationChunks(results: Array<{ units: Array<{ message_indices: number[]; title_hint?: string }>; unassigned_message_indices: number[] }>, messageCount: number): { data?: { units: Array<{ message_indices: number[]; title_hint?: string }>; unassigned_message_indices: number[] }; errors: string[] } {
+    const units: Array<{ message_indices: number[]; title_hint?: string }> = []
+    const assignments = new Map<number, number>()
+    const unassigned = new Set<number>()
+    const errors: string[] = []
+    results.forEach((result) => {
+      result.units.forEach((unit) => {
+        const fresh: number[] = []
+        unit.message_indices.forEach((index) => {
+          if (unassigned.has(index)) {
+            errors.push(`消息 ${index} 同时被标记为未分配和知识单元`)
+            return
+          }
+          const existingUnitIndex = assignments.get(index)
+          if (existingUnitIndex != null) {
+            const previous = units[existingUnitIndex].title_hint
+            if (previous && unit.title_hint && previous !== unit.title_hint) errors.push(`重叠分块对消息 ${index} 给出了冲突主题`)
+            return
+          }
+          fresh.push(index)
+        })
+        if (fresh.length) {
+          const unitIndex = units.length
+          units.push({ message_indices: fresh, title_hint: unit.title_hint })
+          fresh.forEach((index) => assignments.set(index, unitIndex))
+        }
+      })
+      result.unassigned_message_indices.forEach((index) => {
+        if (assignments.has(index)) errors.push(`消息 ${index} 同时被分配到知识单元和未分配列表`)
+        unassigned.add(index)
+      })
+    })
+    for (let index = 0; index < messageCount; index += 1) {
+      if (!assignments.has(index) && !unassigned.has(index)) errors.push(`消息 ${index} 在分块合并后仍未覆盖`)
+    }
+    return errors.length ? { errors } : { data: { units, unassigned_message_indices: [...unassigned].sort((a, b) => a - b) }, errors: [] }
+  }
+
+  function writeSegmentation(session: Session, sessionMessages: Message[], segmentation: { units: Array<{ message_indices: number[]; title_hint?: string }>; unassigned_message_indices: number[] }, segmentationTaskIds: string[], task: LLMTask, responseText: string): void {
+    mutate(() => {
+      const now = isoNow()
+      db.run("UPDATE llm_tasks SET status = 'stale', updated_at = ? WHERE input_revision LIKE ? AND status IN ('pending', 'running', 'needs_review')", [now, `${session.id}:${session.revision}%`])
+      const oldUnits = db.query<Row>('SELECT id FROM knowledge_units WHERE session_id = ?', [session.id]).map((row) => text(row.id))
+      oldUnits.forEach((unitId) => db.run('DELETE FROM knowledge_units WHERE id = ?', [unitId]))
+      db.run('UPDATE messages SET unit_id = NULL WHERE session_id = ?', [session.id])
+      const root = db.query<Row>('SELECT id FROM nav_tree_nodes WHERE session_id = ? AND parent_id IS NULL LIMIT 1', [session.id])[0]
+      const rootId = root ? text(root.id) : createId('nav')
+      if (!root) db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, NULL, NULL, ?, 0, ?)', [rootId, session.id, session.title, now])
+      segmentation.units.forEach((unitResult, index) => {
+        const unitId = createId('unit')
+        const unitMessages = unitResult.message_indices.map((messageIndex) => sessionMessages[messageIndex]).filter(Boolean)
+        db.run('INSERT INTO knowledge_units(id, session_id, title, summary, order_in_session, status, revision, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?, 1, ?, ?)', [unitId, session.id, unitResult.title_hint || null, index, unitResult.title_hint ? 'ready' : 'pending', now, now])
+        unitMessages.forEach((message) => db.run('UPDATE messages SET unit_id = ? WHERE id = ?', [unitId, message.id]))
+        const nodeId = createId('nav')
+        db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, ?, NULL, ?, 1, ?)', [nodeId, session.id, rootId, unitResult.title_hint || '待命名知识单元', now])
+        db.run('INSERT INTO nav_tree_node_units(node_id, unit_id, order_in_node) VALUES (?, ?, 0)', [nodeId, unitId])
+        const createdUnit = unitFromRow(db.query<Row>('SELECT * FROM knowledge_units WHERE id = ?', [unitId])[0])
+        createTask({ type: 'title', mode: task.mode, providerId: task.providerId, model: task.model, promptVersion: PROMPT_VERSION, inputRevision: `${unitId}:1`, prompt: buildTitlePrompt(session, createdUnit, unitMessages, []), status: 'pending', scopeLabel: `${session.title} · 标题` })
+        createTask({ type: 'summary', mode: task.mode, providerId: task.providerId, model: task.model, promptVersion: PROMPT_VERSION, inputRevision: `${unitId}:1`, prompt: buildSummaryPrompt(session, createdUnit, unitMessages, []), status: 'pending', scopeLabel: `${session.title} · 摘要` })
+        createTask({ type: 'concept_extraction', mode: task.mode, providerId: task.providerId, model: task.model, promptVersion: PROMPT_VERSION, inputRevision: `${unitId}:1`, prompt: buildConceptPrompt(session, createdUnit, unitMessages, []), status: 'pending', scopeLabel: `${session.title} · Concept` })
+      })
+      db.run('UPDATE sessions SET message_count = ?, unit_count = ?, revision = revision + 1, updated_at = ? WHERE id = ?', [sessionMessages.length, segmentation.units.length, now, session.id])
+      const refreshedSession = sessionFromRow(db.query<Row>('SELECT * FROM sessions WHERE id = ?', [session.id])[0])
+      db.run("UPDATE llm_tasks SET status = 'pending', input_revision = ?, validation_errors = NULL, error_message = NULL, updated_at = ? WHERE type = 'origin_concepts' AND scope_label LIKE ? AND status = 'stale'", [`${session.id}:${refreshedSession.revision}`, now, `${session.title} · 起源 Concept%`])
+      segmentationTaskIds.forEach((id) => db.run('UPDATE llm_tasks SET status = ?, response = CASE WHEN id = ? THEN ? ELSE response END, parsed_result = COALESCE(parsed_result, ?), validation_errors = NULL, error_message = NULL, updated_at = ? WHERE id = ?', ['success', id, responseText, JSON.stringify(segmentation), now, id]))
+    })
   }
 
   function applySegmentationTask(taskId: string, responseText: string): { ok: boolean; errors: string[] } {
@@ -763,53 +943,38 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         return { ok: false, errors }
       }
     }
-    const sessionId = task.inputRevision.split(':')[0]
+    const input = segmentationInput(task)
+    const sessionId = input.sessionId
     const session = sessions.value.find((item) => item.id === sessionId)
     if (!session) return { ok: false, errors: ['任务所属 Session 不存在'] }
     const sessionMessages = messages.value.filter((message) => message.sessionId === sessionId).sort((a, b) => a.orderInSession - b.orderInSession)
-    const validation = validateSegmentationResult(parsed, sessionMessages.length)
+    const expectedIndices = input.total > 1 ? sessionMessages.slice(input.start, input.end).map((message) => message.orderInSession) : undefined
+    const validation = validateSegmentationResult(parsed, sessionMessages.length, expectedIndices)
     if (!validation.data) {
       const errors = validation.issues.map((issue) => `${issue.path}: ${issue.message}`)
       markTask(taskId, 'needs_review', responseText, errors)
       return { ok: false, errors }
     }
-    if (task.inputRevision !== `${session.id}:${session.revision}`) {
+    if (input.revision !== String(session.revision)) {
       const errors = ['任务输入版本已过期，请重新生成 Prompt']
       markTask(taskId, 'stale', responseText, errors)
       return { ok: false, errors }
     }
     const segmentation = validation.data
-    mutate(() => {
-      db.run("UPDATE llm_tasks SET status = 'stale', updated_at = ? WHERE input_revision LIKE ? AND status IN ('pending', 'running', 'needs_review')", [isoNow(), `${sessionId}:%`])
-      const oldUnits = db.query<Row>('SELECT id FROM knowledge_units WHERE session_id = ?', [sessionId]).map((row) => text(row.id))
-      oldUnits.forEach((unitId) => db.run('DELETE FROM knowledge_units WHERE id = ?', [unitId]))
-      db.run('UPDATE messages SET unit_id = NULL WHERE session_id = ?', [sessionId])
-      const root = db.query<Row>('SELECT id FROM nav_tree_nodes WHERE session_id = ? AND parent_id IS NULL LIMIT 1', [sessionId])[0]
-      const rootId = root ? text(root.id) : createId('nav')
-      if (!root) db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, NULL, NULL, ?, 0, ?)', [rootId, sessionId, session.title, isoNow()])
-      segmentation.units.forEach((unitResult, index) => {
-        const unitId = createId('unit')
-        const unitMessages = unitResult.message_indices.map((messageIndex) => sessionMessages[messageIndex]).filter(Boolean)
-        const now = isoNow()
-        db.run('INSERT INTO knowledge_units(id, session_id, title, summary, order_in_session, status, revision, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?, 1, ?, ?)', [unitId, sessionId, unitResult.title_hint || null, index, unitResult.title_hint ? 'ready' : 'pending', now, now])
-        unitMessages.forEach((message) => db.run('UPDATE messages SET unit_id = ? WHERE id = ?', [unitId, message.id]))
-        const nodeId = createId('nav')
-        db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, ?, NULL, ?, 1, ?)', [nodeId, sessionId, rootId, unitResult.title_hint || '待命名知识单元', now])
-        db.run('INSERT INTO nav_tree_node_units(node_id, unit_id, order_in_node) VALUES (?, ?, 0)', [nodeId, unitId])
-        const createdUnit = unitFromRow(db.query<Row>('SELECT * FROM knowledge_units WHERE id = ?', [unitId])[0])
-        const titleTaskId = createTask({ type: 'title', mode: task.mode, providerId: task.providerId, model: task.model, promptVersion: PROMPT_VERSION, inputRevision: `${unitId}:1`, prompt: buildTitlePrompt(session, createdUnit, unitMessages, []), status: 'pending', scopeLabel: `${session.title} · 标题` })
-        const summaryTaskId = createTask({ type: 'summary', mode: task.mode, providerId: task.providerId, model: task.model, promptVersion: PROMPT_VERSION, inputRevision: `${unitId}:1`, prompt: buildSummaryPrompt(session, createdUnit, unitMessages, []), status: 'pending', scopeLabel: `${session.title} · 摘要` })
-        const conceptTaskId = createTask({ type: 'concept_extraction', mode: task.mode, providerId: task.providerId, model: task.model, promptVersion: PROMPT_VERSION, inputRevision: `${unitId}:1`, prompt: buildConceptPrompt(session, createdUnit, unitMessages, []), status: 'pending', scopeLabel: `${session.title} · Concept` })
-        void titleTaskId
-        void summaryTaskId
-        void conceptTaskId
-      })
-      db.run('UPDATE sessions SET message_count = ?, unit_count = ?, revision = revision + 1, updated_at = ? WHERE id = ?', [sessionMessages.length, segmentation.units.length, isoNow(), sessionId])
-      const refreshedSession = sessionFromRow(db.query<Row>('SELECT * FROM sessions WHERE id = ?', [sessionId])[0])
-      db.run("UPDATE llm_tasks SET status = 'pending', input_revision = ?, validation_errors = NULL, updated_at = ? WHERE type = 'origin_concepts' AND scope_label LIKE ? AND status = 'stale'", [`${sessionId}:${refreshedSession.revision}`, isoNow(), `${session.title} · 起源 Concept%`])
-      const parsedResult = JSON.stringify(segmentation)
-      db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = ?, validation_errors = NULL, updated_at = ? WHERE id = ?', ['success', responseText, parsedResult, isoNow(), taskId])
-    })
+    if (input.total > 1) {
+      mutate(() => db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = ?, validation_errors = NULL, error_message = NULL, updated_at = ? WHERE id = ?', ['success', responseText, JSON.stringify(segmentation), isoNow(), taskId]))
+      const chunkRows = db.query<Row>('SELECT * FROM llm_tasks WHERE type = ? AND input_revision LIKE ? AND status = ? ORDER BY created_at', ['segmentation', `${session.id}:${session.revision}:chunk:%`, 'success'])
+      if (chunkRows.length < input.total) return { ok: true, errors: [] }
+      const combined = combineSegmentationChunks(chunkRows.map((row) => JSON.parse(text(row.parsed_result)) as { units: Array<{ message_indices: number[]; title_hint?: string }>; unassigned_message_indices: number[] }), sessionMessages.length)
+      if (!combined.data) {
+        const errors = combined.errors
+        markTask(taskId, 'needs_review', responseText, errors)
+        return { ok: false, errors }
+      }
+      writeSegmentation(session, sessionMessages, combined.data, chunkRows.map((row) => text(row.id)), task, responseText)
+      return { ok: true, errors: [] }
+    }
+    writeSegmentation(session, sessionMessages, segmentation, [taskId], task, responseText)
     return { ok: true, errors: [] }
   }
 
@@ -936,6 +1101,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     selectedContextIds,
     selectedSessionId,
     lastImport,
+    queueRunning,
+    queuePaused,
+    queueActiveCount,
     activeSessions,
     activeConcepts,
     pendingTaskCount,
@@ -968,6 +1136,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     retryTask,
     cancelTask,
     executeTask,
+    startQueue,
+    pauseQueue,
+    resumeQueue,
     applySegmentationTask,
     persistConfig,
     updateConfig,
