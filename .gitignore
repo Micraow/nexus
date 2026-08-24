@@ -1,0 +1,48 @@
+# Dependencies and package-manager caches
+node_modules/
+.pnpm-store/
+.npm/
+
+# Vite and build output
+dist/
+build/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# Local application data (never commit user knowledge or credentials)
+nexus.db
+nexus.db-*
+*.sqlite
+*.sqlite3
+*.db
+config.yaml
+config.local.yaml
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Tauri/Rust artifacts
+src-tauri/target/
+src-tauri/gen/
+
+# Browser extension build artifacts
+extension/dist/
+extension/.cache/
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+*.code-workspace
+
+# Logs and temporary files
+*.log
+tmp/
+.tmp/
+
