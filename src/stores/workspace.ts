@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { db } from '@/services/db'
+import { parseConfigText, readConfigText, writeConfig } from '@/services/config'
 import { buildGraph, graphStats } from '@/services/graph'
 import { buildConceptPrompt, buildRepairPrompt, buildSegmentationPrompt, buildSummaryPrompt, buildTitlePrompt, PROMPT_VERSION } from '@/services/prompts'
 import { importPayloadSchema, parseImportPayload, validateSegmentationResult, validateUnitText } from '@/services/validation'
@@ -32,8 +33,6 @@ const DEFAULT_CONFIG: AppConfig = {
   ui: { theme: 'system', reducedMotion: false, graph: { showUnits: false, showMessages: false, showProposed: false } },
   storage: { databasePath: '' },
 }
-
-const CONFIG_STORAGE_KEY = 'nexus:config:v1'
 
 function text(value: unknown): string {
   return value == null ? '' : String(value)
@@ -242,20 +241,19 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (ready.value || loading.value) return
     loading.value = true
     await db.init()
-    if (typeof localStorage !== 'undefined') {
-      const storedConfig = localStorage.getItem(CONFIG_STORAGE_KEY)
-      if (storedConfig) {
-        try {
-          config.value = {
-            ...structuredClone(DEFAULT_CONFIG),
-            ...JSON.parse(storedConfig),
-            llm: { ...DEFAULT_CONFIG.llm, ...JSON.parse(storedConfig).llm },
-            ui: { ...DEFAULT_CONFIG.ui, ...JSON.parse(storedConfig).ui, graph: { ...DEFAULT_CONFIG.ui.graph, ...JSON.parse(storedConfig).ui?.graph } },
-            storage: { ...DEFAULT_CONFIG.storage, ...JSON.parse(storedConfig).storage },
-          }
-        } catch {
-          config.value = structuredClone(DEFAULT_CONFIG)
+    const storedConfig = await readConfigText()
+    if (storedConfig) {
+      try {
+        const parsed = parseConfigText(storedConfig)
+        config.value = {
+          ...structuredClone(DEFAULT_CONFIG),
+          ...parsed,
+          llm: { ...DEFAULT_CONFIG.llm, ...(parsed.llm ?? {}) },
+          ui: { ...DEFAULT_CONFIG.ui, ...(parsed.ui ?? {}), graph: { ...DEFAULT_CONFIG.ui.graph, ...(parsed.ui?.graph ?? {}) } },
+          storage: { ...DEFAULT_CONFIG.storage, ...(parsed.storage ?? {}) },
         }
+      } catch {
+        config.value = structuredClone(DEFAULT_CONFIG)
       }
     }
     refreshFromDb()
@@ -816,7 +814,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   function persistConfig(): void {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config.value))
+    writeConfig(config.value)
   }
 
   function updateConfig(patch: Partial<AppConfig>): void {

@@ -1,4 +1,5 @@
 import initSqlJs, { type Database, type SqlJsStatic } from 'sql.js'
+import { invokeTauri, isTauriRuntime } from '@/services/tauri'
 import wasmUrl from 'sql.js/dist/sql-wasm.wasm?url'
 
 const STORAGE_KEY = 'nexus:sqlite:v1'
@@ -172,11 +173,14 @@ CREATE TABLE IF NOT EXISTS quick_phrases (
 export class SqliteStore {
   private db: Database | null = null
   private sqlJs: SqlJsStatic | null = null
+  private persistQueue: Promise<void> = Promise.resolve()
 
   async init(): Promise<void> {
     if (this.db) return
     this.sqlJs = await initSqlJs({ locateFile: () => wasmUrl })
-    const stored = typeof localStorage === 'undefined' ? null : localStorage.getItem(STORAGE_KEY)
+    const stored = isTauriRuntime()
+      ? await invokeTauri<string | null>('read_database')
+      : typeof localStorage === 'undefined' ? null : localStorage.getItem(STORAGE_KEY)
     this.db = stored ? new this.sqlJs.Database(decode(stored)) : new this.sqlJs.Database()
     this.db.run('PRAGMA foreign_keys = ON;')
     this.db.run(schema)
@@ -216,8 +220,15 @@ export class SqliteStore {
   }
 
   persist(): void {
-    if (!this.db || typeof localStorage === 'undefined') return
-    localStorage.setItem(STORAGE_KEY, encode(this.db.export()))
+    if (!this.db) return
+    const encoded = encode(this.db.export())
+    if (isTauriRuntime()) {
+      this.persistQueue = this.persistQueue
+        .then(() => invokeTauri<void>('write_database', { encoded }))
+        .catch((error) => console.error('保存 nexus.db 失败', error))
+      return
+    }
+    if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_KEY, encoded)
   }
 
   clear(): void {
