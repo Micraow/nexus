@@ -67,3 +67,26 @@ export function buildRepairPrompt(originalResponse: string, errors: string[]): s
 原始响应：${originalResponse}
 只返回修正后的 JSON。`
 }
+
+export function buildConversationPrompt(input: {
+  question: string
+  topic?: string
+  context: string
+}): string {
+  return `你是 Nexus 织知的知识对话助手。请基于给定上下文回答用户问题，不要编造上下文外事实。
+
+用户问题：${input.question}
+当前 Concept：${input.topic || '未指定'}
+
+上下文：
+${input.context || '（没有额外上下文）'}
+
+请只返回 JSON，格式如下：
+{"answer":"完整回答（可包含 Markdown）","units":[{"title":"本次回答的知识单元标题","summary":"不超过 120 个中文字符的摘要","concepts":[{"name":"Concept 名称","aliases":[]}]}]}
+
+如果回答不适合拆成多个知识单元，units 返回一个元素。不要返回解释文字。`
+}
+
+export function renderQuickPhrase(template: string, topic: string, context: string): string {
+  return template.replaceAll('$(topic)', topic || '当前主题').replaceAll('$(context)', context || '相关上下文')
+}

@@ -43,7 +43,7 @@ function render(): void {
   const height = Math.max(host.value.clientHeight, 460)
   const root = d3.select(element)
   root.selectAll('*').remove()
-  root.attr('viewBox', `0 0 ${width} ${height}`).attr('aria-label', 'Concept 知识图谱')
+  root.attr('viewBox', `0 0 ${width} ${height}`).attr('aria-label', '知识主题图谱')
 
   const viewport = root.append('g').attr('class', 'graph-viewport')
   const zoom = d3.zoom<SVGSVGElement, unknown>().scaleExtent([0.35, 3.2]).on('zoom', (event) => {
@@ -172,10 +172,10 @@ onBeforeUnmount(() => {
   <div ref="host" class="graph-canvas">
     <svg ref="svg" role="img" />
     <div class="graph-scale-hint">
-      <span class="legend-dot concept-dot" /> Concept
-      <span class="legend-dot unit-dot" /> KnowledgeUnit
-      <span class="legend-dot message-dot" /> Message
-      <span class="graph-hint">滚轮缩放 · 拖拽平移/定位 · 点击 Concept 展开单元</span>
+      <span class="legend-dot concept-dot" /> 知识主题
+      <span class="legend-dot unit-dot" /> 知识单元
+      <span class="legend-dot message-dot" /> 消息
+      <span class="graph-hint">滚轮缩放 · 拖拽平移/定位 · 点击知识主题展开单元</span>
     </div>
   </div>
 </template>

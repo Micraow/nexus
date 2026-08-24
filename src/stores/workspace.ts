@@ -3,7 +3,7 @@ import { defineStore } from 'pinia'
 import { db } from '@/services/db'
 import { parseConfigText, readConfigText, writeConfig } from '@/services/config'
 import { buildGraph, graphStats } from '@/services/graph'
-import { buildConceptPrompt, buildRepairPrompt, buildSegmentationPrompt, buildSummaryPrompt, buildTitlePrompt, PROMPT_VERSION } from '@/services/prompts'
+import { buildConceptPrompt, buildConversationPrompt, buildRepairPrompt, buildSegmentationPrompt, buildSummaryPrompt, buildTitlePrompt, PROMPT_VERSION, renderQuickPhrase } from '@/services/prompts'
 import { importPayloadSchema, parseImportPayload, validateSegmentationResult, validateUnitText } from '@/services/validation'
 import { createId, isoNow, normalizeText, parseIsoTimestamp, stableHash } from '@/utils/id'
 import type {
@@ -21,6 +21,7 @@ import type {
   Message,
   NavTreeNode,
   NavTreeNodeUnit,
+  QuickPhrase,
   Session,
   UnitConcept,
 } from '@/types/domain'
@@ -187,6 +188,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const tasks = ref<LLMTask[]>([])
   const contextReferences = ref<ContextReference[]>([])
   const manualEdges = ref<ManualGraphEdge[]>([])
+  const quickPhrases = ref<QuickPhrase[]>([])
   const graphRevision = ref(1)
   const config = ref<AppConfig>(structuredClone(DEFAULT_CONFIG))
   const selectedContextIds = ref<string[]>([])
@@ -272,6 +274,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       targetRefId: text(row.target_ref_id),
       label: row.label == null ? null : text(row.label),
       createdAt: text(row.created_at),
+    }))
+    quickPhrases.value = db.query<Row>('SELECT * FROM quick_phrases ORDER BY sort_order, id').map((row) => ({
+      id: text(row.id),
+      template: text(row.template),
+      isBuiltin: bool(row.is_builtin),
+      sortOrder: number(row.sort_order),
     }))
     graphRevision.value = Number(db.getMeta('graph_revision') ?? '1')
     graphCache.clear()
@@ -744,6 +752,62 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       return { ok: true, errors: [] }
     }
 
+    if (task.type === 'conversation') {
+      const answer = data.answer
+      const rawUnits = data.units
+      if (typeof answer !== 'string' || !answer.trim()) errors.push('answer 必须是非空字符串')
+      if (!Array.isArray(rawUnits) || rawUnits.length === 0) errors.push('units 必须是非空数组')
+      const conversationSession = sessions.value.find((item) => item.id === targetId)
+      const userMessage = messages.value.find((message) => message.sessionId === targetId && message.orderInSession === 0)
+      if (!conversationSession || !userMessage) errors.push('对话目标 Session 不存在')
+      if (String(conversationSession?.revision ?? '') !== targetRevision) errors.push('任务输入版本已过期，请重新生成 Prompt')
+      const normalizedUnits = Array.isArray(rawUnits) ? rawUnits.map((item) => {
+        const value = item && typeof item === 'object' ? item as Record<string, unknown> : {}
+        const concepts = Array.isArray(value.concepts) ? value.concepts : []
+        return {
+          title: typeof value.title === 'string' ? value.title.trim() : '',
+          summary: typeof value.summary === 'string' ? value.summary.trim() : '',
+          concepts: concepts.map((concept) => typeof concept === 'string' ? { name: concept, aliases: [] as string[] } : concept && typeof concept === 'object' ? { name: typeof (concept as Record<string, unknown>).name === 'string' ? String((concept as Record<string, unknown>).name) : '', aliases: Array.isArray((concept as Record<string, unknown>).aliases) ? ((concept as Record<string, unknown>).aliases as unknown[]).filter((alias): alias is string => typeof alias === 'string') : [] } : { name: '', aliases: [] as string[] }),
+        }
+      }) : []
+      normalizedUnits.forEach((unit) => {
+        if (!unit.title) errors.push('对话知识单元标题不能为空')
+        if (validateUnitText(unit.title, unit.summary).length) errors.push('对话知识单元标题或摘要超出长度限制')
+        unit.concepts.forEach((concept) => { if (!normalizeText(concept.name)) errors.push('对话 Concept 名称不能为空') })
+      })
+      if (errors.length) {
+        markTask(taskId, errors.some((error) => error.includes('版本')) ? 'stale' : 'needs_review', responseText, errors)
+        return { ok: false, errors }
+      }
+      mutate(() => {
+        const now = isoNow()
+        const nodeParent = db.query<Row>('SELECT id FROM nav_tree_nodes WHERE session_id = ? AND parent_id IS NULL LIMIT 1', [targetId])[0]
+        const rootId = nodeParent ? text(nodeParent.id) : createId('nav')
+        if (!nodeParent) db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, NULL, NULL, ?, 0, ?)', [rootId, conversationSession?.title ?? '新的知识对话', now])
+        const branchNodeId = createId('nav')
+        db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, ?, NULL, ?, 1, ?)', [branchNodeId, targetId, rootId, null, normalizedUnits[0]?.title || '对话回答', now])
+        const assistantMessageId = createId('message')
+        db.run('INSERT INTO messages(id, session_id, unit_id, role, content, order_in_session, timestamp, metadata) VALUES (?, ?, NULL, ?, ?, 1, ?, ?)', [assistantMessageId, targetId, 'assistant', String(answer).trim(), now, JSON.stringify({ taskId })])
+        normalizedUnits.forEach((item, index) => {
+          const unitId = createId('unit')
+          db.run('INSERT INTO knowledge_units(id, session_id, title, summary, order_in_session, status, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)', [unitId, targetId, item.title, item.summary || null, index, item.summary ? 'ready' : 'pending', now, now])
+          if (index === 0) db.run('UPDATE messages SET unit_id = ? WHERE id IN (?, ?)', [unitId, userMessage?.id, assistantMessageId])
+          db.run('INSERT INTO nav_tree_node_units(node_id, unit_id, order_in_node) VALUES (?, ?, ?)', [branchNodeId, unitId, index])
+          item.concepts.forEach((candidate) => {
+            const conceptId = ensureConcept(candidate.name, 'llm')
+            db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [unitId, conceptId, 'llm', now])
+            candidate.aliases.forEach((alias) => {
+              const normalizedAlias = normalizeText(alias)
+              if (normalizedAlias && normalizedAlias !== normalizeText(candidate.name)) db.run('INSERT OR IGNORE INTO concept_aliases(id, concept_id, alias, normalized_alias, source, created_at) VALUES (?, ?, ?, ?, ?, ?)', [createId('alias'), conceptId, alias.trim(), normalizedAlias, 'llm', now])
+            })
+          })
+        })
+        db.run('UPDATE sessions SET message_count = 2, unit_count = ?, revision = revision + 1, updated_at = ? WHERE id = ?', [normalizedUnits.length, now, targetId])
+        db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = ?, validation_errors = NULL, error_message = NULL, updated_at = ? WHERE id = ?', ['success', responseText, JSON.stringify(data), now, taskId])
+      })
+      return { ok: true, errors: [] }
+    }
+
     mutate(() => db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = ?, validation_errors = NULL, updated_at = ? WHERE id = ?', ['success', responseText, JSON.stringify(data), isoNow(), taskId]))
     return { ok: true, errors: [] }
   }
@@ -1006,6 +1070,64 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     selectedContextIds.value = []
   }
 
+  function renderedPhrase(phraseId: string, topicId?: string): string {
+    const phrase = quickPhrases.value.find((item) => item.id === phraseId)
+    const topic = topicId ? concepts.value.find((concept) => concept.id === topicId)?.name ?? '' : ''
+    const contextUnit = selectedUnits.value.find((unit) => unit.id !== selectedContextIds.value[0])
+    const context = contextUnit ? unitConceptNames(contextUnit.id).join('、') || contextUnit.title || '' : ''
+    return phrase ? renderQuickPhrase(phrase.template, topic, context) : ''
+  }
+
+  function addQuickPhrase(template: string): string {
+    const normalized = template.trim()
+    if (!normalized) throw new Error('快捷短语不能为空')
+    const id = createId('phrase')
+    mutate(() => db.run('INSERT INTO quick_phrases(id, template, is_builtin, sort_order) VALUES (?, ?, 0, ?)', [id, normalized, quickPhrases.value.length]))
+    return id
+  }
+
+  function updateQuickPhrase(id: string, template: string): void {
+    const normalized = template.trim()
+    if (!normalized) throw new Error('快捷短语不能为空')
+    mutate(() => db.run('UPDATE quick_phrases SET template = ? WHERE id = ? AND is_builtin = 0', [normalized, id]))
+  }
+
+  function removeQuickPhrase(id: string): void {
+    mutate(() => db.run('DELETE FROM quick_phrases WHERE id = ? AND is_builtin = 0', [id]))
+  }
+
+  function createConversationTask(input: { question: string; topicId?: string; parentNodeId?: string; sourceUnitIds?: string[]; includeFullContent?: boolean }): string {
+    const question = input.question.trim()
+    if (!question) throw new Error('问题不能为空')
+    const sourceUnits = (input.sourceUnitIds ?? selectedContextIds.value).map((id) => units.value.find((unit) => unit.id === id)).filter(Boolean) as KnowledgeUnit[]
+    const sourceSession = input.parentNodeId ? navNodes.value.find((node) => node.id === input.parentNodeId)?.sessionId : sourceUnits[0]?.sessionId
+    const targetSessionId = createId('session')
+    const now = isoNow()
+    const topic = input.topicId ? concepts.value.find((concept) => concept.id === input.topicId)?.name : undefined
+    const context = sourceUnits.map((unit, index) => {
+      const session = sessions.value.find((item) => item.id === unit.sessionId)
+      const full = input.includeFullContent ? `\n原文：${unitMessages(unit.id).map((message) => `${message.role}: ${message.content}`).join('\n')}` : ''
+      return `# ${index + 1} ${unit.title || '未命名知识单元'}\n来源 Session：${session?.title || ''}\n摘要：${unit.summary || ''}\nConcept：${unitConceptNames(unit.id).join('、')}${full}`
+    }).join('\n\n')
+    mutate(() => {
+        db.run('INSERT INTO sessions(id, source, platform, model, external_session_id, title, created_at, updated_at, message_count, unit_count, revision, local_only) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 1, 0, 1, 0)', [targetSessionId, 'in_app', 'local', null, topic ? `围绕 ${topic} 的新对话` : '新的知识对话', now, now])
+      const messageId = createId('message')
+      db.run('INSERT INTO messages(id, session_id, unit_id, role, content, order_in_session, timestamp, metadata) VALUES (?, ?, NULL, ?, ?, 0, ?, ?)', [messageId, targetSessionId, 'user', question, now, JSON.stringify({ topicId: input.topicId ?? null })])
+      const rootId = createId('nav')
+      db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [rootId, targetSessionId, null, input.topicId ?? null, topic ? `围绕 ${topic}` : '新的知识对话', 0, now])
+      const targetNodeId = input.parentNodeId ?? rootId
+      ;(input.sourceUnitIds ?? selectedContextIds.value).forEach((unitId, index) => {
+        const unit = units.value.find((item) => item.id === unitId)
+        if (!unit) return
+        db.run('INSERT INTO context_references(id, target_session_id, source_session_id, source_unit_id, source_message_id, order_in_context, include_full_content) VALUES (?, ?, ?, ?, NULL, ?, ?)', [createId('context'), targetSessionId, unit.sessionId, unit.id, index, input.includeFullContent ? 1 : 0])
+      })
+      const taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${targetSessionId}:1`, prompt: buildConversationPrompt({ question, topic, context }), status: 'pending', scopeLabel: `新对话 · ${topic || '知识探索'}` })
+      db.run('UPDATE messages SET metadata = ? WHERE id = ?', [JSON.stringify({ topicId: input.topicId ?? null, parentNodeId: targetNodeId, taskId, sourceSessionId: sourceSession ?? null }), messageId])
+      void sourceSession
+    })
+    return targetSessionId
+  }
+
   function setSelectedSession(sessionId: string | null): void {
     selectedSessionId.value = sessionId
   }
@@ -1017,50 +1139,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const unitMatches = units.value.filter((unit) => activeSessionIds.value.has(unit.sessionId) && normalizeText(`${unit.title ?? ''} ${unit.summary ?? ''}`).includes(normalized))
     const messageMatches = messages.value.filter((message) => activeSessionIds.value.has(message.sessionId) && normalizeText(message.content).includes(normalized))
     return { concepts: conceptMatches, units: unitMatches, messages: messageMatches }
-  }
-
-  function loadDemoData(): void {
-    if (activeSessions.value.length > 0) return
-    mutate(() => {
-      const now = isoNow()
-      const sessionRecords = [
-        { id: 'demo_session_rdma', title: 'RDMA 论文与拥塞控制讨论', platform: 'local', model: 'demo', createdAt: '2026-08-18T10:00:00.000Z' },
-        { id: 'demo_session_network', title: '数据中心网络排障', platform: 'local', model: 'demo', createdAt: '2026-08-20T14:30:00.000Z' },
-        { id: 'demo_session_compare', title: 'ECN 与 PFC 对比', platform: 'local', model: 'demo', createdAt: '2026-08-22T09:15:00.000Z' },
-      ]
-      sessionRecords.forEach((session) => db.run('INSERT INTO sessions(id, source, platform, model, external_session_id, title, created_at, updated_at, message_count, unit_count, revision, local_only) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)', [session.id, 'local', session.platform, session.model, session.id, session.title, session.createdAt, now, 4, 2]))
-      const conceptNames = ['RDMA', '拥塞控制', 'RDMA 的拥塞控制', 'ECN', 'PFC', 'DCQCN']
-      const conceptIds = new Map<string, string>()
-      conceptNames.forEach((name) => { conceptIds.set(name, createId('concept')); const id = conceptIds.get(name) as string; db.run('INSERT INTO concepts(id, name, normalized_name, notes, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [id, name, normalizeText(name), name === 'RDMA' ? '高性能网络通信主题' : '', 'active', now, now]) })
-      const createDemoUnit = (sessionId: string, unitId: string, title: string, summary: string, order: number, content: string[], names: string[]) => {
-        db.run('INSERT INTO knowledge_units(id, session_id, title, summary, order_in_session, status, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)', [unitId, sessionId, title, summary, order, 'ready', now, now])
-        content.forEach((value, index) => db.run('INSERT INTO messages(id, session_id, unit_id, role, content, order_in_session, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)', [createId('message'), sessionId, unitId, index % 2 === 0 ? 'user' : 'assistant', value, order * 2 + index, now]))
-        names.forEach((name) => db.run('INSERT INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [unitId, conceptIds.get(name), 'llm', now]))
-      }
-      createDemoUnit('demo_session_rdma', 'demo_unit_ecn', 'ECN 标记在 RDMA 拥塞控制中的作用', '讨论交换机如何通过 ECN 标记反馈拥塞，并比较 ECN、PFC 与 DCQCN 的作用边界。', 0, ['ECN 在 RDMA 网络里具体做什么？', 'ECN 将拥塞信号反馈给发送端，DCQCN 再据此调整发送速率。'], ['RDMA 的拥塞控制', 'RDMA', '拥塞控制', 'ECN', 'DCQCN'])
-      createDemoUnit('demo_session_rdma', 'demo_unit_pfc', 'PFC 的保护作用与副作用', '梳理 PFC 暂停帧的保护效果，以及队头阻塞和拥塞扩散带来的代价。', 1, ['PFC 为什么会和 ECN 一起讨论？', 'PFC 能快速保护无损链路，但也可能造成队头阻塞。'], ['RDMA 的拥塞控制', 'RDMA', '拥塞控制', 'PFC'])
-      createDemoUnit('demo_session_network', 'demo_unit_dcqcn', 'DCQCN 参数调优对吞吐量的影响', '分析速率下降参数与恢复速度对不同负载下吞吐量的影响。', 0, ['DCQCN 的参数应该怎么调？', '需要在响应速度和吞吐量稳定性之间做取舍。'], ['RDMA 的拥塞控制', 'DCQCN', '拥塞控制'])
-      createDemoUnit('demo_session_compare', 'demo_unit_compare', 'ECN 与 PFC 的协同边界', '比较 ECN 的端到端反馈和 PFC 的链路级暂停机制。', 0, ['ECN 和 PFC 的职责有什么区别？', '两者可以配合，但不能把 PFC 当成拥塞控制的唯一方案。'], ['ECN', 'PFC', '拥塞控制'])
-      db.run('UPDATE sessions SET unit_count = 2 WHERE id = ?', ['demo_session_rdma'])
-      db.run('UPDATE sessions SET unit_count = 1 WHERE id = ?', ['demo_session_network'])
-      db.run('UPDATE sessions SET unit_count = 1 WHERE id = ?', ['demo_session_compare'])
-      const relationsToAdd: Array<[string, string, string]> = [
-        ['RDMA', 'RDMA 的拥塞控制', 'hierarchy'],
-        ['拥塞控制', 'RDMA 的拥塞控制', 'hierarchy'],
-        ['ECN', 'PFC', 'related'],
-      ]
-      relationsToAdd.forEach(([parent, child, relationType]) => db.run('INSERT INTO concept_relations(id, parent_concept_id, child_concept_id, relation_type, source, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [createId('relation'), conceptIds.get(parent), conceptIds.get(child), relationType, 'manual', 'confirmed', now, now]))
-      sessionRecords.forEach((session) => {
-        const navId = createId('nav')
-        db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, NULL, NULL, ?, 0, ?)', [navId, session.id, session.title, session.createdAt])
-        const sessionUnits = db.query<Row>('SELECT id, title FROM knowledge_units WHERE session_id = ? ORDER BY order_in_session', [session.id])
-        sessionUnits.forEach((unit, index) => {
-          const nodeId = index === 0 ? navId : createId('nav')
-          if (index > 0) db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, ?, NULL, ?, ?, ?)', [nodeId, session.id, navId, text(unit.title), 1, now])
-          db.run('INSERT INTO nav_tree_node_units(node_id, unit_id, order_in_node) VALUES (?, ?, 0)', [nodeId, text(unit.id)])
-        })
-      })
-    })
   }
 
   function clearAllData(): void {
@@ -1147,10 +1225,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     clearContext,
     setSelectedSession,
     search,
-    loadDemoData,
     clearAllData,
     addManualGraphEdge,
     removeManualGraphEdge,
     buildRepairPrompt,
+    quickPhrases,
+    renderedPhrase,
+    addQuickPhrase,
+    updateQuickPhrase,
+    removeQuickPhrase,
+    createConversationTask,
   }
 })

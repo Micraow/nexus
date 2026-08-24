@@ -128,6 +128,13 @@ export interface ContextReference {
   includeFullContent: boolean
 }
 
+export interface QuickPhrase {
+  id: string
+  template: string
+  isBuiltin: boolean
+  sortOrder: number
+}
+
 export interface LLMTask {
   id: string
   type: TaskType
