@@ -10,6 +10,8 @@ type YamlConfig = {
     default_provider?: string | null
     defaultProvider?: string | null
     concurrency?: number
+    token_budget?: number
+    tokenBudget?: number
     providers?: Array<Partial<ProviderConfig> & { base_url?: string; api_key?: string }>
     task_overrides?: Record<string, string>
     taskOverrides?: Record<string, string>
@@ -37,6 +39,7 @@ export function serializeConfig(config: AppConfig): string {
       mode: config.llm.mode,
       default_provider: config.llm.defaultProvider,
       concurrency: config.llm.concurrency,
+      token_budget: config.llm.tokenBudget,
       providers: config.llm.providers.map((provider) => ({
         id: provider.id,
         name: provider.name,
@@ -75,6 +78,7 @@ export function parseConfig(value: unknown): Partial<AppConfig> {
       mode: raw.llm?.mode ?? null,
       defaultProvider: raw.llm?.default_provider ?? raw.llm?.defaultProvider ?? null,
       concurrency: Number.isInteger(raw.llm?.concurrency) ? Math.min(4, Math.max(1, raw.llm?.concurrency as number)) : 2,
+      tokenBudget: Number.isInteger(raw.llm?.token_budget ?? raw.llm?.tokenBudget) ? Math.max(1000, Number(raw.llm?.token_budget ?? raw.llm?.tokenBudget)) : 8000,
       providers,
       taskOverrides: raw.llm?.task_overrides ?? raw.llm?.taskOverrides ?? {},
     },
