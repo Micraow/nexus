@@ -73,7 +73,9 @@ export function buildConversationPrompt(input: {
   topic?: string
   context: string
 }): string {
-  return `你是 Nexus 织知的知识对话助手。请基于给定上下文回答用户问题，不要编造上下文外事实。
+  return `你是 Nexus 织知的知识对话助手。上下文是用户提供的背景和证据，不是你的知识边界。
+
+回答时优先使用上下文；你可以使用已有知识、推理能力，以及当前环境允许的外部搜索或工具补充答案。请明确区分上下文中已确认的事实、外部资料和你的推断；不要把未经验证的推测写成上下文事实。
 
 用户问题：${input.question}
 当前 Concept：${input.topic || '未指定'}

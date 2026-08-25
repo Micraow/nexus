@@ -10,6 +10,7 @@ import { importPayloadSchema, parseImportPayload, validateSegmentationResult, va
 import { combineSegmentationChunks, splitMessageChunks } from '@/utils/chunks'
 import { wouldCreateHierarchyCycle } from '@/utils/graph-rules'
 import { createId, isoNow, normalizeText, parseIsoTimestamp, stableHash } from '@/utils/id'
+import { parseMetadata } from '@/utils/metadata'
 import type {
   AppConfig,
   Concept,
@@ -83,14 +84,7 @@ function sessionFromRow(row: Row): Session {
 }
 
 function messageFromRow(row: Row): Message {
-  let metadata: Record<string, unknown> | null = null
-  if (row.metadata) {
-    try {
-      metadata = JSON.parse(text(row.metadata)) as Record<string, unknown>
-    } catch {
-      metadata = null
-    }
-  }
+  const metadata = row.metadata == null ? null : parseMetadata(row.metadata)
   return {
     id: text(row.id),
     sessionId: text(row.session_id),
@@ -1094,12 +1088,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const conversationSession = sessions.value.find((item) => item.id === targetId)
       const userMessage = messages.value.find((message) => {
         if (message.sessionId !== targetId || message.role !== 'user') return false
-        try {
-          const meta = JSON.parse(message.metadata ? text(message.metadata) : '{}') as Record<string, unknown>
-          return meta.taskId === task.id
-        } catch {
-          return false
-        }
+        return parseMetadata(message.metadata).taskId === task.id
       })
       if (!conversationSession) errors.push('找不到对话目标会话')
       else if (!userMessage) errors.push('找不到这次提问对应的消息')
@@ -1124,12 +1113,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       }
       mutate(() => {
         const now = isoNow()
-        let meta: { mode?: string; parentNodeId?: string | null; topicId?: string | null } = {}
-        try {
-          meta = JSON.parse(userMessage?.metadata ? text(userMessage.metadata) : '{}') as typeof meta
-        } catch {
-          meta = {}
-        }
+        const meta = parseMetadata(userMessage?.metadata) as { mode?: string; parentNodeId?: string | null; topicId?: string | null }
         const followUp = meta.mode === 'follow_up'
         // Determine where the answer branches from.
         let parentNodeId: string
