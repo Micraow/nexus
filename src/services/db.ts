@@ -162,6 +162,13 @@ CREATE TABLE IF NOT EXISTS graph_layout (
   layout_version INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY(node_type, ref_id)
 );
+CREATE TABLE IF NOT EXISTS graph_viewport (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  x REAL NOT NULL DEFAULT 0,
+  y REAL NOT NULL DEFAULT 0,
+  scale REAL NOT NULL DEFAULT 1,
+  layout_version INTEGER NOT NULL DEFAULT 1
+);
 CREATE TABLE IF NOT EXISTS quick_phrases (
   id TEXT PRIMARY KEY,
   template TEXT NOT NULL,

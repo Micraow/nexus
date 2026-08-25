@@ -13,6 +13,8 @@ import type {
   ConceptRelation,
   ContextReference,
   GraphSnapshot,
+  GraphLayoutEntry,
+  GraphViewport,
   ImportPayload,
   ImportReport,
   KnowledgeUnit,
@@ -189,6 +191,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const contextReferences = ref<ContextReference[]>([])
   const manualEdges = ref<ManualGraphEdge[]>([])
   const quickPhrases = ref<QuickPhrase[]>([])
+  const graphLayout = ref<GraphLayoutEntry[]>([])
+  const graphViewport = ref<GraphViewport>({ x: 0, y: 0, scale: 1, layoutVersion: 1 })
   const graphRevision = ref(1)
   const config = ref<AppConfig>(structuredClone(DEFAULT_CONFIG))
   const selectedContextIds = ref<string[]>([])
@@ -281,6 +285,16 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       isBuiltin: bool(row.is_builtin),
       sortOrder: number(row.sort_order),
     }))
+    graphLayout.value = db.query<Row>('SELECT * FROM graph_layout ORDER BY node_type, ref_id').map((row) => ({
+      nodeType: text(row.node_type) as GraphLayoutEntry['nodeType'],
+      refId: text(row.ref_id),
+      x: number(row.x),
+      y: number(row.y),
+      fixed: bool(row.fixed),
+      layoutVersion: number(row.layout_version, 1),
+    }))
+    const viewport = db.query<Row>('SELECT * FROM graph_viewport WHERE id = 1')[0]
+    graphViewport.value = viewport ? { x: number(viewport.x), y: number(viewport.y), scale: number(viewport.scale, 1), layoutVersion: number(viewport.layout_version, 1) } : { x: 0, y: 0, scale: 1, layoutVersion: 1 }
     graphRevision.value = Number(db.getMeta('graph_revision') ?? '1')
     graphCache.clear()
   }
@@ -332,6 +346,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       revision: graphRevision.value,
       ...options,
     })
+    const persisted = new Map(graphLayout.value.map((entry) => [`${entry.nodeType}:${entry.refId}`, entry]))
+    snapshot.nodes = snapshot.nodes.map((node) => {
+      const entry = persisted.get(`${node.type}:${node.refId}`)
+      return entry ? { ...node, x: entry.x, y: entry.y, fixed: entry.fixed } : node
+    })
+    snapshot.viewport = { ...graphViewport.value }
     graphCache.set(key, snapshot)
     return snapshot
   }
@@ -371,6 +391,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       nav_node_units: navNodeUnits.value,
       context_references: contextReferences.value,
       tasks: tasks.value.map((task) => ({ ...task, providerId: task.providerId ? task.providerId : null })),
+      graph_layout: graphLayout.value,
+      graph_viewport: graphViewport.value,
       manual_edges: manualEdges.value,
     }
     return JSON.stringify(payload, null, 2)
@@ -388,6 +410,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     requiredArrays.forEach((key) => { if (!Array.isArray(parsed[key])) throw new Error(`备份缺少数组字段：${key}`) })
     mutate(() => {
       ;['context_references', 'nav_tree_node_units', 'nav_tree_nodes', 'manual_graph_edges', 'unit_concepts', 'concept_aliases', 'concept_relations', 'knowledge_units', 'messages', 'llm_tasks', 'sessions', 'concepts'].forEach((table) => db.run(`DELETE FROM ${table}`))
+      db.run('DELETE FROM graph_layout')
+      db.run('DELETE FROM graph_viewport')
       const records = parsed as any
       records.sessions.forEach((item: Session) => db.run('INSERT INTO sessions(id, source, platform, model, external_session_id, title, created_at, updated_at, message_count, unit_count, revision, local_only, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.source, item.platform, item.model ?? null, item.externalSessionId ?? null, item.title, item.createdAt, item.updatedAt, item.messageCount, item.unitCount, item.revision, item.localOnly ? 1 : 0, item.deletedAt ?? null]))
       records.concepts.forEach((item: Concept) => db.run('INSERT INTO concepts(id, name, normalized_name, notes, status, merged_into_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.name, item.normalizedName, item.notes, item.status, item.mergedIntoId ?? null, item.createdAt, item.updatedAt, item.deletedAt ?? null]))
@@ -401,6 +425,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       records.context_references.forEach((item: ContextReference) => db.run('INSERT INTO context_references(id, target_session_id, source_session_id, source_unit_id, source_message_id, order_in_context, include_full_content) VALUES (?, ?, ?, ?, ?, ?, ?)', [item.id, item.targetSessionId, item.sourceSessionId, item.sourceUnitId ?? null, item.sourceMessageId ?? null, item.orderInContext, item.includeFullContent ? 1 : 0]))
       records.tasks.forEach((item: LLMTask) => db.run('INSERT INTO llm_tasks(id, type, mode, provider_id, model, prompt_version, input_revision, prompt, response, parsed_result, validation_errors, status, retry_count, error_message, created_at, updated_at, scope_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.type, item.mode, item.providerId ?? null, item.model ?? null, item.promptVersion, item.inputRevision, item.prompt, item.response ?? null, item.parsedResult ?? null, item.validationErrors ?? null, item.status, item.retryCount, item.errorMessage ?? null, item.createdAt, item.updatedAt, item.scopeLabel ?? null]))
       records.manual_edges.forEach((item: ManualGraphEdge) => db.run('INSERT INTO manual_graph_edges(id, source_type, source_ref_id, target_type, target_ref_id, label, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [item.id, item.sourceType, item.sourceRefId, item.targetType, item.targetRefId, item.label ?? null, item.createdAt]))
+      if (Array.isArray(records.graph_layout)) records.graph_layout.forEach((item: GraphLayoutEntry) => db.run('INSERT INTO graph_layout(node_type, ref_id, x, y, fixed, layout_version) VALUES (?, ?, ?, ?, ?, ?)', [item.nodeType, item.refId, item.x, item.y, item.fixed ? 1 : 0, item.layoutVersion ?? 1]))
+      if (records.graph_viewport && typeof records.graph_viewport === 'object') {
+        const viewport = records.graph_viewport as GraphViewport
+        db.run('INSERT INTO graph_viewport(id, x, y, scale, layout_version) VALUES (1, ?, ?, ?, ?)', [number(viewport.x, 0), number(viewport.y, 0), number(viewport.scale, 1), number(viewport.layoutVersion, 1)])
+      }
     })
   }
 
@@ -1070,6 +1099,21 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     selectedContextIds.value = []
   }
 
+  function saveGraphLayout(entry: Omit<GraphLayoutEntry, 'layoutVersion'>): void {
+    mutate(() => db.run('INSERT INTO graph_layout(node_type, ref_id, x, y, fixed, layout_version) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(node_type, ref_id) DO UPDATE SET x = excluded.x, y = excluded.y, fixed = excluded.fixed, layout_version = excluded.layout_version', [entry.nodeType, entry.refId, entry.x, entry.y, entry.fixed ? 1 : 0, graphViewport.value.layoutVersion + 1]))
+  }
+
+  function saveGraphViewport(viewport: Omit<GraphViewport, 'layoutVersion'>): void {
+    mutate(() => db.run('INSERT INTO graph_viewport(id, x, y, scale, layout_version) VALUES (1, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET x = excluded.x, y = excluded.y, scale = excluded.scale, layout_version = excluded.layout_version', [viewport.x, viewport.y, viewport.scale, graphViewport.value.layoutVersion + 1]))
+  }
+
+  function resetGraphLayout(): void {
+    mutate(() => {
+      db.run('DELETE FROM graph_layout')
+      db.run('INSERT INTO graph_viewport(id, x, y, scale, layout_version) VALUES (1, 0, 0, 1, ?) ON CONFLICT(id) DO UPDATE SET x = 0, y = 0, scale = 1, layout_version = excluded.layout_version', [graphViewport.value.layoutVersion + 1])
+    })
+  }
+
   function renderedPhrase(phraseId: string, topicId?: string): string {
     const phrase = quickPhrases.value.find((item) => item.id === phraseId)
     const topic = topicId ? concepts.value.find((concept) => concept.id === topicId)?.name ?? '' : ''
@@ -1155,6 +1199,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       db.run('DELETE FROM sessions')
       db.run('DELETE FROM concepts')
       db.run('DELETE FROM llm_tasks')
+      db.run('DELETE FROM graph_layout')
+      db.run('DELETE FROM graph_viewport')
     })
     selectedContextIds.value = []
   }
@@ -1228,6 +1274,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     clearAllData,
     addManualGraphEdge,
     removeManualGraphEdge,
+    graphLayout,
+    graphViewport,
+    saveGraphLayout,
+    saveGraphViewport,
+    resetGraphLayout,
     buildRepairPrompt,
     quickPhrases,
     renderedPhrase,

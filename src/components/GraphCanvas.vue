@@ -1,21 +1,24 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as d3 from 'd3'
-import type { GraphEdge, GraphNode, GraphSnapshot } from '@/types/domain'
+import type { GraphEdge, GraphNode, GraphSnapshot, GraphViewport } from '@/types/domain'
 
 const props = withDefaults(
   defineProps<{
     snapshot: GraphSnapshot
     selectedUnitIds?: string[]
     reducedMotion?: boolean
+    viewport?: GraphViewport
   }>(),
-  { selectedUnitIds: () => [], reducedMotion: false },
+  { selectedUnitIds: () => [], reducedMotion: false, viewport: () => ({ x: 0, y: 0, scale: 1, layoutVersion: 1 }) },
 )
 
 const emit = defineEmits<{
   (event: 'select-concept', id: string): void
   (event: 'select-unit', id: string, additive: boolean): void
   (event: 'select-message', id: string): void
+  (event: 'layout-change', entry: { nodeType: GraphNode['type']; refId: string; x: number; y: number; fixed: boolean }): void
+  (event: 'viewport-change', viewport: { x: number; y: number; scale: number }): void
 }>()
 
 const host = ref<HTMLElement | null>(null)
@@ -46,12 +49,23 @@ function render(): void {
   root.attr('viewBox', `0 0 ${width} ${height}`).attr('aria-label', '知识主题图谱')
 
   const viewport = root.append('g').attr('class', 'graph-viewport')
+  let restoringViewport = true
   const zoom = d3.zoom<SVGSVGElement, unknown>().scaleExtent([0.35, 3.2]).on('zoom', (event) => {
     viewport.attr('transform', event.transform)
+    if (!restoringViewport) emit('viewport-change', { x: event.transform.x, y: event.transform.y, scale: event.transform.k })
   })
   root.call(zoom)
+  const initialViewport = props.viewport ?? { x: 0, y: 0, scale: 1 }
+  root.call(zoom.transform, d3.zoomIdentity.translate(initialViewport.x, initialViewport.y).scale(initialViewport.scale))
+  restoringViewport = false
 
   const nodes = props.snapshot.nodes.map((node) => ({ ...node })) as (GraphNode & d3.SimulationNodeDatum)[]
+  nodes.forEach((node) => {
+    if (node.fixed && node.x != null && node.y != null) {
+      node.fx = node.x
+      node.fy = node.y
+    }
+  })
   const links = props.snapshot.edges.map((edge) => ({ ...edge }))
   const linkLayer = viewport.append('g').attr('class', 'graph-links')
   const nodeLayer = viewport.append('g').attr('class', 'graph-nodes')
@@ -131,6 +145,7 @@ function render(): void {
       if (!event.active) simulation?.alphaTarget(0)
       node.fx = event.x
       node.fy = event.y
+      emit('layout-change', { nodeType: node.type, refId: node.refId, x: event.x, y: event.y, fixed: true })
     })
   nodeSelection.call(drag)
 
@@ -160,7 +175,7 @@ onMounted(() => {
   }
 })
 
-watch(() => [props.snapshot, props.selectedUnitIds], render, { deep: true })
+watch(() => [props.snapshot, props.selectedUnitIds, props.viewport], render, { deep: true })
 
 onBeforeUnmount(() => {
   simulation?.stop()

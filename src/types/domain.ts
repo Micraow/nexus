@@ -194,6 +194,23 @@ export interface GraphSnapshot {
   nodes: GraphNode[]
   edges: GraphEdge[]
   revision: number
+  viewport?: GraphViewport
+}
+
+export interface GraphLayoutEntry {
+  nodeType: GraphNodeType
+  refId: string
+  x: number
+  y: number
+  fixed: boolean
+  layoutVersion: number
+}
+
+export interface GraphViewport {
+  x: number
+  y: number
+  scale: number
+  layoutVersion: number
 }
 
 export interface ProviderConfig {
@@ -271,5 +288,7 @@ export interface KnowledgeBaseExport {
   nav_node_units: NavTreeNodeUnit[]
   context_references: ContextReference[]
   tasks: LLMTask[]
+  graph_layout: GraphLayoutEntry[]
+  graph_viewport: GraphViewport
   manual_edges: ManualGraphEdge[]
 }

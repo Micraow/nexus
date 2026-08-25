@@ -41,6 +41,7 @@ import {
   X,
 } from 'lucide-vue-next'
 import GraphCanvas from '@/components/GraphCanvas.vue'
+import NavTree from '@/components/NavTree.vue'
 import { serializeConfig } from '@/services/config'
 import { useWorkspaceStore } from '@/stores/workspace'
 import type { Concept, GraphNodeType, KnowledgeUnit, LLMTask, Session } from '@/types/domain'
@@ -87,6 +88,9 @@ const customPhraseDraft = ref('')
 const editingPhraseId = ref<string | null>(null)
 const providerDraft = ref({ id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', apiKey: '' })
 const graphLayoutNonce = ref(0)
+const selectedNavNodeId = ref<string | null>(null)
+const draggedContextId = ref<string | null>(null)
+let viewportSaveTimer: number | null = null
 
 const navItems: Array<{ id: ViewName; label: string; icon: typeof LayoutDashboard; badge?: () => number }> = [
   { id: 'overview', label: '概览', icon: LayoutDashboard },
@@ -138,6 +142,17 @@ const contextTokenEstimate = computed(() => {
   }, 0)
   return Math.ceil(characters / 4)
 })
+const composerTokenEstimate = computed(() => {
+  const characters = composerSourceUnitIds.value.reduce((total, unitId) => {
+    const unit = store.units.find((item) => item.id === unitId)
+    if (!unit) return total
+    const session = sessionForUnit(unit)
+    const base = `${unit.title ?? ''}${unit.summary ?? ''}${store.unitConceptNames(unit.id).join('')}${session?.title ?? ''}`
+    const full = composerIncludeFull.value ? store.unitMessages(unit.id).reduce((sum, message) => sum + message.content.length, 0) : 0
+    return total + base.length + full
+  }, 0)
+  return Math.ceil(characters / 4)
+})
 
 function notify(message: string): void {
   toast.value = message
@@ -147,6 +162,24 @@ function notify(message: string): void {
 function setView(view: ViewName): void {
   activeView.value = view
   if (view === 'graph') nextTick(() => window.dispatchEvent(new Event('resize')))
+}
+
+function saveGraphLayout(entry: { nodeType: GraphNodeType; refId: string; x: number; y: number; fixed: boolean }): void {
+  store.saveGraphLayout(entry)
+}
+
+function saveGraphViewport(viewport: { x: number; y: number; scale: number }): void {
+  if (viewportSaveTimer != null) window.clearTimeout(viewportSaveTimer)
+  viewportSaveTimer = window.setTimeout(() => {
+    store.saveGraphViewport(viewport)
+    viewportSaveTimer = null
+  }, 350)
+}
+
+function resetGraphLayout(): void {
+  store.resetGraphLayout()
+  graphLayoutNonce.value += 1
+  notify('图谱布局已重置')
 }
 
 function openConcept(conceptId: string): void {
@@ -160,7 +193,7 @@ function openConcept(conceptId: string): void {
 function openUnit(unitId: string, additive = false): void {
   selectedUnitId.value = unitId
   selectedMessageId.value = null
-  if (!additive) store.selectContext(unitId, true)
+  if (!additive) store.reorderContext([unitId])
   else store.selectContext(unitId, !store.selectedContextIds.includes(unitId))
   isDetailOpen.value = true
 }
@@ -267,6 +300,7 @@ function applyComposerPhrase(): void {
 
 function submitComposer(): void {
   if (!composerQuestion.value.trim()) return notify('请输入问题，或先选择一个快捷短语')
+  if (composerTokenEstimate.value > store.config.llm.tokenBudget) return notify(`上下文约 ${composerTokenEstimate.value.toLocaleString()} tokens，超过当前预算，请移除单元或关闭完整原文`)
   try {
     const targetSessionId = store.createConversationTask({
       question: composerQuestion.value,
@@ -284,6 +318,30 @@ function submitComposer(): void {
   } catch (error) {
     notify(error instanceof Error ? error.message : '新对话创建失败')
   }
+}
+
+function openNavNode(node: { id: string; sessionId: string }): void {
+  selectedNavNodeId.value = node.id
+  const links = store.navNodeUnits.filter((link) => link.nodeId === node.id).sort((a, b) => a.orderInNode - b.orderInNode)
+  if (links[0]) openUnit(links[0].unitId)
+  store.setSelectedSession(node.sessionId)
+}
+
+function startContextDrag(unitId: string): void {
+  draggedContextId.value = unitId
+}
+
+function dropContext(unitId: string): void {
+  const sourceId = draggedContextId.value
+  draggedContextId.value = null
+  if (!sourceId || sourceId === unitId) return
+  const ids = [...store.selectedContextIds]
+  const from = ids.indexOf(sourceId)
+  const to = ids.indexOf(unitId)
+  if (from < 0 || to < 0) return
+  ids.splice(from, 1)
+  ids.splice(to, 0, sourceId)
+  store.reorderContext(ids)
 }
 
 function addCustomPhrase(): void {
@@ -643,9 +701,9 @@ onMounted(async () => {
         </section>
 
         <section v-else-if="activeView === 'graph'" class="view-panel graph-view">
-          <div class="page-toolbar"><div><span class="eyebrow">GLOBAL GRAPH</span><h2>知识主题关系网络</h2></div><div class="toolbar-actions"><div class="compact-search"><Search :size="15" /><input v-model="graphSearch" placeholder="过滤节点" aria-label="过滤图谱节点" /></div><button class="button secondary-button" @click="exportSnapshot"><Download :size="15" />导出快照</button><button class="icon-button" title="重置布局" aria-label="重置布局" @click="graphLayoutNonce += 1"><RotateCcw :size="17" /></button></div></div>
+          <div class="page-toolbar"><div><span class="eyebrow">GLOBAL GRAPH</span><h2>知识主题关系网络</h2></div><div class="toolbar-actions"><div class="compact-search"><Search :size="15" /><input v-model="graphSearch" placeholder="过滤节点" aria-label="过滤图谱节点" /></div><button class="button secondary-button" @click="exportSnapshot"><Download :size="15" />导出快照</button><button class="icon-button" title="重置布局" aria-label="重置布局" @click="resetGraphLayout"><RotateCcw :size="17" /></button></div></div>
           <div class="graph-layout">
-            <div class="graph-main"><GraphCanvas :key="graphLayoutNonce" :snapshot="currentGraph" :selected-unit-ids="store.selectedContextIds" :reduced-motion="store.config.ui.reducedMotion" @select-concept="openConcept" @select-unit="openUnit" @select-message="openMessage" /></div>
+            <div class="graph-main"><GraphCanvas :key="graphLayoutNonce" :snapshot="currentGraph" :viewport="store.graphViewport" :selected-unit-ids="store.selectedContextIds" :reduced-motion="store.config.ui.reducedMotion" @select-concept="openConcept" @select-unit="openUnit" @select-message="openMessage" @layout-change="saveGraphLayout" @viewport-change="saveGraphViewport" /></div>
             <aside class="graph-controls surface-section"><div class="panel-heading"><div><span class="eyebrow">VIEW</span><h3>显示选项</h3></div><SlidersHorizontal :size="17" /></div><label class="toggle-row"><span><strong>知识单元</strong><small>点击知识主题时始终展开</small></span><input v-model="graphShowUnits" type="checkbox" /></label><label class="toggle-row"><span><strong>未归类消息</strong><small>显示尚未整理的原始消息</small></span><input v-model="graphShowMessages" type="checkbox" /></label><label class="toggle-row"><span><strong>待确认关系</strong><small>以虚线呈现建议关系</small></span><input v-model="graphShowProposed" type="checkbox" /></label><div class="graph-mini-stats"><div><strong>{{ graphOverview.concepts }}</strong><span>知识主题</span></div><div><strong>{{ graphOverview.units }}</strong><span>知识单元</span></div><div><strong>{{ graphOverview.edges }}</strong><span>关系</span></div></div><div class="graph-control-note"><GitBranch :size="15" /><span>父子关系会增加吸引力，子知识主题倾向靠近父节点；拖拽只改变视图位置。</span></div></aside>
           </div>
         </section>
@@ -659,6 +717,7 @@ onMounted(async () => {
         <section v-else-if="activeView === 'settings'" class="view-panel settings-view"><div class="page-toolbar"><div><span class="eyebrow">LOCAL CONFIGURATION</span><h2>设置</h2></div><button class="button secondary-button" @click="exportConfig"><Download :size="15" />导出 config.yaml</button></div><div class="settings-grid"><section class="surface-section settings-section"><div class="section-heading"><div><span class="eyebrow">LLM MODE</span><h3>选择任务模式</h3></div><Sparkles :size="18" /></div><p class="section-description">选择任务模式后才会启动 LLM 整理；原始数据始终先保存到本地。</p><div class="mode-cards"><button class="mode-card" :class="{ selected: store.config.llm.mode === 'api' }" @click="updateMode('api')"><div class="mode-icon blue"><Send :size="18" /></div><div><strong>API 模式</strong><span>通过 OpenAI 兼容端点直接执行任务</span></div><Check v-if="store.config.llm.mode === 'api'" :size="17" /></button><button class="mode-card" :class="{ selected: store.config.llm.mode === 'prompt_paste' }" @click="updateMode('prompt_paste')"><div class="mode-icon amber"><Clipboard :size="18" /></div><div><strong>Prompt 粘贴模式</strong><span>复制 Prompt 到网页端，再粘贴回复</span></div><Check v-if="store.config.llm.mode === 'prompt_paste'" :size="17" /></button></div></section><section class="surface-section settings-section"><div class="section-heading"><div><span class="eyebrow">PROVIDER</span><h3>OpenAI 兼容连接</h3></div><Database :size="18" /></div><p class="section-description">API Key 按你的配置以明文写入 YAML；只在明确启动 API 任务时发送。</p><div class="form-grid"><label>名称<input v-model="providerDraft.name" /></label><label>Provider ID<input v-model="providerDraft.id" /></label><label class="span-two">Base URL<input v-model="providerDraft.baseUrl" /></label><label>模型<input v-model="providerDraft.model" /></label><label>API Key<input v-model="providerDraft.apiKey" type="text" /></label></div><div class="settings-actions"><button class="button primary-button" @click="saveProvider"><Check :size="15" />保存 Provider</button><span class="form-hint">并发数默认 2，可在配置文件中调整为 1～4。</span></div></section><section class="surface-section settings-section"><div class="section-heading"><div><span class="eyebrow">STORAGE</span><h3>本地数据</h3></div><Database :size="18" /></div><div class="storage-grid"><div><span>数据库</span><strong>nexus.db</strong></div><div><span>图谱 revision</span><strong>{{ store.graphRevision }}</strong></div><div><span>配置</span><strong>config.yaml</strong></div></div><div class="settings-actions"><button class="button secondary-button" @click="notify('数据库路径由桌面应用管理')"><FolderOpen :size="15" />数据库位置</button><button class="button secondary-button" @click="store.clearAllData(); notify('知识库已清空')"><Trash2 :size="15" />清空知识库</button></div></section><section class="surface-section settings-section"><div class="section-heading"><div><span class="eyebrow">MOTION & ACCESSIBILITY</span><h3>界面偏好</h3></div><PanelRight :size="18" /></div><label class="toggle-row"><span><strong>减少动态效果</strong><small>遵循 prefers-reduced-motion，缩短图谱和面板动画</small></span><input :checked="store.config.ui.reducedMotion" type="checkbox" @change="store.updateConfig({ ui: { ...store.config.ui, reducedMotion: ($event.target as HTMLInputElement).checked } })" /></label></section></div></section>
         <section v-if="activeView === 'settings'" class="surface-section phrase-section"><div class="section-heading"><div><span class="eyebrow">QUICK PHRASES</span><h3>快捷短语</h3></div><MessageSquare :size="18" /></div><p class="section-description">使用 <code>$(topic)</code> 和 <code>$(context)</code> 插入当前主题与上下文。</p><div class="phrase-list"><div v-for="phrase in store.quickPhrases" :key="phrase.id" class="phrase-row"><span>{{ phrase.template }}</span><div v-if="!phrase.isBuiltin" class="phrase-actions"><button class="icon-button" title="编辑快捷短语" :aria-label="`编辑 ${phrase.template}`" @click="beginEditPhrase(phrase.id, phrase.template)"><Settings2 :size="14" /></button><button class="icon-button" title="删除快捷短语" :aria-label="`删除 ${phrase.template}`" @click="removePhrase(phrase.id)"><Trash2 :size="14" /></button></div><span v-else class="soft-tag">内置</span></div></div><div class="phrase-editor"><input v-model="customPhraseDraft" placeholder="例如：请比较 $(topic) 与 $(context)" @keyup.enter="editingPhraseId ? savePhraseEdit() : addCustomPhrase()" /><button class="button secondary-button" @click="editingPhraseId ? savePhraseEdit() : addCustomPhrase()"><Check :size="14" />{{ editingPhraseId ? '保存' : '添加' }}</button><button v-if="editingPhraseId" class="text-button" @click="editingPhraseId = null; customPhraseDraft = ''">取消</button></div></section>
       </section>
+      <section v-if="activeView === 'sessions' && selectedSession" class="surface-section session-tree-overview"><div class="section-heading"><div><span class="eyebrow">EXPLORATION TREE</span><h3>{{ selectedSession.title }} 的探索树</h3></div><History :size="18" /></div><NavTree :nodes="store.navNodes.filter((node) => node.sessionId === selectedSession?.id && !node.parentId)" :node-units="store.navNodeUnits" :units="store.units" :selected-node-id="selectedNavNodeId" @select-node="openNavNode" /></section>
     </main>
 
     <aside v-if="isDetailOpen && (selectedConcept || selectedUnit || selectedMessage)" class="detail-drawer" :class="{ open: isDetailOpen }">
@@ -668,7 +727,7 @@ onMounted(async () => {
       <div v-else-if="selectedMessage" class="drawer-content"><div class="drawer-tags"><span class="soft-tag">{{ selectedMessage.role }}</span><span class="soft-tag">消息 #{{ selectedMessage.orderInSession + 1 }}</span></div><p class="message-detail-content">{{ selectedMessage.content }}</p><button v-if="selectedMessage.unitId" class="text-button" @click="openUnit(selectedMessage.unitId)"><BookOpen :size="14" />打开所属 KnowledgeUnit</button></div>
     </aside>
 
-    <aside v-if="store.selectedUnits.length" class="context-drawer"><div class="context-header"><div><span class="eyebrow">CONTEXT BUILDER</span><h3>已选上下文</h3></div><button class="icon-button" aria-label="清空上下文" title="清空上下文" @click="store.clearContext"><X :size="16" /></button></div><div class="context-count"><strong>{{ store.selectedUnits.length }}</strong><span>个知识单元 · 可跨会话</span></div><div class="context-list"><div v-for="(unit, index) in store.selectedUnits" :key="unit.id" class="context-item"><span class="context-index">{{ index + 1 }}</span><div><strong>{{ unit.title || '待命名知识单元' }}</strong><span>{{ sessionForUnit(unit)?.title }}</span></div><button class="icon-button" aria-label="移除上下文" title="移除上下文" @click="store.selectContext(unit.id, false)"><X :size="13" /></button></div></div><label class="toggle-row context-toggle"><span><strong>附带完整原文</strong><small>默认只注入标题、摘要和知识主题</small></span><input v-model="contextIncludeFull" type="checkbox" /></label><div class="context-budget"><span>预计输入</span><strong>{{ contextTokenEstimate.toLocaleString() }} tokens</strong><small>预算 {{ store.config.llm.tokenBudget.toLocaleString() }} tokens</small></div><button class="button primary-button full-button" @click="openComposer({ sourceUnitIds: store.selectedContextIds })"><MessageSquare :size="15" />用这些内容发起新对话</button><button class="text-button full-button" @click="createContextPrompt"><Clipboard :size="14" />复制上下文文本</button><span class="context-hint">{{ contextIncludeFull ? '完整原文会增加输入长度，请确认模型预算。' : '摘要模式适合跨会话整理。' }}</span></aside>
+    <aside v-if="store.selectedUnits.length" class="context-drawer"><div class="context-header"><div><span class="eyebrow">CONTEXT BUILDER</span><h3>已选上下文</h3></div><button class="icon-button" aria-label="清空上下文" title="清空上下文" @click="store.clearContext"><X :size="16" /></button></div><div class="context-count"><strong>{{ store.selectedUnits.length }}</strong><span>个知识单元 · 可跨会话</span></div><div class="context-list"><div v-for="(unit, index) in store.selectedUnits" :key="unit.id" class="context-item" draggable="true" @dragstart="startContextDrag(unit.id)" @dragover.prevent @drop="dropContext(unit.id)"><span class="context-index">{{ index + 1 }}</span><div><strong>{{ unit.title || '待命名知识单元' }}</strong><span>{{ sessionForUnit(unit)?.title }}</span></div><button class="icon-button" aria-label="移除上下文" title="移除上下文" @click="store.selectContext(unit.id, false)"><X :size="13" /></button></div></div><label class="toggle-row context-toggle"><span><strong>附带完整原文</strong><small>默认只注入标题、摘要和知识主题</small></span><input v-model="contextIncludeFull" type="checkbox" /></label><div class="context-budget" :class="{ over: contextTokenEstimate > store.config.llm.tokenBudget }"><span>预计输入</span><strong>{{ contextTokenEstimate.toLocaleString() }} tokens</strong><small>预算 {{ store.config.llm.tokenBudget.toLocaleString() }} tokens{{ contextTokenEstimate > store.config.llm.tokenBudget ? ' · 已超出' : '' }}</small></div><button class="button primary-button full-button" @click="openComposer({ sourceUnitIds: store.selectedContextIds })"><MessageSquare :size="15" />用这些内容发起新对话</button><button class="text-button full-button" @click="createContextPrompt"><Clipboard :size="14" />复制上下文文本</button><span class="context-hint">{{ contextIncludeFull ? '完整原文会增加输入长度，请确认模型预算。' : '摘要模式适合跨会话整理。' }}</span></aside>
 
     <div v-if="composerOpen" class="modal-backdrop" role="presentation" @click.self="composerOpen = false">
       <section class="composer-modal" role="dialog" aria-modal="true" aria-labelledby="composer-title">
@@ -679,7 +738,7 @@ onMounted(async () => {
           <label class="composer-question">问题<textarea v-model="composerQuestion" rows="5" placeholder="输入你想继续探索的问题"></textarea></label>
           <label class="toggle-row"><span><strong>附带完整原文</strong><small>关闭时只发送标题、摘要和知识主题</small></span><input v-model="composerIncludeFull" type="checkbox" /></label>
         </div>
-        <div class="composer-context"><div class="subsection-title"><strong>上下文来源</strong><span>{{ composerSourceUnitIds.length }} 个知识单元</span></div><div v-if="composerSourceUnitIds.length" class="composer-context-list"><span v-for="unitId in composerSourceUnitIds" :key="unitId" class="soft-tag">{{ store.units.find((unit) => unit.id === unitId)?.title || '待命名知识单元' }}</span></div><p v-else class="muted">未选择上下文，将只使用问题和知识主题。</p></div>
+        <div class="composer-context"><div class="subsection-title"><strong>上下文来源</strong><span>{{ composerSourceUnitIds.length }} 个知识单元</span></div><div v-if="composerSourceUnitIds.length" class="composer-context-list"><span v-for="unitId in composerSourceUnitIds" :key="unitId" class="soft-tag">{{ store.units.find((unit) => unit.id === unitId)?.title || '待命名知识单元' }}</span></div><p v-else class="muted">未选择上下文，将只使用问题和知识主题。</p><div class="context-budget" :class="{ over: composerTokenEstimate > store.config.llm.tokenBudget }"><span>预计输入</span><strong>{{ composerTokenEstimate.toLocaleString() }} tokens</strong><small>预算 {{ store.config.llm.tokenBudget.toLocaleString() }} tokens{{ composerTokenEstimate > store.config.llm.tokenBudget ? ' · 请减少上下文' : '' }}</small></div></div>
         <div class="modal-actions"><button class="button secondary-button" @click="composerOpen = false">取消</button><button class="button primary-button" @click="submitComposer"><MessageSquare :size="15" />创建并进入任务中心</button></div>
       </section>
     </div>
