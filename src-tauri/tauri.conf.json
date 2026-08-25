@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Nexus 织知",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "identifier": "com.nexus.weave",
   "build": {
     "beforeDevCommand": "pnpm dev -- --host 127.0.0.1",
@@ -23,11 +23,21 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' http://127.0.0.1:5173; connect-src 'self' http://127.0.0.1:5173 https:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-eval'"
+      "csp": "default-src 'self' http://127.0.0.1:5173; connect-src 'self' http://127.0.0.1:5173 https: ipc: http://ipc.localhost; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'"
     }
   },
   "bundle": {
-    "active": false,
-    "icon": []
+    "active": true,
+    "category": "Productivity",
+    "shortDescription": "本地优先的 AI 对话知识管理工作台",
+    "longDescription": "Nexus 织知把与各大模型的线性对话整理为可检索、可追溯、可继续探索的知识网络：会话与消息完整保存在本机 SQLite，LLM 整理生成知识单元与知识主题，并汇聚成可缩放探索的知识图谱。支持 API 与 Prompt 粘贴两种整理模式、追问分支、跨会话上下文拼接与多种格式导出，不发送遥测。",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ]
   }
 }
