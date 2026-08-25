@@ -257,11 +257,15 @@ export class SqliteStore {
     })
   }
 
-  private async readBrowserStorage(): Promise<string | null> {
+  private async readBrowserStorage(key = STORAGE_KEY): Promise<string | null> {
+    try {
+      const localValue = typeof localStorage === 'undefined' ? null : localStorage.getItem(key)
+      if (localValue) return localValue
+    } catch { /* IndexedDB remains the durable fallback */ }
     try {
       const database = await this.openBrowserStorage()
       const value = await new Promise<unknown>((resolve, reject) => {
-        const request = database.transaction(BROWSER_STORAGE_STORE, 'readonly').objectStore(BROWSER_STORAGE_STORE).get(STORAGE_KEY)
+        const request = database.transaction(BROWSER_STORAGE_STORE, 'readonly').objectStore(BROWSER_STORAGE_STORE).get(key)
         request.onsuccess = () => resolve(request.result)
         request.onerror = () => reject(request.error)
       })
@@ -270,14 +274,14 @@ export class SqliteStore {
     } catch (error) {
       console.warn('读取 IndexedDB 数据库失败，将尝试兼容存储', error)
     }
-    try { return typeof localStorage === 'undefined' ? null : localStorage.getItem(STORAGE_KEY) } catch { return null }
+    return null
   }
 
-  private async writeBrowserStorage(encoded: string): Promise<void> {
+  private async writeBrowserStorage(encoded: string, key = STORAGE_KEY): Promise<void> {
     const database = await this.openBrowserStorage()
     await new Promise<void>((resolve, reject) => {
       const transaction = database.transaction(BROWSER_STORAGE_STORE, 'readwrite')
-      transaction.objectStore(BROWSER_STORAGE_STORE).put(encoded, STORAGE_KEY)
+      transaction.objectStore(BROWSER_STORAGE_STORE).put(encoded, key)
       transaction.oncomplete = () => resolve()
       transaction.onerror = () => reject(transaction.error ?? new Error('写入浏览器存储失败'))
       transaction.onabort = () => reject(transaction.error ?? new Error('浏览器存储事务被中止'))
@@ -285,11 +289,11 @@ export class SqliteStore {
     database.close()
   }
 
-  private async removeBrowserStorage(): Promise<void> {
+  private async removeBrowserStorage(key = STORAGE_KEY): Promise<void> {
     try {
       const database = await this.openBrowserStorage()
       await new Promise<void>((resolve, reject) => {
-        const request = database.transaction(BROWSER_STORAGE_STORE, 'readwrite').objectStore(BROWSER_STORAGE_STORE).delete(STORAGE_KEY)
+        const request = database.transaction(BROWSER_STORAGE_STORE, 'readwrite').objectStore(BROWSER_STORAGE_STORE).delete(key)
         request.onsuccess = () => resolve()
         request.onerror = () => reject(request.error)
       })
@@ -520,11 +524,24 @@ export class SqliteStore {
       if (!reference) throw new Error('当前没有可备份的数据库')
       return { reference, createdAt, runtime: 'tauri' }
     }
-    if (typeof localStorage === 'undefined') throw new Error('当前运行环境不支持数据库备份')
-    const encoded = this.db ? encode(this.db.export()) : localStorage.getItem(STORAGE_KEY)
+    if (typeof localStorage === 'undefined' && typeof indexedDB === 'undefined') throw new Error('当前运行环境不支持数据库备份')
+    const encoded = this.db ? encode(this.db.export()) : await this.readBrowserStorage()
     if (!encoded) throw new Error('当前没有可备份的数据库')
     const reference = `${BACKUP_STORAGE_PREFIX}${Date.now()}`
-    localStorage.setItem(reference, encoded)
+    let localSaved = false
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(reference, encoded)
+        localSaved = true
+      }
+    } catch { /* IndexedDB can hold backups larger than Web Storage */ }
+    if (typeof indexedDB !== 'undefined') {
+      try { await this.writeBrowserStorage(encoded, reference) } catch (error) {
+        if (!localSaved) throw error
+        console.warn('IndexedDB 备份写入失败，保留 localStorage 备份', error)
+      }
+    }
+    if (!localSaved && typeof indexedDB === 'undefined') throw new Error('浏览器存储配额不足，无法创建数据库备份')
     return { reference, createdAt, runtime: 'browser' }
   }
 
@@ -532,10 +549,10 @@ export class SqliteStore {
     if (isTauriRuntime()) {
       await invokeTauri<void>('restore_database_backup', { path: reference, ...this.databaseArgs() })
     } else {
-      if (typeof localStorage === 'undefined') throw new Error('当前运行环境不支持数据库恢复')
-      const encoded = localStorage.getItem(reference)
+      if (typeof localStorage === 'undefined' && typeof indexedDB === 'undefined') throw new Error('当前运行环境不支持数据库恢复')
+      const encoded = await this.readBrowserStorage(reference)
       if (!encoded) throw new Error('找不到数据库备份')
-      try { localStorage.setItem(STORAGE_KEY, encoded) } catch { /* IndexedDB remains the durable copy */ }
+      try { if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_KEY, encoded) } catch { /* IndexedDB remains the durable copy */ }
       if (typeof indexedDB !== 'undefined') await this.writeBrowserStorage(encoded)
     }
     if (this.db) this.db.close()
