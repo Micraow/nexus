@@ -29,7 +29,7 @@ Windows 10/11 自带 WebView2 运行时，另需安装 Visual Studio Build Tools
 ## 2. 安装依赖
 
 ```bash
-git clone <仓库地址> nexus && cd nexus
+git clone https://github.com/Micraow/nexus.git nexus && cd nexus
 pnpm install
 ```
 

@@ -13,6 +13,8 @@
 ![前端](https://img.shields.io/badge/Vue%203-TypeScript-42b883)
 ![存储](https://img.shields.io/badge/%E5%AD%98%E5%82%A8-%E6%9C%AC%E6%9C%BA%20SQLite-20567d)
 
+[![GitHub](https://img.shields.io/badge/GitHub-Micraow%2Fnexus-181717?logo=github)](https://github.com/Micraow/nexus)
+
 </div>
 
 ---

@@ -1,7 +1,15 @@
 {
   "name": "nexus-weave",
-  "private": true,
   "version": "0.1.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Micraow/nexus.git"
+  },
+  "homepage": "https://github.com/Micraow/nexus#readme",
+  "bugs": {
+    "url": "https://github.com/Micraow/nexus/issues"
+  },
+  "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
