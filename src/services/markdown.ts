@@ -1,3 +1,6 @@
+import katex from 'katex'
+import 'katex/dist/katex.min.css'
+
 export interface MarkdownConcept {
   id: string
   name: string
@@ -9,7 +12,12 @@ export interface RenderMarkdownOptions {
 }
 
 function escapeHtml(value: string): string {
-  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
 }
 
 function escapeRegExp(value: string): string {
@@ -17,8 +25,22 @@ function escapeRegExp(value: string): string {
 }
 
 interface InlineToken {
-  type: 'code' | 'anchor' | 'mention' | 'text'
+  type: 'code' | 'anchor' | 'mention' | 'math' | 'text'
   value: string
+}
+
+function renderMath(source: string, displayMode: boolean): string {
+  try {
+    return katex.renderToString(source.trim(), {
+      displayMode,
+      output: 'htmlAndMathml',
+      throwOnError: false,
+      strict: false,
+      trust: false,
+    })
+  } catch {
+    return `<code class="math-source">${escapeHtml(source.trim())}</code>`
+  }
 }
 
 interface ConceptMatcher {
@@ -41,7 +63,7 @@ function buildConceptMatcher(concepts: MarkdownConcept[]): ConceptMatcher | null
 }
 
 function anchorHtml(url: string, label: string): string {
-  return `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`
+  return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`
 }
 
 function linkifyConcepts(raw: string, matcher: ConceptMatcher | null): InlineToken[] {
@@ -60,20 +82,24 @@ function linkifyConcepts(raw: string, matcher: ConceptMatcher | null): InlineTok
   return tokens
 }
 
-/** Split one line of already-escaped text into protected spans and plain text. */
+/** Split raw Markdown text into protected spans and plain text. */
 function tokenizeInline(line: string, matcher: ConceptMatcher | null): InlineToken[] {
   const tokens: InlineToken[] = []
   const pushText = (value: string): void => {
-    tokens.push(...linkifyConcepts(value, matcher))
+    tokens.push(...linkifyConcepts(escapeHtml(value), matcher))
   }
-  const pattern = /`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<]+)/g
+  const pattern = /`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<]+)|\$\$([\s\S]+?)\$\$|\\\(([^\n]+?)\\\)|\\\[([\s\S]+?)\\\]|(?<!\$)\$([^$\n]+?)\$(?!\$)/g
   let cursor = 0
   let match: RegExpExecArray | null
   while ((match = pattern.exec(line))) {
     if (match.index > cursor) pushText(line.slice(cursor, match.index))
-    if (match[1] != null) tokens.push({ type: 'code', value: `<code>${match[1]}</code>` })
+    if (match[1] != null) tokens.push({ type: 'code', value: `<code>${escapeHtml(match[1])}</code>` })
     else if (match[2] != null && match[3]) tokens.push({ type: 'anchor', value: anchorHtml(match[3], match[2]) })
     else if (match[4]) tokens.push({ type: 'anchor', value: anchorHtml(match[4], match[4]) })
+    else if (match[5] != null) tokens.push({ type: 'math', value: renderMath(match[5], true) })
+    else if (match[6] != null) tokens.push({ type: 'math', value: renderMath(match[6], false) })
+    else if (match[7] != null) tokens.push({ type: 'math', value: renderMath(match[7], true) })
+    else if (match[8] != null) tokens.push({ type: 'math', value: renderMath(match[8], false) })
     cursor = match.index + match[0].length
   }
   if (cursor < line.length) pushText(line.slice(cursor))
@@ -106,7 +132,14 @@ export function renderMarkdown(source: string, options: RenderMarkdownOptions = 
 }
 
 function renderBlocks(text: string, matcher: ConceptMatcher | null): string {
-  const lines = text.split('\n')
+  const displayMath: Array<{ placeholder: string; html: string }> = []
+  const withDisplayPlaceholders = text.replace(/(^|\n)[ \t]*(\$\$|\\\[)([\s\S]*?)(\$\$|\\\])[ \t]*(?=\n|$)/g, (match, prefix: string, opening: string, body: string, closing: string) => {
+    if ((opening === '$$' && closing !== '$$') || (opening === '\\[' && closing !== '\\]')) return match
+    const placeholder = `NEXUS_MATH_BLOCK_${displayMath.length}`
+    displayMath.push({ placeholder, html: `<div class="math-block">${renderMath(body, true)}</div>` })
+    return `${prefix}${placeholder}`
+  })
+  const lines = withDisplayPlaceholders.split('\n')
   const blocks: string[] = []
   let paragraph: string[] = []
   let list: { ordered: boolean; items: string[] } | null = null
@@ -128,7 +161,7 @@ function renderBlocks(text: string, matcher: ConceptMatcher | null): string {
   }
   const flushQuote = () => {
     if (quote.length) {
-      blocks.push(`<blockquote><p>${renderInline(tokenizeInline(quote.join('<br />'), matcher))}</p></blockquote>`)
+      blocks.push(`<blockquote><p>${renderInline(tokenizeInline(quote.join('\n'), matcher)).replace(/\n/g, '<br />')}</p></blockquote>`)
       quote = []
     }
   }
@@ -139,8 +172,7 @@ function renderBlocks(text: string, matcher: ConceptMatcher | null): string {
   }
 
   lines.forEach((rawLine) => {
-    const line = escapeHtml(rawLine)
-    const trimmed = line.trim()
+    const trimmed = rawLine.trim()
     if (!trimmed) {
       flushAll()
       return
@@ -148,6 +180,12 @@ function renderBlocks(text: string, matcher: ConceptMatcher | null): string {
     if (/^(?:---+|\*\*\*+|___+)\s*$/.test(trimmed)) {
       flushAll()
       blocks.push('<hr />')
+      return
+    }
+    const displayPlaceholder = displayMath.find((item) => item.placeholder === trimmed)
+    if (displayPlaceholder) {
+      flushAll()
+      blocks.push(displayPlaceholder.html)
       return
     }
     const heading = trimmed.match(/^(#{1,6})\s+(.*)$/)
@@ -161,7 +199,7 @@ function renderBlocks(text: string, matcher: ConceptMatcher | null): string {
     if (quoteMatch) {
       flushParagraph()
       flushList()
-      quote.push(escapeHtml(quoteMatch[1]))
+      quote.push(quoteMatch[1])
       return
     }
     const bullet = rawLine.match(/^\s*[-*+]\s+(.*)$/)

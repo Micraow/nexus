@@ -382,3 +382,36 @@ textarea { resize: vertical; }
 .nav-tree-row .nav-tree-node { flex: 1; min-width: 0; }
 .nav-tree-ask { width: 29px; height: 29px; align-self: center; display: grid; place-items: center; color: var(--muted); background: transparent; border-radius: 5px; }
 .nav-tree-ask:hover { color: var(--primary); background: var(--primary-soft); }
+
+.fullscreen-launcher { position: fixed; z-index: 26; right: 24px; bottom: 24px; box-shadow: var(--shadow-md); }
+.fullscreen-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; padding: clamp(12px, 3vw, 42px); background: color-mix(in srgb, var(--bg) 42%, rgba(10, 20, 28, .72)); backdrop-filter: blur(4px); }
+.fullscreen-viewer { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: 0 24px 80px rgba(14, 28, 40, .28); animation: modal-enter var(--motion) ease-out both; }
+.fullscreen-viewer-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 20px clamp(18px, 4vw, 44px); border-bottom: 1px solid var(--line); }
+.fullscreen-viewer-header h2 { margin: 4px 0 0; font-size: clamp(20px, 2.2vw, 30px); letter-spacing: 0; }
+.fullscreen-viewer-actions { display: flex; align-items: center; gap: 8px; }
+.fullscreen-conversation { min-height: 0; overflow: auto; padding: clamp(24px, 5vw, 64px) clamp(18px, 10vw, 150px) 80px; }
+.fullscreen-message { max-width: 920px; margin: 0 auto 42px; }
+.fullscreen-message-header { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; color: var(--muted); font-size: 12px; }
+.fullscreen-message-header strong { color: var(--text); font-size: 13px; }
+.fullscreen-message-header time { color: var(--faint); }
+.fullscreen-message .md-body { font-size: 16px; line-height: 1.78; }
+.fullscreen-message .md-body h1 { font-size: 25px; }.fullscreen-message .md-body h2 { font-size: 21px; }.fullscreen-message .md-body h3 { font-size: 18px; }.fullscreen-message .md-body h4, .fullscreen-message .md-body h5, .fullscreen-message .md-body h6 { font-size: 16px; }
+.fullscreen-message.user { padding: 18px 22px; background: var(--primary-soft); border-radius: 10px 10px 3px 10px; }
+.fullscreen-message.assistant { padding-right: clamp(0px, 5vw, 72px); }
+.fullscreen-message.system { padding: 18px 22px; background: var(--amber-soft); border-radius: 10px; }
+.fullscreen-message .md-body pre { font-size: 14px; }
+.fullscreen-message .katex-display { overflow-x: auto; overflow-y: hidden; padding: 8px 0; }
+.math-block { overflow-x: auto; padding: 6px 0; text-align: center; }
+.math-source { color: var(--danger); }
+.session-row-wrap { display: flex; align-items: stretch; gap: 4px; }
+.session-row-wrap .session-row { flex: 1; }
+.session-fullscreen-button { align-self: center; flex: 0 0 auto; }
+body.fullscreen-active { overflow: hidden; }
+
+@media (max-width: 720px) {
+  .fullscreen-launcher { right: 14px; bottom: 14px; }
+  .fullscreen-viewer-header { padding: 16px; }
+  .fullscreen-conversation { padding: 24px 14px 52px; }
+  .fullscreen-message { margin-bottom: 30px; }
+  .fullscreen-message .md-body { font-size: 15px; }
+}

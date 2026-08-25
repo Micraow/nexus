@@ -26,6 +26,9 @@ importers:
       js-yaml:
         specifier: ^4.1.0
         version: 4.3.1
+      katex:
+        specifier: ^0.18.4
+        version: 0.18.4
       lucide-vue-next:
         specifier: ^0.468.0
         version: 0.468.0(vue@3.5.41(typescript@5.6.3))
@@ -1044,6 +1047,10 @@ packages:
     resolution: {integrity: sha512-ovx/7NkTrnPuIV8sqk/GjUIIM1+iUQeqA3ye2VNpq9sVoiZsooObWlQy+OPWGI17GDaEoybuAGJm6U8yC077BA==}
     engines: {node: '>= 10'}
 
+  commander@8.3.0:
+    resolution: {integrity: sha512-OkTL9umf+He2DZkUq8f8J9of7yL6RJKI24dVITBmNfZBmri9zYZQrKkuXiKhyfPSu8tUhnVBB1iKXevvnlR4Ww==}
+    engines: {node: '>= 12'}
+
   cssstyle@4.1.0:
     resolution: {integrity: sha512-h66W1URKpBS5YMI/V8PyXvTMFT8SupJ1IzoIV8IeBC/ji8WVmrO8dGlTi+2dh6whmdk6BiKJLD/ZBkhWbcg6nA==}
     engines: {node: '>=18'}
@@ -1352,6 +1359,10 @@ packages:
     peerDependenciesMeta:
       canvas:
         optional: true
+
+  katex@0.18.4:
+    resolution: {integrity: sha512-IMPntbRLOU+eu88XDiFKqQ8Akhr9Tv7jDMXqPhjG9SI1JMA4DIgXk4x9k4skJz2NZJXBRbC+2pYBLj9olqcZow==}
+    hasBin: true
 
   loupe@3.2.1:
     resolution: {integrity: sha512-CdzqowRJCeLU72bHvWqwRBBlLcMEtIvGrlvef74kMnV2AolS9Y8xUv1I0U/MNAWMhBlKIoyuEgoJ0t/bbwHbLQ==}
@@ -2416,6 +2427,8 @@ snapshots:
 
   commander@7.0.0: {}
 
+  commander@8.3.0: {}
+
   cssstyle@4.1.0:
     dependencies:
       rrweb-cssom: 0.7.1
@@ -2822,6 +2835,10 @@ snapshots:
       - bufferutil
       - supports-color
       - utf-8-validate
+
+  katex@0.18.4:
+    dependencies:
+      commander: 8.3.0
 
   loupe@3.2.1: {}
 

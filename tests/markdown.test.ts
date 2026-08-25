@@ -52,4 +52,17 @@ describe('renderMarkdown', () => {
     expect(html).toContain('<code>RDMA</code>')
     expect(html).not.toContain('data-concept-id')
   })
+
+  it('renders inline and display mathematical expressions with KaTeX', () => {
+    const html = renderMarkdown('能量关系 $E=mc^2$。\n\n$$\\int_0^1 x^2 dx = \\frac{1}{3}$$')
+    expect(html).toContain('katex')
+    expect(html).toContain('math-block')
+    expect(html).not.toContain('$E=mc^2$')
+  })
+
+  it('keeps mathematical-looking text inside fenced code untouched', () => {
+    const html = renderMarkdown('```tex\n$E=mc^2$\n```')
+    expect(html).toContain('$E=mc^2$')
+    expect(html).not.toContain('katex')
+  })
 })

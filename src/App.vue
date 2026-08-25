@@ -22,6 +22,7 @@ import {
   Link2,
   ListChecks,
   LoaderCircle,
+  Maximize2,
   Menu,
   MessageSquare,
   MessageSquarePlus,
@@ -51,7 +52,7 @@ import { renderMarkdown } from '@/services/markdown'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import { invokeTauri, isTauriRuntime } from '@/services/tauri'
 import { useWorkspaceStore } from '@/stores/workspace'
-import type { Concept, GraphNodeType, KnowledgeUnit, LLMTask, MaintenanceSuggestion, NavTreeNode, Session } from '@/types/domain'
+import type { Concept, GraphNodeType, KnowledgeUnit, LLMTask, MaintenanceSuggestion, Message, NavTreeNode, Session } from '@/types/domain'
 
 type ViewName = 'overview' | 'graph' | 'sessions' | 'concepts' | 'tasks' | 'settings'
 
@@ -101,6 +102,8 @@ const graphLayoutNonce = ref(0)
 const selectedNavNodeId = ref<string | null>(null)
 const draggedContextId = ref<string | null>(null)
 const helpOpen = ref(false)
+type FullscreenTarget = { kind: 'session'; sessionId: string } | { kind: 'message'; messageId: string }
+const fullscreenTarget = ref<FullscreenTarget | null>(null)
 const storageInfo = ref<{ dataDir: string; databasePath: string; configPath: string } | null>(null)
 const databasePathDraft = ref('')
 const visibleSessionCount = ref(40)
@@ -142,6 +145,20 @@ const selectedConcept = computed(() => store.concepts.find((concept) => concept.
 const selectedUnit = computed(() => store.units.find((unit) => unit.id === selectedUnitId.value) ?? null)
 const selectedMessage = computed(() => store.messages.find((message) => message.id === selectedMessageId.value) ?? null)
 const selectedTask = computed(() => store.tasks.find((task) => task.id === selectedTaskId.value) ?? null)
+const fullscreenSession = computed(() => {
+  const target = fullscreenTarget.value
+  return target?.kind === 'session' ? store.sessions.find((session) => session.id === target.sessionId) ?? null : null
+})
+const fullscreenMessages = computed<Message[]>(() => {
+  const target = fullscreenTarget.value
+  if (!target) return []
+  if (target.kind === 'message') {
+    const message = store.messages.find((item) => item.id === target.messageId)
+    return message ? [message] : []
+  }
+  return store.messages.filter((message) => message.sessionId === target.sessionId).sort((left, right) => left.orderInSession - right.orderInSession)
+})
+const fullscreenTitle = computed(() => fullscreenTarget.value?.kind === 'message' ? `消息 #${(fullscreenMessages.value[0]?.orderInSession ?? 0) + 1}` : fullscreenSession.value?.title ?? '会话详情')
 const searchResults = computed(() => store.search(searchQuery.value))
 const maintenanceSuggestions = computed(() => {
   if (!selectedTask.value || selectedTask.value.type !== 'maintenance' || !selectedTask.value.parsedResult) return [] as Array<MaintenanceSuggestion & { applied?: boolean }>
@@ -262,6 +279,18 @@ function addBoxSelectedUnit(unitId: string): void {
 function openMessage(messageId: string): void {  selectedMessageId.value = messageId
   selectedUnitId.value = store.messages.find((message) => message.id === messageId)?.unitId ?? null
   isDetailOpen.value = true
+}
+
+function openFullscreenSession(sessionId: string): void {
+  fullscreenTarget.value = { kind: 'session', sessionId }
+}
+
+function openFullscreenMessage(messageId: string): void {
+  fullscreenTarget.value = { kind: 'message', messageId }
+}
+
+function closeFullscreen(): void {
+  fullscreenTarget.value = null
 }
 
 function selectSession(sessionId: string): void {
@@ -869,6 +898,10 @@ watch(() => store.config.ui.theme, (theme) => {
   document.documentElement.dataset.theme = theme
 }, { immediate: true })
 
+watch(fullscreenTarget, (target) => {
+  document.body.classList.toggle('fullscreen-active', Boolean(target))
+})
+
 onMounted(async () => {
   await store.init()
   if (!store.selectedSessionId && store.activeSessions[0]) store.setSelectedSession(store.activeSessions[0].id)
@@ -1027,6 +1060,10 @@ onMounted(async () => {
       </div>
     </section>
 
+    <button v-if="isDetailOpen && selectedMessage" class="icon-button fullscreen-launcher" aria-label="全屏查看消息" title="全屏查看消息" @click="openFullscreenMessage(selectedMessage.id)"><Maximize2 :size="18" /></button>
+    <button v-else-if="isDetailOpen && selectedUnit" class="icon-button fullscreen-launcher" aria-label="全屏查看所属会话" title="全屏查看所属会话" @click="openFullscreenSession(selectedUnit.sessionId)"><Maximize2 :size="18" /></button>
+    <button v-else-if="activeView === 'sessions' && selectedSession" class="icon-button fullscreen-launcher" aria-label="全屏查看会话" title="全屏查看会话" @click="openFullscreenSession(selectedSession.id)"><Maximize2 :size="18" /></button>
+
     <aside v-if="isDetailOpen && (selectedConcept || selectedUnit || selectedMessage)" class="detail-drawer" :class="{ open: isDetailOpen }">
       <div class="drawer-header"><div><span class="eyebrow">DETAIL</span><h3>{{ selectedConcept?.name || selectedUnit?.title || '消息详情' }}</h3></div><button class="icon-button" aria-label="关闭详情" title="关闭详情" @click="isDetailOpen = false"><X :size="17" /></button></div>
       <div v-if="selectedUnit" class="drawer-content"><div class="drawer-tags"><span class="soft-tag">知识单元</span><span class="soft-tag">{{ sessionForUnit(selectedUnit)?.title }}</span></div><label class="field-label" for="unit-title">标题 <small>≤30 字</small></label><input id="unit-title" v-model="unitDraftTitle" class="drawer-input" maxlength="30" /><label class="field-label" for="unit-summary">摘要 <small>≤120 字</small></label><textarea id="unit-summary" v-model="unitDraftSummary" class="drawer-textarea" maxlength="120" /><button class="button primary-button full-button" @click="saveUnit"><Check :size="15" />保存单元</button><div class="drawer-section"><div class="subsection-title"><strong>关联知识主题</strong><span>{{ store.unitConceptNames(selectedUnit.id).length }}</span></div><div class="chip-list"><button v-for="conceptId in store.unitConcepts.filter((link) => link.unitId === selectedUnit?.id).map((link) => link.conceptId)" :key="conceptId" class="concept-chip" @click="openConcept(conceptId)">{{ store.concepts.find((concept) => concept.id === conceptId)?.name }}<X :size="12" @click.stop="removeConceptFromUnit(selectedUnit!.id, conceptId)" /></button><span v-if="!store.unitConceptNames(selectedUnit.id).length" class="muted">暂无关联</span></div><div class="add-inline"><input v-model="newUnitConcept" placeholder="添加知识主题" @keyup.enter="addConceptToSelectedUnit" /><button class="icon-button" aria-label="添加知识主题" title="添加知识主题" @click="addConceptToSelectedUnit"><Plus :size="15" /></button></div></div><div class="drawer-section"><div class="subsection-title"><strong>包含消息</strong><span>{{ store.unitMessages(selectedUnit.id).length }}</span></div><div class="message-stack"><article v-for="message in store.unitMessages(selectedUnit.id)" :key="message.id" class="message-card" :class="message.role"><span>{{ message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : '系统' }}</span><div class="md-body" v-html="renderedMessageContent(message.content)" @click="handleRenderedClick" @keydown.enter.prevent="handleRenderedClick" /></article></div></div><button class="text-button" @click="selectedUnitId = null; setView('sessions')"><ArrowRight :size="14" />打开所属会话</button></div>
@@ -1035,6 +1072,19 @@ onMounted(async () => {
     </aside>
 
     <aside v-if="store.selectedUnits.length" class="context-drawer"><div class="context-header"><div><span class="eyebrow">CONTEXT BUILDER</span><h3>已选上下文</h3></div><button class="icon-button" aria-label="清空上下文" title="清空上下文" @click="store.clearContext"><X :size="16" /></button></div><div class="context-count"><strong>{{ store.selectedUnits.length }}</strong><span>个知识单元 · 可跨会话</span></div><div class="context-list"><div v-for="(unit, index) in store.selectedUnits" :key="unit.id" class="context-item" draggable="true" @dragstart="startContextDrag(unit.id)" @dragover.prevent @drop="dropContext(unit.id)"><span class="context-index">{{ index + 1 }}</span><div><strong>{{ unit.title || '待命名知识单元' }}</strong><span>{{ sessionForUnit(unit)?.title }}</span></div><button class="icon-button" aria-label="移除上下文" title="移除上下文" @click="store.selectContext(unit.id, false)"><X :size="13" /></button></div></div><label class="toggle-row context-toggle"><span><strong>附带完整原文</strong><small>默认只注入标题、摘要和知识主题</small></span><input v-model="contextIncludeFull" type="checkbox" /></label><div class="context-budget" :class="{ over: contextTokenEstimate > store.config.llm.tokenBudget }"><span>预计输入</span><strong>{{ contextTokenEstimate.toLocaleString() }} tokens</strong><small>预算 {{ store.config.llm.tokenBudget.toLocaleString() }} tokens{{ contextTokenEstimate > store.config.llm.tokenBudget ? ' · 已超出' : '' }}</small></div><button class="button primary-button full-button" @click="openComposer({ sourceUnitIds: store.selectedContextIds })"><MessageSquare :size="15" />用这些内容发起新对话</button><button class="text-button full-button" @click="createContextPrompt"><Clipboard :size="14" />复制上下文文本</button><span class="context-hint">{{ contextIncludeFull ? '完整原文会增加输入长度，请确认模型预算。' : '摘要模式适合跨会话整理。' }}</span></aside>
+
+    <div v-if="fullscreenTarget" class="fullscreen-backdrop" role="presentation" tabindex="-1" @click.self="closeFullscreen" @keydown.esc="closeFullscreen">
+      <section class="fullscreen-viewer" role="dialog" aria-modal="true" aria-labelledby="fullscreen-title">
+        <header class="fullscreen-viewer-header"><div><span class="eyebrow">{{ fullscreenTarget.kind === 'message' ? 'MESSAGE VIEWER' : 'SESSION VIEWER' }}</span><h2 id="fullscreen-title">{{ fullscreenTitle }}</h2><span class="detail-subtitle">{{ fullscreenMessages.length }} 条消息 · 本地内容</span></div><div class="fullscreen-viewer-actions"><button class="icon-button" aria-label="关闭全屏查看" title="关闭" @click="closeFullscreen"><X :size="18" /></button></div></header>
+        <div class="fullscreen-conversation">
+          <article v-for="message in fullscreenMessages" :key="message.id" class="fullscreen-message" :class="message.role">
+            <div class="fullscreen-message-header"><strong>{{ message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : '系统' }}</strong><span>消息 #{{ message.orderInSession + 1 }}</span><time v-if="message.timestamp">{{ new Date(message.timestamp).toLocaleString('zh-CN') }}</time></div>
+            <div class="md-body" v-html="renderedMessageContent(message.content)" @click="handleRenderedClick" @keydown.enter.prevent="handleRenderedClick" />
+          </article>
+          <div v-if="!fullscreenMessages.length" class="empty-state"><MessageSquare :size="30" /><strong>没有可显示的消息</strong><span>这条内容可能已被删除或尚未加载。</span></div>
+        </div>
+      </section>
+    </div>
 
     <div v-if="composerOpen" class="modal-backdrop" role="presentation" @click.self="composerOpen = false">
       <section class="composer-modal" role="dialog" aria-modal="true" aria-labelledby="composer-title">
