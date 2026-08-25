@@ -3,6 +3,8 @@ import { invokeTauri, isTauriRuntime } from '@/services/tauri'
 import wasmUrl from 'sql.js/dist/sql-wasm.wasm?url'
 
 const STORAGE_KEY = 'nexus:sqlite:v1'
+const BROWSER_STORAGE_DB = 'nexus:storage'
+const BROWSER_STORAGE_STORE = 'kv'
 const BACKUP_STORAGE_PREFIX = 'nexus:sqlite:backup:'
 const CURRENT_SCHEMA_VERSION = 3
 
@@ -240,6 +242,63 @@ export class SqliteStore {
   private lastIntegrity: DatabaseIntegrityReport | null = null
   private pathOverride: string | null = null
 
+  private openBrowserStorage(): Promise<IDBDatabase> {
+    return new Promise((resolve, reject) => {
+      if (typeof indexedDB === 'undefined') {
+        reject(new Error('IndexedDB 不可用'))
+        return
+      }
+      const request = indexedDB.open(BROWSER_STORAGE_DB, 1)
+      request.onupgradeneeded = () => {
+        if (!request.result.objectStoreNames.contains(BROWSER_STORAGE_STORE)) request.result.createObjectStore(BROWSER_STORAGE_STORE)
+      }
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error ?? new Error('打开浏览器存储失败'))
+    })
+  }
+
+  private async readBrowserStorage(): Promise<string | null> {
+    try {
+      const database = await this.openBrowserStorage()
+      const value = await new Promise<unknown>((resolve, reject) => {
+        const request = database.transaction(BROWSER_STORAGE_STORE, 'readonly').objectStore(BROWSER_STORAGE_STORE).get(STORAGE_KEY)
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => reject(request.error)
+      })
+      database.close()
+      if (typeof value === 'string' && value) return value
+    } catch (error) {
+      console.warn('读取 IndexedDB 数据库失败，将尝试兼容存储', error)
+    }
+    try { return typeof localStorage === 'undefined' ? null : localStorage.getItem(STORAGE_KEY) } catch { return null }
+  }
+
+  private async writeBrowserStorage(encoded: string): Promise<void> {
+    const database = await this.openBrowserStorage()
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(BROWSER_STORAGE_STORE, 'readwrite')
+      transaction.objectStore(BROWSER_STORAGE_STORE).put(encoded, STORAGE_KEY)
+      transaction.oncomplete = () => resolve()
+      transaction.onerror = () => reject(transaction.error ?? new Error('写入浏览器存储失败'))
+      transaction.onabort = () => reject(transaction.error ?? new Error('浏览器存储事务被中止'))
+    })
+    database.close()
+  }
+
+  private async removeBrowserStorage(): Promise<void> {
+    try {
+      const database = await this.openBrowserStorage()
+      await new Promise<void>((resolve, reject) => {
+        const request = database.transaction(BROWSER_STORAGE_STORE, 'readwrite').objectStore(BROWSER_STORAGE_STORE).delete(STORAGE_KEY)
+        request.onsuccess = () => resolve()
+        request.onerror = () => reject(request.error)
+      })
+      database.close()
+    } catch (error) {
+      console.warn('清理 IndexedDB 数据库失败', error)
+    }
+  }
+
   /** Point the store at a user-configured database location (Tauri only). */
   setDatabasePathOverride(value: string | null): void {
     this.pathOverride = value?.trim() ? value : null
@@ -258,7 +317,7 @@ export class SqliteStore {
     this.sqlJs = await initSqlJs({ locateFile: () => wasmUrl })
     const stored = isTauriRuntime()
       ? await invokeTauri<string | null>('read_database', this.databaseArgs())
-      : typeof localStorage === 'undefined' ? null : localStorage.getItem(STORAGE_KEY)
+      : await this.readBrowserStorage()
     this.db = stored ? new this.sqlJs.Database(decode(stored)) : new this.sqlJs.Database()
     this.db.run('PRAGMA foreign_keys = ON;')
     this.db.run(schema)
@@ -302,7 +361,7 @@ export class SqliteStore {
       database.run('COMMIT')
       this.persist()
     } catch (error) {
-      database.run('ROLLBACK')
+      try { database.run('ROLLBACK') } catch (rollbackError) { console.warn('回滚迁移事务失败，保留原始错误', rollbackError) }
       throw error
     }
   }
@@ -362,7 +421,7 @@ export class SqliteStore {
       db.run('COMMIT')
       this.persist()
     } catch (error) {
-      db.run('ROLLBACK')
+      try { db.run('ROLLBACK') } catch (rollbackError) { console.warn('回滚事务失败，保留原始错误', rollbackError) }
       throw error
     }
   }
@@ -376,11 +435,26 @@ export class SqliteStore {
         .catch((error) => console.error('保存 nexus.db 失败', error))
       return
     }
-    if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_KEY, encoded)
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_KEY, encoded)
+    } catch (error) {
+      // Large real-world imports can exceed Web Storage's small quota. The
+      // IndexedDB copy is the durable browser backend in that case.
+      try { localStorage.removeItem(STORAGE_KEY) } catch { /* ignore cleanup failure */ }
+      console.warn('localStorage 配额不足，改用 IndexedDB 保存知识库', error)
+    }
+    if (typeof indexedDB !== 'undefined') {
+      this.persistQueue = this.persistQueue
+        .then(() => this.writeBrowserStorage(encoded))
+        .catch((error) => console.error('保存 IndexedDB 数据库失败', error))
+    }
   }
 
   clear(): void {
     if (typeof localStorage !== 'undefined') localStorage.removeItem(STORAGE_KEY)
+    this.persistQueue = this.persistQueue
+      .then(() => this.removeBrowserStorage())
+      .catch((error) => console.error('清理浏览器数据库失败', error))
     this.db = null
   }
 
@@ -422,7 +496,7 @@ export class SqliteStore {
       database.run('COMMIT')
       this.persist()
     } catch (error) {
-      database.run('ROLLBACK')
+      try { database.run('ROLLBACK') } catch (rollbackError) { console.warn('回滚搜索索引事务失败，保留原始错误', rollbackError) }
       throw error
     }
   }
@@ -461,7 +535,8 @@ export class SqliteStore {
       if (typeof localStorage === 'undefined') throw new Error('当前运行环境不支持数据库恢复')
       const encoded = localStorage.getItem(reference)
       if (!encoded) throw new Error('找不到数据库备份')
-      localStorage.setItem(STORAGE_KEY, encoded)
+      try { localStorage.setItem(STORAGE_KEY, encoded) } catch { /* IndexedDB remains the durable copy */ }
+      if (typeof indexedDB !== 'undefined') await this.writeBrowserStorage(encoded)
     }
     if (this.db) this.db.close()
     this.db = null
