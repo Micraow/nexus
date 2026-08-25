@@ -6,6 +6,8 @@ import { buildGraph, graphStats } from '@/services/graph'
 import { buildSearchDocuments, searchKnowledge } from '@/services/search'
 import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildRepairPrompt, buildSegmentationPrompt, buildSummaryPrompt, buildTitlePrompt, PROMPT_VERSION, renderQuickPhrase } from '@/services/prompts'
 import { importPayloadSchema, parseImportPayload, validateSegmentationResult, validateUnitText } from '@/services/validation'
+import { combineSegmentationChunks, splitMessageChunks } from '@/utils/chunks'
+import { wouldCreateHierarchyCycle } from '@/utils/graph-rules'
 import { createId, isoNow, normalizeText, parseIsoTimestamp, stableHash } from '@/utils/id'
 import type {
   AppConfig,
@@ -36,13 +38,6 @@ import type { GraphWorkerResponse } from '@/workers/graph.worker'
 
 type Row = Record<string, unknown>
 
-interface MessageChunk {
-  messages: Message[]
-  start: number
-  end: number
-  expectedIndices: number[]
-}
-
 const DEFAULT_CONFIG: AppConfig = {
   llm: { mode: null, defaultProvider: null, concurrency: 2, tokenBudget: 8000, providers: [], taskOverrides: {} },
   prompts: { overrideDir: '' },
@@ -57,35 +52,6 @@ function text(value: unknown): string {
 function number(value: unknown, fallback = 0): number {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : fallback
-}
-
-function estimateTokens(messages: Message[]): number {
-  return Math.ceil(messages.reduce((total, message) => total + message.content.length, 0) / 4)
-}
-
-function splitMessageChunks(messages: Message[], tokenBudget: number): MessageChunk[] {
-  const budget = Math.max(1000, tokenBudget)
-  if (estimateTokens(messages) <= budget) {
-    return [{ messages, start: 0, end: messages.length, expectedIndices: messages.map((message) => message.orderInSession) }]
-  }
-  const chunks: MessageChunk[] = []
-  let start = 0
-  while (start < messages.length) {
-    let end = start
-    let tokens = 0
-    while (end < messages.length) {
-      const nextTokens = Math.max(1, Math.ceil(messages[end].content.length / 4))
-      if (end > start && tokens + nextTokens > budget) break
-      tokens += nextTokens
-      end += 1
-    }
-    if (end === start) end += 1
-    const chunkMessages = messages.slice(start, end)
-    chunks.push({ messages: chunkMessages, start, end, expectedIndices: chunkMessages.map((message) => message.orderInSession) })
-    if (end >= messages.length) break
-    start = Math.max(start + 1, end - 2)
-  }
-  return chunks
 }
 
 function bool(value: unknown): boolean {
@@ -764,28 +730,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     })
   }
 
-  function wouldCreateCycle(parentId: string, childId: string): boolean {
-    if (parentId === childId) return true
-    const children = new Map<string, string[]>()
-    relations.value.filter((relation) => relation.relationType === 'hierarchy' && relation.status !== 'rejected').forEach((relation) => {
-      const current = children.get(relation.parentConceptId) ?? []
-      current.push(relation.childConceptId)
-      children.set(relation.parentConceptId, current)
-    })
-    const stack = [childId]
-    const visited = new Set<string>()
-    while (stack.length) {
-      const current = stack.pop() as string
-      if (current === parentId) return true
-      if (visited.has(current)) continue
-      visited.add(current)
-      stack.push(...(children.get(current) ?? []))
-    }
-    return false
-  }
-
   function createRelation(parentId: string, childId: string, relationType: ConceptRelation['relationType'], status: ConceptRelation['status'] = 'confirmed'): void {
-    if (relationType === 'hierarchy' && wouldCreateCycle(parentId, childId)) throw new Error('这个父子关系会形成环，无法建立')
+    if (relationType === 'hierarchy' && wouldCreateHierarchyCycle(parentId, childId, relations.value)) throw new Error('这个父子关系会形成环，无法建立')
     const before = captureConceptOperationSnapshot()
     mutate(() => {
       const now = isoNow()
@@ -960,7 +906,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (suggestion.type === 'relation') {
         if (!concepts.value.some((concept) => concept.id === suggestion.parent_concept_id) || !concepts.value.some((concept) => concept.id === suggestion.child_concept_id)) errors.push(`suggestions.${index} 的关系端点不存在`)
         if (suggestion.relation_type !== 'hierarchy' && suggestion.relation_type !== 'related') errors.push(`suggestions.${index}.relation_type 无效`)
-        if (suggestion.relation_type === 'hierarchy' && suggestion.parent_concept_id && suggestion.child_concept_id && wouldCreateCycle(suggestion.parent_concept_id, suggestion.child_concept_id)) errors.push(`suggestions.${index} 会形成父子关系环`)
+        if (suggestion.relation_type === 'hierarchy' && suggestion.parent_concept_id && suggestion.child_concept_id && wouldCreateHierarchyCycle(suggestion.parent_concept_id, suggestion.child_concept_id, relations.value)) errors.push(`suggestions.${index} 会形成父子关系环`)
       }
       if (suggestion.type === 'unit_relink') {
         if (!units.value.some((unit) => unit.id === suggestion.unit_id)) errors.push(`suggestions.${index} 的知识单元不存在`)
@@ -1242,7 +1188,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       while (!queuePaused.value) {
         const pending = tasks.value.filter((task) => task.status === 'pending' && task.mode === 'api')
         if (!pending.length) break
-        const batch = pending.slice(0, Math.max(1, Math.min(4, config.value.llm.concurrency)))
+        // Keep at most one in-flight task per owning session so dependent
+        // tasks of the same session always run in order.
+        const batch: LLMTask[] = []
+        const busySessions = new Set<string>()
+        const limit = Math.max(1, Math.min(4, config.value.llm.concurrency))
+        for (const task of pending) {
+          const owner = ownerSessionId(task)
+          if (owner && busySessions.has(owner)) continue
+          if (owner) busySessions.add(owner)
+          batch.push(task)
+          if (batch.length >= limit) break
+        }
         queueActiveCount.value += batch.length
         await Promise.all(batch.map((task) => executeTask(task.id)))
         queueActiveCount.value = Math.max(0, queueActiveCount.value - batch.length)
@@ -1251,6 +1208,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       queueActiveCount.value = 0
       queueRunning.value = false
     }
+  }
+
+  function ownerSessionId(task: LLMTask): string | null {
+    const targetId = task.inputRevision.split(':')[0]
+    const ownerUnit = units.value.find((item) => item.id === targetId)
+    return ownerUnit?.sessionId ?? targetId ?? null
   }
 
   function startQueue(): void {
@@ -1273,44 +1236,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       return { sessionId: parts[0], revision: parts[1], start: Number(parts[3]), end: Number(parts[4]), total: Number(parts[5]) }
     }
     return { sessionId: parts[0], revision: parts[1], start: 0, end: Number.MAX_SAFE_INTEGER, total: 1 }
-  }
-
-  function combineSegmentationChunks(results: Array<{ units: Array<{ message_indices: number[]; title_hint?: string }>; unassigned_message_indices: number[] }>, messageCount: number): { data?: { units: Array<{ message_indices: number[]; title_hint?: string }>; unassigned_message_indices: number[] }; errors: string[] } {
-    const units: Array<{ message_indices: number[]; title_hint?: string }> = []
-    const assignments = new Map<number, number>()
-    const unassigned = new Set<number>()
-    const errors: string[] = []
-    results.forEach((result) => {
-      result.units.forEach((unit) => {
-        const fresh: number[] = []
-        unit.message_indices.forEach((index) => {
-          if (unassigned.has(index)) {
-            errors.push(`消息 ${index} 同时被标记为未分配和知识单元`)
-            return
-          }
-          const existingUnitIndex = assignments.get(index)
-          if (existingUnitIndex != null) {
-            const previous = units[existingUnitIndex].title_hint
-            if (previous && unit.title_hint && previous !== unit.title_hint) errors.push(`重叠分块对消息 ${index} 给出了冲突主题`)
-            return
-          }
-          fresh.push(index)
-        })
-        if (fresh.length) {
-          const unitIndex = units.length
-          units.push({ message_indices: fresh, title_hint: unit.title_hint })
-          fresh.forEach((index) => assignments.set(index, unitIndex))
-        }
-      })
-      result.unassigned_message_indices.forEach((index) => {
-        if (assignments.has(index)) errors.push(`消息 ${index} 同时被分配到知识单元和未分配列表`)
-        unassigned.add(index)
-      })
-    })
-    for (let index = 0; index < messageCount; index += 1) {
-      if (!assignments.has(index) && !unassigned.has(index)) errors.push(`消息 ${index} 在分块合并后仍未覆盖`)
-    }
-    return errors.length ? { errors } : { data: { units, unassigned_message_indices: [...unassigned].sort((a, b) => a - b) }, errors: [] }
   }
 
   function writeSegmentation(session: Session, sessionMessages: Message[], segmentation: { units: Array<{ message_indices: number[]; title_hint?: string }>; unassigned_message_indices: number[] }, segmentationTaskIds: string[], task: LLMTask, responseText: string): void {
