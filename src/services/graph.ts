@@ -104,12 +104,16 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
     }
   }
 
-  if (input.showMessages || input.showRetainedSessions) {
+  if (input.showMessages || input.showRetainedSessions || expandedConceptIds.size) {
     const sessionsById = new Map((input.sessions ?? []).map((session) => [session.id, session]))
+    const expandedUnitIds = new Set<string>()
+    conceptsByUnit.forEach((conceptIds, unitId) => {
+      if ([...conceptIds].some((conceptId) => expandedConceptIds.has(conceptId))) expandedUnitIds.add(unitId)
+    })
     const visibleMessages = input.messages.filter((message) => {
       const session = sessionsById.get(message.sessionId)
       const retained = Boolean(input.showRetainedSessions && session?.knowledgeRetainInGraph && session.knowledgeKind !== 'knowledge')
-      return input.showMessages || retained
+      return input.showMessages || retained || (message.unitId != null && expandedUnitIds.has(message.unitId))
     })
     visibleMessages.forEach((message) => {
         const messageNodeId = `message:${message.id}`

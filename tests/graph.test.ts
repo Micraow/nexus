@@ -88,4 +88,18 @@ describe('derived graph', () => {
     })
     expect(snapshot.edges.filter((edge) => edge.type === 'related')).toHaveLength(1)
   })
+
+  it('expands a selected concept through its unit to assigned messages', () => {
+    const snapshot = buildGraph({
+      concepts: [{ id: 'c1', name: '主题', normalizedName: '主题', notes: '', status: 'active', createdAt: now, updatedAt: now }],
+      units: [{ id: 'u1', sessionId: 's', title: '单元', summary: '', orderInSession: 0, status: 'ready', revision: 1, createdAt: now, updatedAt: now }],
+      messages: [{ id: 'm1', sessionId: 's', unitId: 'u1', role: 'assistant', content: '回答', orderInSession: 0 }],
+      unitConcepts: [{ unitId: 'u1', conceptId: 'c1', source: 'llm', createdAt: now }],
+      relations: [],
+      revision: 1,
+      expandedConceptIds: ['c1'],
+    })
+    expect(snapshot.nodes.some((node) => node.id === 'unit:u1')).toBe(true)
+    expect(snapshot.nodes.some((node) => node.id === 'message:m1')).toBe(true)
+  })
 })

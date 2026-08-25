@@ -24,6 +24,7 @@ const emit = defineEmits<{
 
 const host = ref<HTMLElement | null>(null)
 const svg = ref<SVGSVGElement | null>(null)
+const brushSelectionCount = ref(0)
 let simulation: d3.Simulation<GraphNode & d3.SimulationNodeDatum, undefined> | null = null
 let resizeObserver: ResizeObserver | null = null
 // 当前视图变换的实时值；重渲染时用它恢复，避免快照变化把缩放重置回持久化视口。
@@ -233,10 +234,15 @@ function render(): void {
     const transform = d3.zoomTransform(element)
     const topLeft = transform.invert([Math.min(x0, x1), Math.min(y0, y1)])
     const bottomRight = transform.invert([Math.max(x0, x1), Math.max(y0, y1)])
+    let selectedCount = 0
     nodes.forEach((node) => {
       if (node.type !== 'unit' || node.x == null || node.y == null) return
-      if (node.x >= topLeft[0] && node.x <= bottomRight[0] && node.y >= topLeft[1] && node.y <= bottomRight[1]) emit('box-select-unit', node.refId)
+      if (node.x >= topLeft[0] && node.x <= bottomRight[0] && node.y >= topLeft[1] && node.y <= bottomRight[1]) {
+        selectedCount += 1
+        emit('box-select-unit', node.refId)
+      }
     })
+    brushSelectionCount.value = selectedCount
   }
   root.on('pointerdown.graph-brush', (event: PointerEvent) => {
     if (!event.shiftKey || event.button !== 0) return
@@ -281,6 +287,7 @@ onBeforeUnmount(() => {
 <template>
   <div ref="host" class="graph-canvas">
     <svg ref="svg" role="img" />
+    <div v-if="brushSelectionCount" class="graph-selection-feedback" role="status">已选 {{ brushSelectionCount }} 个知识单元</div>
     <div class="graph-scale-hint">
       <span class="legend-dot concept-dot" /> 知识主题
       <span class="legend-dot unit-dot" /> 知识单元
