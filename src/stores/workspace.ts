@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 import { db } from '@/services/db'
 import { parseConfigText, readConfigText, writeConfig } from '@/services/config'
 import { buildGraph, graphStats } from '@/services/graph'
+import { buildSearchDocuments, searchKnowledge } from '@/services/search'
 import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildRepairPrompt, buildSegmentationPrompt, buildSummaryPrompt, buildTitlePrompt, PROMPT_VERSION, renderQuickPhrase } from '@/services/prompts'
 import { importPayloadSchema, parseImportPayload, validateSegmentationResult, validateUnitText } from '@/services/validation'
 import { createId, isoNow, normalizeText, parseIsoTimestamp, stableHash } from '@/utils/id'
@@ -308,6 +309,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     graphViewport.value = viewport ? { x: number(viewport.x), y: number(viewport.y), scale: number(viewport.scale, 1), layoutVersion: number(viewport.layout_version, 1) } : { x: 0, y: 0, scale: 1, layoutVersion: 1 }
     graphRevision.value = Number(db.getMeta('graph_revision') ?? '1')
     graphCache.clear()
+    db.rebuildSearchDocuments(buildSearchDocuments({
+      concepts: concepts.value,
+      aliases: aliases.value,
+      units: units.value.filter((unit) => activeSessionIds.value.has(unit.sessionId)),
+      messages: messages.value.filter((message) => activeSessionIds.value.has(message.sessionId)),
+    }))
   }
 
   async function init(): Promise<void> {
@@ -420,10 +427,25 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const requiredArrays = ['sessions', 'messages', 'units', 'concepts', 'aliases', 'unit_concepts', 'relations', 'nav_nodes', 'nav_node_units', 'context_references', 'tasks', 'manual_edges']
     requiredArrays.forEach((key) => { if (!Array.isArray(parsed[key])) throw new Error(`备份缺少数组字段：${key}`) })
     mutate(() => {
-      ;['context_references', 'nav_tree_node_units', 'nav_tree_nodes', 'manual_graph_edges', 'unit_concepts', 'concept_aliases', 'concept_relations', 'knowledge_units', 'messages', 'llm_tasks', 'sessions', 'concepts'].forEach((table) => db.run(`DELETE FROM ${table}`))
-      db.run('DELETE FROM graph_layout')
-      db.run('DELETE FROM graph_viewport')
-      db.run('DELETE FROM operation_log')
+      const resetStatements = [
+        'DELETE FROM context_references',
+        'DELETE FROM nav_tree_node_units',
+        'DELETE FROM nav_tree_nodes',
+        'DELETE FROM manual_graph_edges',
+        'DELETE FROM unit_concepts',
+        'DELETE FROM concept_aliases',
+        'DELETE FROM concept_relations',
+        'DELETE FROM knowledge_units',
+        'DELETE FROM messages',
+        'DELETE FROM llm_tasks',
+        'DELETE FROM sessions',
+        'DELETE FROM concepts',
+        'DELETE FROM graph_layout',
+        'DELETE FROM graph_viewport',
+        'DELETE FROM operation_log',
+        'DELETE FROM search_documents',
+      ] as const
+      resetStatements.forEach((statement) => db.run(statement))
       const records = parsed as any
       records.sessions.forEach((item: Session) => db.run('INSERT INTO sessions(id, source, platform, model, external_session_id, title, created_at, updated_at, message_count, unit_count, revision, local_only, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.source, item.platform, item.model ?? null, item.externalSessionId ?? null, item.title, item.createdAt, item.updatedAt, item.messageCount, item.unitCount, item.revision, item.localOnly ? 1 : 0, item.deletedAt ?? null]))
       records.concepts.forEach((item: Concept) => db.run('INSERT INTO concepts(id, name, normalized_name, notes, status, merged_into_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.name, item.normalizedName, item.notes, item.status, item.mergedIntoId ?? null, item.createdAt, item.updatedAt, item.deletedAt ?? null]))
@@ -971,7 +993,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       }
       mutate(() => {
         const now = isoNow()
-        db.run(`UPDATE knowledge_units SET ${field} = ?, status = 'ready', updated_at = ? WHERE id = ?`, [String(value).trim(), now, targetId])
+        if (field === 'title') db.run("UPDATE knowledge_units SET title = ?, status = 'ready', updated_at = ? WHERE id = ?", [String(value).trim(), now, targetId])
+        else db.run("UPDATE knowledge_units SET summary = ?, status = 'ready', updated_at = ? WHERE id = ?", [String(value).trim(), now, targetId])
         db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = ?, validation_errors = NULL, updated_at = ? WHERE id = ?', ['success', responseText, JSON.stringify(data), now, taskId])
       })
       return { ok: true, errors: [] }
@@ -1416,12 +1439,19 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   function search(query: string): { concepts: Concept[]; units: KnowledgeUnit[]; messages: Message[] } {
-    const normalized = normalizeText(query)
-    if (!normalized) return { concepts: [], units: [], messages: [] }
-    const conceptMatches = activeConcepts.value.filter((concept) => normalizeText(concept.name).includes(normalized) || aliases.value.some((alias) => alias.conceptId === concept.id && normalizeText(alias.alias).includes(normalized)))
-    const unitMatches = units.value.filter((unit) => activeSessionIds.value.has(unit.sessionId) && normalizeText(`${unit.title ?? ''} ${unit.summary ?? ''}`).includes(normalized))
-    const messageMatches = messages.value.filter((message) => activeSessionIds.value.has(message.sessionId) && normalizeText(message.content).includes(normalized))
-    return { concepts: conceptMatches, units: unitMatches, messages: messageMatches }
+    if (!normalizeText(query)) return { concepts: [], units: [], messages: [] }
+    const ftsRanks = new Map(db.searchFts(query).map((match) => [`${match.kind}:${match.refId}`, match.rank]))
+    const matches = searchKnowledge(query, {
+      concepts: activeConcepts.value,
+      aliases: aliases.value,
+      units: units.value.filter((unit) => activeSessionIds.value.has(unit.sessionId)),
+      messages: messages.value.filter((message) => activeSessionIds.value.has(message.sessionId)),
+    }, ftsRanks)
+    return {
+      concepts: matches.concepts.map((match) => match.item),
+      units: matches.units.map((match) => match.item),
+      messages: matches.messages.map((match) => match.item),
+    }
   }
 
   function clearAllData(): void {

@@ -122,6 +122,7 @@ const selectedConcept = computed(() => store.concepts.find((concept) => concept.
 const selectedUnit = computed(() => store.units.find((unit) => unit.id === selectedUnitId.value) ?? null)
 const selectedMessage = computed(() => store.messages.find((message) => message.id === selectedMessageId.value) ?? null)
 const selectedTask = computed(() => store.tasks.find((task) => task.id === selectedTaskId.value) ?? null)
+const searchResults = computed(() => store.search(searchQuery.value))
 const maintenanceSuggestions = computed(() => {
   if (!selectedTask.value || selectedTask.value.type !== 'maintenance' || !selectedTask.value.parsedResult) return [] as Array<MaintenanceSuggestion & { applied?: boolean }>
   try {
@@ -745,10 +746,10 @@ onMounted(async () => {
             <input v-model="searchQuery" aria-label="搜索知识主题、知识单元或消息" placeholder="搜索知识主题、单元或消息" @focus="showSearch = true" />
             <button v-if="searchQuery" class="clear-search icon-button" aria-label="清空搜索" @click="searchQuery = ''"><X :size="14" /></button>
             <div v-if="showSearch && searchQuery" class="search-popover">
-              <div v-if="store.search(searchQuery).concepts.length" class="search-group"><span class="search-group-title">知识主题</span><button v-for="concept in store.search(searchQuery).concepts.slice(0, 5)" :key="concept.id" @click="openConcept(concept.id); showSearch = false"><Layers3 :size="14" />{{ concept.name }}</button></div>
-              <div v-if="store.search(searchQuery).units.length" class="search-group"><span class="search-group-title">KnowledgeUnit</span><button v-for="unit in store.search(searchQuery).units.slice(0, 4)" :key="unit.id" @click="openUnit(unit.id); showSearch = false"><BookOpen :size="14" />{{ unit.title || '待命名知识单元' }}</button></div>
-              <div v-if="store.search(searchQuery).messages.length" class="search-group"><span class="search-group-title">消息</span><button v-for="message in store.search(searchQuery).messages.slice(0, 4)" :key="message.id" @click="openMessage(message.id); showSearch = false"><History :size="14" />{{ message.content.slice(0, 42) }}</button></div>
-              <div v-if="!Object.values(store.search(searchQuery)).some((items) => items.length)" class="empty-search">没有匹配结果</div>
+              <div v-if="searchResults.concepts.length" class="search-group"><span class="search-group-title">知识主题</span><button v-for="concept in searchResults.concepts.slice(0, 5)" :key="concept.id" @click="openConcept(concept.id); showSearch = false"><Layers3 :size="14" />{{ concept.name }}</button></div>
+              <div v-if="searchResults.units.length" class="search-group"><span class="search-group-title">知识单元</span><button v-for="unit in searchResults.units.slice(0, 4)" :key="unit.id" @click="openUnit(unit.id); showSearch = false"><BookOpen :size="14" />{{ unit.title || '待命名知识单元' }}</button></div>
+              <div v-if="searchResults.messages.length" class="search-group"><span class="search-group-title">消息</span><button v-for="message in searchResults.messages.slice(0, 4)" :key="message.id" @click="openMessage(message.id); showSearch = false"><History :size="14" />{{ message.content.slice(0, 42) }}</button></div>
+              <div v-if="!Object.values(searchResults).some((items) => items.length)" class="empty-search">没有匹配结果</div>
             </div>
           </div>
           <button class="button secondary-button" @click="triggerImport"><Upload :size="16" />导入 JSON</button>
