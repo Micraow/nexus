@@ -17,6 +17,7 @@ const emit = defineEmits<{
   (event: 'select-concept', id: string): void
   (event: 'select-unit', id: string, additive: boolean): void
   (event: 'select-message', id: string): void
+  (event: 'box-select-unit', id: string): void
   (event: 'layout-change', entry: { nodeType: GraphNode['type']; refId: string; x: number; y: number; fixed: boolean }): void
   (event: 'viewport-change', viewport: { x: number; y: number; scale: number }): void
 }>()
@@ -51,8 +52,13 @@ function render(): void {
   root.attr('viewBox', `0 0 ${width} ${height}`).attr('aria-label', '知识主题图谱')
 
   const viewport = root.append('g').attr('class', 'graph-viewport')
+  const brushLayer = root.append('g').attr('class', 'graph-brush-layer')
+  // Shift+拖动留给框选，其余交互仍交给 d3.zoom 的默认过滤规则。
   let restoringViewport = true
-  const zoom = d3.zoom<SVGSVGElement, unknown>().scaleExtent([0.35, 3.2]).on('zoom', (event) => {
+  const zoom = d3.zoom<SVGSVGElement, unknown>().scaleExtent([0.35, 3.2]).filter((event) => {
+    if (event.type === 'mousedown' && event.shiftKey) return false
+    return (!event.ctrlKey || event.type === 'wheel') && !event.button
+  }).on('zoom', (event) => {
     viewport.attr('transform', event.transform)
     liveTransform = event.transform
     if (!restoringViewport) emit('viewport-change', { x: event.transform.x, y: event.transform.y, scale: event.transform.k })
@@ -168,6 +174,51 @@ function render(): void {
       nodeSelection.attr('transform', (node) => `translate(${node.x ?? width / 2},${node.y ?? height / 2})`)
     })
   if (props.reducedMotion) simulation.alphaDecay(0.4)
+
+  // 框选多选：Shift+左键拖出选框，松开后把框内知识单元加入上下文选择。
+  let brushOrigin: [number, number] | null = null
+  const brushRect = brushLayer
+    .append('rect')
+    .attr('class', 'graph-brush')
+    .attr('visibility', 'hidden')
+    .attr('fill', 'rgba(44,110,158,.12)')
+    .attr('stroke', '#2c6e9e')
+    .attr('stroke-dasharray', '4 3')
+  const pointerPoint = (event: MouseEvent): [number, number] => {
+    const bounds = element.getBoundingClientRect()
+    return [(event.clientX - bounds.left) * (width / Math.max(bounds.width, 1)), (event.clientY - bounds.top) * (height / Math.max(bounds.height, 1))]
+  }
+  const finishBrush = (event: MouseEvent): void => {
+    if (!brushOrigin) return
+    const [x0, y0] = brushOrigin
+    const [x1, y1] = pointerPoint(event)
+    brushOrigin = null
+    brushRect.attr('visibility', 'hidden')
+    if (Math.abs(x1 - x0) < 6 || Math.abs(y1 - y0) < 6) return
+    const transform = d3.zoomTransform(element)
+    const topLeft = transform.invert([Math.min(x0, x1), Math.min(y0, y1)])
+    const bottomRight = transform.invert([Math.max(x0, x1), Math.max(y0, y1)])
+    nodes.forEach((node) => {
+      if (node.type !== 'unit' || node.x == null || node.y == null) return
+      if (node.x >= topLeft[0] && node.x <= bottomRight[0] && node.y >= topLeft[1] && node.y <= bottomRight[1]) emit('box-select-unit', node.refId)
+    })
+  }
+  root.on('mousedown.graph-brush', (event: MouseEvent) => {
+    if (!event.shiftKey || event.button !== 0) return
+    if ((event.target as Element).closest('.graph-node')) return
+    event.preventDefault()
+    brushOrigin = pointerPoint(event)
+    brushRect.attr('x', brushOrigin[0]).attr('y', brushOrigin[1]).attr('width', 0).attr('height', 0).attr('visibility', 'visible')
+  })
+  root.on('mousemove.graph-brush', (event: MouseEvent) => {
+    if (!brushOrigin) return
+    event.preventDefault()
+    const [x0, y0] = brushOrigin
+    const [x1, y1] = pointerPoint(event)
+    brushRect.attr('x', Math.min(x0, x1)).attr('y', Math.min(y0, y1)).attr('width', Math.abs(x1 - x0)).attr('height', Math.abs(y1 - y0))
+  })
+  root.on('mouseup.graph-brush', finishBrush)
+  root.on('mouseleave.graph-brush', finishBrush)
 }
 
 onMounted(() => {
@@ -194,7 +245,7 @@ onBeforeUnmount(() => {
       <span class="legend-dot concept-dot" /> 知识主题
       <span class="legend-dot unit-dot" /> 知识单元
       <span class="legend-dot message-dot" /> 消息
-      <span class="graph-hint">滚轮缩放 · 拖拽平移/定位 · 点击知识主题展开单元</span>
+      <span class="graph-hint">滚轮缩放 · 拖拽平移/定位 · Shift+拖动框选知识单元 · 点击知识主题展开单元</span>
     </div>
   </div>
 </template>
