@@ -19,8 +19,8 @@ await build({
     join(root, 'src/content.ts'),
     join(root, 'src/workbench.ts'),
   ],
-  bundle: false,
-  format: 'esm',
+  bundle: true,
+  format: 'iife',
   target: 'chrome111',
   outdir: outDir,
 })
