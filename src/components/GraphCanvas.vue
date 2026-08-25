@@ -25,6 +25,8 @@ const host = ref<HTMLElement | null>(null)
 const svg = ref<SVGSVGElement | null>(null)
 let simulation: d3.Simulation<GraphNode & d3.SimulationNodeDatum, undefined> | null = null
 let resizeObserver: ResizeObserver | null = null
+// 当前视图变换的实时值；重渲染时用它恢复，避免快照变化把缩放重置回持久化视口。
+let liveTransform: d3.ZoomTransform | null = null
 
 const palette: Record<string, string> = {
   concept: '#2c6e9e',
@@ -52,11 +54,12 @@ function render(): void {
   let restoringViewport = true
   const zoom = d3.zoom<SVGSVGElement, unknown>().scaleExtent([0.35, 3.2]).on('zoom', (event) => {
     viewport.attr('transform', event.transform)
+    liveTransform = event.transform
     if (!restoringViewport) emit('viewport-change', { x: event.transform.x, y: event.transform.y, scale: event.transform.k })
   })
   root.call(zoom)
   const initialViewport = props.viewport ?? { x: 0, y: 0, scale: 1 }
-  root.call(zoom.transform, d3.zoomIdentity.translate(initialViewport.x, initialViewport.y).scale(initialViewport.scale))
+  root.call(zoom.transform, liveTransform ?? d3.zoomIdentity.translate(initialViewport.x, initialViewport.y).scale(initialViewport.scale))
   restoringViewport = false
 
   const nodes = props.snapshot.nodes.map((node) => ({ ...node })) as (GraphNode & d3.SimulationNodeDatum)[]
@@ -175,7 +178,8 @@ onMounted(() => {
   }
 })
 
-watch(() => [props.snapshot, props.selectedUnitIds, props.viewport], render, { deep: true })
+// 视口以 liveTransform 为准，不随 props.viewport 重渲染；持久化视口只在组件挂载时恢复。
+watch(() => [props.snapshot, props.selectedUnitIds], render, { deep: true })
 
 onBeforeUnmount(() => {
   simulation?.stop()

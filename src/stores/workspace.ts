@@ -1427,14 +1427,19 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   function saveGraphViewport(viewport: Omit<GraphViewport, 'layoutVersion'>): void {
-    mutate(() => db.run('INSERT INTO graph_viewport(id, x, y, scale, layout_version) VALUES (1, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET x = excluded.x, y = excluded.y, scale = excluded.scale, layout_version = excluded.layout_version', [viewport.x, viewport.y, viewport.scale, graphViewport.value.layoutVersion + 1]))
+    const layoutVersion = graphViewport.value.layoutVersion + 1
+    mutate(() => db.run('INSERT INTO graph_viewport(id, x, y, scale, layout_version) VALUES (1, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET x = excluded.x, y = excluded.y, scale = excluded.scale, layout_version = excluded.layout_version', [viewport.x, viewport.y, viewport.scale, layoutVersion]))
+    // 同步内存值：GraphCanvas 重渲染时按该值恢复缩放，过期会导致缩放被重置。
+    graphViewport.value = { ...viewport, layoutVersion }
   }
 
   function resetGraphLayout(): void {
+    const layoutVersion = graphViewport.value.layoutVersion + 1
     mutate(() => {
       db.run('DELETE FROM graph_layout')
-      db.run('INSERT INTO graph_viewport(id, x, y, scale, layout_version) VALUES (1, 0, 0, 1, ?) ON CONFLICT(id) DO UPDATE SET x = 0, y = 0, scale = 1, layout_version = excluded.layout_version', [graphViewport.value.layoutVersion + 1])
+      db.run('INSERT INTO graph_viewport(id, x, y, scale, layout_version) VALUES (1, 0, 0, 1, ?) ON CONFLICT(id) DO UPDATE SET x = 0, y = 0, scale = 1, layout_version = excluded.layout_version', [layoutVersion])
     })
+    graphViewport.value = { x: 0, y: 0, scale: 1, layoutVersion }
   }
 
   function renderedPhrase(phraseId: string, topicId?: string): string {
