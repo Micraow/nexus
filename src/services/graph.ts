@@ -10,7 +10,7 @@ import type {
   UnitConcept,
 } from '@/types/domain'
 
-interface GraphInput {
+export interface GraphInput {
   concepts: Concept[]
   units: KnowledgeUnit[]
   messages: Message[]

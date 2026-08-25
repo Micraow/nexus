@@ -13,6 +13,8 @@ import type {
   ConceptAlias,
   ConceptRelation,
   ContextReference,
+  GraphEdge,
+  GraphNode,
   GraphSnapshot,
   GraphLayoutEntry,
   GraphViewport,
@@ -30,6 +32,7 @@ import type {
   Session,
   UnitConcept,
 } from '@/types/domain'
+import type { GraphWorkerResponse } from '@/workers/graph.worker'
 
 type Row = Record<string, unknown>
 
@@ -202,7 +205,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const selectedContextIds = ref<string[]>([])
   const selectedSessionId = ref<string | null>(null)
   const lastImport = ref<ImportReport | null>(null)
-  const graphCache = new Map<string, GraphSnapshot>()
+  const graphSnapshots = new Map<string, GraphSnapshot>()
+  const graphPendingKeys = new Set<string>()
+  const graphTick = ref(0)
+  let lastGraphSnapshot: GraphSnapshot | null = null
+  let graphWorker: Worker | null = null
   const queueRunning = ref(false)
   const queuePaused = ref(false)
   const queueActiveCount = ref(0)
@@ -308,7 +315,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const viewport = db.query<Row>('SELECT * FROM graph_viewport WHERE id = 1')[0]
     graphViewport.value = viewport ? { x: number(viewport.x), y: number(viewport.y), scale: number(viewport.scale, 1), layoutVersion: number(viewport.layout_version, 1) } : { x: 0, y: 0, scale: 1, layoutVersion: 1 }
     graphRevision.value = Number(db.getMeta('graph_revision') ?? '1')
-    graphCache.clear()
+    graphSnapshots.clear()
+    graphPendingKeys.clear()
+    lastGraphSnapshot = null
     db.rebuildSearchDocuments(buildSearchDocuments({
       concepts: concepts.value,
       aliases: aliases.value,
@@ -349,12 +358,30 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     refreshFromDb()
   }
 
-  function getGraph(options: { showUnits?: boolean; showMessages?: boolean; showProposed?: boolean; expandedConceptIds?: string[] } = {}): GraphSnapshot {
+  interface GraphViewOptions {
+    showUnits?: boolean
+    showMessages?: boolean
+    showProposed?: boolean
+    expandedConceptIds?: string[]
+  }
+
+  function graphCacheKey(options: GraphViewOptions): string {
     const expanded = [...(options.expandedConceptIds ?? [])].sort().join(',')
-    const key = `${graphRevision.value}:${options.showUnits ? 1 : 0}:${options.showMessages ? 1 : 0}:${options.showProposed ? 1 : 0}:${expanded}`
-    const cached = graphCache.get(key)
-    if (cached) return cached
-    const snapshot = buildGraph({
+    return `${graphRevision.value}:${options.showUnits ? 1 : 0}:${options.showMessages ? 1 : 0}:${options.showProposed ? 1 : 0}:${expanded}`
+  }
+
+  function applyGraphLayout(snapshot: GraphSnapshot): GraphSnapshot {
+    const persisted = new Map(graphLayout.value.map((entry) => [`${entry.nodeType}:${entry.refId}`, entry]))
+    snapshot.nodes = snapshot.nodes.map((node) => {
+      const entry = persisted.get(`${node.type}:${node.refId}`)
+      return entry ? { ...node, x: entry.x, y: entry.y, fixed: entry.fixed } : node
+    })
+    snapshot.viewport = { ...graphViewport.value }
+    return snapshot
+  }
+
+  function graphInputFor(options: GraphViewOptions) {
+    return {
       concepts: concepts.value,
       units: units.value.filter((unit) => activeSessionIds.value.has(unit.sessionId)),
       messages: messages.value.filter((message) => activeSessionIds.value.has(message.sessionId)),
@@ -363,15 +390,54 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       manualEdges: manualEdges.value,
       revision: graphRevision.value,
       ...options,
-    })
-    const persisted = new Map(graphLayout.value.map((entry) => [`${entry.nodeType}:${entry.refId}`, entry]))
-    snapshot.nodes = snapshot.nodes.map((node) => {
-      const entry = persisted.get(`${node.type}:${node.refId}`)
-      return entry ? { ...node, x: entry.x, y: entry.y, fixed: entry.fixed } : node
-    })
-    snapshot.viewport = { ...graphViewport.value }
-    graphCache.set(key, snapshot)
-    return snapshot
+    }
+  }
+
+  function ensureGraphWorker(): Worker | null {
+    if (graphWorker) return graphWorker
+    if (typeof Worker === 'undefined') return null
+    try {
+      const worker = new Worker(new URL('../workers/graph.worker.ts', import.meta.url), { type: 'module' })
+      worker.onmessage = (event: MessageEvent<GraphWorkerResponse>) => {
+        const { key, snapshot } = event.data
+        graphPendingKeys.delete(key)
+        const prepared = applyGraphLayout(snapshot)
+        graphSnapshots.set(key, prepared)
+        lastGraphSnapshot = prepared
+        graphTick.value += 1
+      }
+      graphWorker = worker
+    } catch {
+      graphWorker = null
+    }
+    return graphWorker
+  }
+
+  function computeGraphSync(key: string, options: GraphViewOptions): void {
+    const snapshot = applyGraphLayout(buildGraph(graphInputFor(options)))
+    graphSnapshots.set(key, snapshot)
+    lastGraphSnapshot = snapshot
+  }
+
+  /** Cached graph view; heavy co-occurrence computation runs inside a worker. */
+  function viewGraph(options: GraphViewOptions = {}): GraphSnapshot {
+    void graphTick.value
+    const key = graphCacheKey(options)
+    const cached = graphSnapshots.get(key)
+    if (cached) {
+      lastGraphSnapshot = cached
+      return cached
+    }
+    const worker = ensureGraphWorker()
+    if (worker) {
+      if (!graphPendingKeys.has(key)) {
+        graphPendingKeys.add(key)
+        worker.postMessage({ key, ...graphInputFor(options) })
+      }
+    } else {
+      computeGraphSync(key, options)
+    }
+    return lastGraphSnapshot ?? applyGraphLayout({ nodes: [], edges: [], revision: graphRevision.value })
   }
 
   function unitMessages(unitId: string): Message[] {
@@ -1509,7 +1575,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     stats,
     init,
     refreshFromDb,
-    getGraph,
+    viewGraph,
     createTask,
     exportKnowledgeBase,
     importKnowledgeBase,

@@ -310,3 +310,5 @@ textarea { resize: vertical; }
 .md-concept { padding: 0 3px; cursor: pointer; color: var(--primary-strong); background: var(--primary-soft); border-radius: 4px; text-decoration: underline dotted; text-underline-offset: 2px; }
 .md-concept:hover, .md-concept:focus-visible { outline: 1px solid color-mix(in srgb, var(--primary) 60%, transparent); }
 .message-detail-content.md-body { margin-top: 0; padding: 12px; background: var(--surface-soft); border-radius: 6px; font-size: 13px; }
+
+.load-more-button { justify-self: start; min-height: 36px; margin-top: 10px; color: var(--primary-strong); }
