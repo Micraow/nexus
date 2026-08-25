@@ -70,6 +70,25 @@ fn timestamp_suffix() -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
+#[cfg(target_os = "linux")]
+fn configure_input_method() {
+    // WebKitGTK reads these variables before the window is created. Preserve
+    // an explicit user choice, while making the common KDE + fcitx5 setup work
+    // when Nexus is launched from a desktop shortcut.
+    for (key, value) in [
+        ("GTK_IM_MODULE", "fcitx"),
+        ("QT_IM_MODULE", "fcitx"),
+        ("XMODIFIERS", "@im=fcitx"),
+    ] {
+        if std::env::var_os(key).is_none() {
+            std::env::set_var(key, value);
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn configure_input_method() {}
+
 #[tauri::command]
 fn storage_info(app: AppHandle, custom_path: Option<String>) -> Result<StorageInfo, String> {
     let data = data_dir(&app)?;
@@ -138,6 +157,7 @@ fn write_config(app: AppHandle, content: String) -> Result<(), String> {
 }
 
 fn main() {
+    configure_input_method();
     tauri::Builder::default()
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_clipboard_manager::init())

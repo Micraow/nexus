@@ -28,6 +28,10 @@ let simulation: d3.Simulation<GraphNode & d3.SimulationNodeDatum, undefined> | n
 let resizeObserver: ResizeObserver | null = null
 // 当前视图变换的实时值；重渲染时用它恢复，避免快照变化把缩放重置回持久化视口。
 let liveTransform: d3.ZoomTransform | null = null
+// 用户是否手动平移/缩放过：首次挂载的自动铺满只在该值为 false 时生效。
+let userMovedViewport = false
+// 首次快照可能是空图，等异步 worker 返回节点后再做一次自动铺满。
+let hasFittedData = false
 
 const palette: Record<string, string> = {
   concept: '#2c6e9e',
@@ -55,13 +59,17 @@ function render(): void {
   const brushLayer = root.append('g').attr('class', 'graph-brush-layer')
   // Shift+拖动留给框选，其余交互仍交给 d3.zoom 的默认过滤规则。
   let restoringViewport = true
+  let fittingProgrammatically = false
   const zoom = d3.zoom<SVGSVGElement, unknown>().scaleExtent([0.35, 3.2]).filter((event) => {
     if (event.type === 'mousedown' && event.shiftKey) return false
     return (!event.ctrlKey || event.type === 'wheel') && !event.button
   }).on('zoom', (event) => {
     viewport.attr('transform', event.transform)
     liveTransform = event.transform
-    if (!restoringViewport) emit('viewport-change', { x: event.transform.x, y: event.transform.y, scale: event.transform.k })
+    if (!restoringViewport) {
+      if (!fittingProgrammatically) userMovedViewport = true
+      emit('viewport-change', { x: event.transform.x, y: event.transform.y, scale: event.transform.k })
+    }
   })
   root.call(zoom)
   const initialViewport = props.viewport ?? { x: 0, y: 0, scale: 1 }
@@ -69,6 +77,8 @@ function render(): void {
   restoringViewport = false
 
   const nodes = props.snapshot.nodes.map((node) => ({ ...node })) as (GraphNode & d3.SimulationNodeDatum)[]
+  if (!nodes.length && !userMovedViewport) hasFittedData = false
+  const shouldFitInitialView = !userMovedViewport && !hasFittedData && nodes.length > 0
   nodes.forEach((node) => {
     if (node.fixed && node.x != null && node.y != null) {
       node.fx = node.x
@@ -174,6 +184,30 @@ function render(): void {
       nodeSelection.attr('transform', (node) => `translate(${node.x ?? width / 2},${node.y ?? height / 2})`)
     })
   if (props.reducedMotion) simulation.alphaDecay(0.4)
+
+  // 首次挂载且用户未操作时，等力向布局稳定后只适配一次画布，避免每个 tick 触发 zoom 重排。
+  if (shouldFitInitialView) {
+    let fitted = false
+    const fitView = (): void => {
+      if (fitted || userMovedViewport) return
+      const xs = nodes.map((node) => node.x).filter((value) => value != null) as number[]
+      const ys = nodes.map((node) => node.y).filter((value) => value != null) as number[]
+      if (!xs.length) return
+      const minX = Math.min(...xs) - 60
+      const maxX = Math.max(...xs) + 60
+      const minY = Math.min(...ys) - 60
+      const maxY = Math.max(...ys) + 60
+      const scale = Math.min(1.4, Math.max(0.35, Math.min(width / Math.max(maxX - minX, 1), height / Math.max(maxY - minY, 1))))
+      const transform = d3.zoomIdentity.translate(width / 2, height / 2).scale(scale).translate(-(minX + maxX) / 2, -(minY + maxY) / 2)
+      fitted = true
+      hasFittedData = true
+      fittingProgrammatically = true
+      root.call(zoom.transform, transform)
+      fittingProgrammatically = false
+    }
+    simulation.on('end.fit', fitView)
+    requestAnimationFrame(fitView)
+  }
 
   // 框选多选：Shift+左键拖出选框，松开后把框内知识单元加入上下文选择。
   let brushOrigin: [number, number] | null = null
