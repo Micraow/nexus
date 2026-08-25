@@ -3,5 +3,12 @@
   "identifier": "default",
   "description": "Nexus desktop window capabilities",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "http:default",
+      "allow": [{ "url": "https://**" }, { "url": "http://**" }]
+    },
+    "clipboard-manager:allow-write-text"
+  ]
 }

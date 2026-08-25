@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { db } from '@/services/db'
+import { httpRequest } from '@/services/http'
 import { parseConfigText, readConfigText, writeConfig } from '@/services/config'
 import { buildGraph, graphStats } from '@/services/graph'
 import { buildSearchDocuments, searchKnowledge } from '@/services/search'
@@ -1142,7 +1143,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         abortControllers.set(taskId, controller)
         const timeout = window.setTimeout(() => controller.abort(), 45_000)
         try {
-          const response = await fetch(`${provider.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+          const response = await httpRequest(`${provider.baseUrl.replace(/\/$/, '')}/chat/completions`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.apiKey}` },
             body: JSON.stringify({ model: task.model || provider.model, temperature: 0, messages: [{ role: 'user', content: task.prompt }] }),
