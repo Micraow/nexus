@@ -372,7 +372,9 @@ export class SqliteStore {
 
   integrityCheck(): DatabaseIntegrityReport {
     this.requireDb()
-    const result = this.query<{ integrity: string }>('PRAGMA integrity_check')[0]?.integrity ?? 'unknown'
+    // PRAGMA 结果的列名随 SQLite 版本可能是 integrity_check，按第一列取值更稳妥。
+    const row = this.query<Record<string, unknown>>('PRAGMA integrity_check')[0]
+    const result = row ? String(Object.values(row)[0] ?? 'unknown') : 'unknown'
     const report = { ok: result.toLowerCase() === 'ok', result, schemaVersion: Number(this.getMeta('schema_version') ?? '1') }
     this.lastIntegrity = report
     return report

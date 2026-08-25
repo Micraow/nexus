@@ -59,6 +59,11 @@ function bool(value: unknown): boolean {
   return Number(value) === 1 || value === true
 }
 
+/** 深拷贝为纯 JSON 数据，用于跨 Worker 传输（响应式代理无法结构化克隆）。 */
+function toPlainJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
+}
+
 function sessionFromRow(row: Row): Session {
   return {
     id: text(row.id),
@@ -423,7 +428,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (worker) {
       if (!graphPendingKeys.has(key)) {
         graphPendingKeys.add(key)
-        worker.postMessage({ key, ...graphInputFor(options) })
+        // Pinia 的响应式代理无法结构化克隆，必须先还原成普通 JSON 数据。
+        worker.postMessage({ key, ...toPlainJson(graphInputFor(options)) })
       }
     } else {
       computeGraphSync(key, options)
