@@ -1,13 +1,7 @@
-import type { ExportedConversation, ExportPayload, ListProgress, SessionEntry, WorkbenchRequest, WorkbenchResponse } from './types'
+import { buildExportPayload, exportPayloadDataUrl, type ExportSessionState } from './export-payload'
+import type { ListProgress, SessionEntry, WorkbenchRequest, WorkbenchResponse } from './types'
 
-type SessionStatus = 'pending' | 'running' | 'success' | 'failed'
-
-interface SessionState {
-  entry: SessionEntry
-  status: SessionStatus
-  error?: string
-  conversation?: ExportedConversation
-}
+type SessionState = ExportSessionState
 
 const state = {
   sourceTabId: null as number | null,
@@ -272,33 +266,15 @@ function retryFailed(): void {
   void runQueue()
 }
 
-function buildPayload(): ExportPayload {
-  const conversations: ExportedConversation[] = []
-  const errors: ExportPayload['errors'] = []
-  state.selected.forEach((id) => {
-    const item = state.sessions.get(id)
-    if (!item) return
-    if (item.conversation) conversations.push(item.conversation)
-    else if (item.status === 'failed') errors.push({ external_session_id: id, title: item.entry.title, error: item.error ?? '未知原因' })
-  })
-  return {
-    schema_version: 1,
-    platform: 'deepseek',
-    exported_at: new Date().toISOString(),
-    conversations,
-    errors,
-  }
-}
-
 function downloadJson(): void {
-  const payload = buildPayload()
+  const payload = buildExportPayload(state.selected, state.sessions)
   if (!payload.conversations.length && !payload.errors.length) {
     notify('请先选择并读取至少一个会话。', 'error')
     return
   }
   const filename = `deepseek-export-${new Date().toISOString().slice(0, 10)}.json`
   const content = JSON.stringify(payload, null, 2)
-  const url = `data:application/json;charset=utf-8,${encodeURIComponent(content)}`
+  const url = exportPayloadDataUrl(content)
   const fallbackDownload = (): void => {
     const blobUrl = URL.createObjectURL(new Blob([content], { type: 'application/json' }))
     const anchor = document.createElement('a')

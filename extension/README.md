@@ -17,10 +17,10 @@ Chrome 打开「扩展程序 → 加载已解压的扩展程序」，选择 `ext
 2. 在工作台点击「加载全部历史」滚动读取侧边栏（支持懒加载去重）；
 3. 搜索、勾选要导出的会话（或直接导出当前打开的会话）；
 4. 导出过程显示进度，可暂停 / 继续 / 重试失败项；
-5. 「下载导出 JSON」生成文件；成功部分始终可导出，失败项写入顶层 `errors` 数组，只有全部失败时才不生成文件。
+5. 「下载导出 JSON」生成文件；成功部分始终可导出，失败项写入顶层 `errors` 数组，即使只有失败项也会生成诊断文件。
 
 ## 实现说明
 
-- `bridge.js` 注入 MAIN world，包装 `fetch`/`XHR`，把 DeepSeek 自身 API 返回的 JSON 通过 CustomEvent 转发给 content script —— 消息正文优先取自接口数据，不受 CSS 类名变化影响；
+- `bridge.js` 注入 MAIN world，包装 `fetch`/`XHR`，只捕获当前页面同源且看起来是 JSON 的响应，再通过 CustomEvent 转发给 content script —— 消息正文优先取自接口数据，不受 CSS 类名变化影响；
 - content script 同时保留 DOM 兜底（`.ds-markdown` 结构 + 侧边栏锚点），接口未命中时按 DOM 顺序提取用户/AI 消息；
 - 不修改原页面的视觉与交互；不发送任何网络请求到第三方。
