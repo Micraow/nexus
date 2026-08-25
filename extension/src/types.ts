@@ -42,9 +42,9 @@ export type WorkbenchRequest =
   | { type: 'EXPORT_SESSION'; externalSessionId: string | null }
 
 export type WorkbenchResponse =
-  | { ok: true; sessions?: SessionEntry[]; progress?: ListProgress }
-  | { ok: true; currentSessionId?: string | null }
-  | { ok: true; conversation?: ExportedConversation }
+  | { ok: true; kind: 'list'; sessions?: SessionEntry[]; progress?: ListProgress }
+  | { ok: true; kind: 'current'; currentSessionId?: string | null }
+  | { ok: true; kind: 'conversation'; conversation?: ExportedConversation }
   | { ok: false; error: string }
 
 export interface ListProgress {

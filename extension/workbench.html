@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nexus 织知导出工作台</title>
+    <link rel="stylesheet" href="workbench.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <strong>Nexus 织知 · 导出工作台</strong>
+        <span id="source-status" data-tone="info">正在查找 DeepSeek 标签页…</span>
+      </div>
+      <div class="actions">
+        <button id="open-source" type="button">打开 DeepSeek</button>
+        <button id="refresh-list" type="button">刷新会话列表</button>
+        <button id="load-all" type="button">加载全部历史</button>
+      </div>
+    </header>
+
+    <div id="notice" hidden></div>
+
+    <section class="controls">
+      <input id="session-search" type="search" placeholder="搜索会话标题或 ID" aria-label="搜索会话" />
+      <label class="select-all">
+        <input id="select-all" type="checkbox" />
+        全选已发现会话
+      </label>
+      <button id="export-current" type="button" class="primary">导出当前打开的会话</button>
+    </section>
+
+    <main id="session-list" aria-label="会话列表"></main>
+
+    <footer class="progress-panel">
+      <div class="progress-head">
+        <span id="progress-text">尚未开始导出</span>
+        <span class="counts">
+          成功 <b id="count-success">0</b>
+          失败 <b id="count-failed">0</b>
+          待处理 <b id="count-pending">0</b>
+        </span>
+      </div>
+      <div id="progress-bar" role="progressbar"><span></span></div>
+      <div class="queue-actions">
+        <button id="pause-queue" type="button">暂停</button>
+        <button id="resume-queue" type="button">继续</button>
+        <button id="retry-failed" type="button">重试失败项</button>
+        <button id="download-json" type="button" class="primary">下载导出 JSON</button>
+      </div>
+      <p class="hint">勾选会话后自动逐个读取；成功部分仍可导出，失败项记录在 errors 数组中。全部失败时不会生成文件。</p>
+      <div id="error-list" hidden></div>
+    </footer>
+
+    <script src="workbench.js" type="module"></script>
+  </body>
+</html>
