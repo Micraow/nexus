@@ -2,6 +2,25 @@ import type { KnowledgeUnit, Message, Session } from '@/types/domain'
 
 export const PROMPT_VERSION = '2026-08-v1'
 
+export function buildSessionTriagePrompt(session: Session, messages: Message[]): string {
+  return `你是 Nexus 织知的会话分类器。请判断这段完整对话主要属于哪一种内容形态，用于图谱展示和后续整理优先级。原始会话和消息无论分类结果如何都必须保留，不得删除或改写。
+
+分类：
+- knowledge：主要是在陈述、解释或比较可复用知识；
+- discussion：探讨、头脑风暴、选题、观点权衡，可能没有稳定主题；
+- procedure：操作步骤、排障、实现方案或执行流程；
+- mixed：以上多种内容明显混合；
+- 不要因为内容暂时没有主题就判为无效。
+
+请给出 0 到 1 的 confidence，以及简短 reason。retain_in_graph 表示这类会话是否值得在用户打开“探讨/流程会话”选项时显示；只要内容有后续查阅或作为上下文的价值，通常应为 true。
+
+Session：${session.title}
+消息：
+${messages.map((message) => `${message.orderInSession}. ${message.role}: ${message.content}`).join('\n')}
+
+只返回 JSON：{"kind":"knowledge|discussion|procedure|mixed","confidence":0.0,"reason":"...","retain_in_graph":true}`
+}
+
 export function buildSegmentationPrompt(session: Session, messages: Message[], chunkLabel?: string): string {
   const input = messages.map((message) => ({
     index: message.orderInSession,
@@ -57,7 +76,10 @@ KnowledgeUnit：${unit.title ?? '待命名'}
 已有候选：${conceptNames.join('、') || '暂无'}
 消息：${messages.map((message) => `${message.role}: ${message.content}`).join('\n')}
 
-只返回 JSON：{"concepts":[{"name":"...","aliases":[]}]}`
+关系语义：hierarchy 使用 source 作为父主题、target 作为子主题；related 只是两个主题之间的无向关联，不存在父子顺序。
+
+只返回 JSON：{"concepts":[{"name":"...","aliases":[]}],"relations":[{"source":"Concept 名称","target":"Concept 名称","type":"hierarchy|related"}]}
+`
 }
 
 export function buildRepairPrompt(originalResponse: string, errors: string[]): string {
@@ -95,7 +117,7 @@ export function renderQuickPhrase(template: string, topic: string, context: stri
 
 export function buildMaintenancePrompt(input: {
   concepts: Array<{ id: string; name: string; aliases: string[]; notes: string }>
-  relations: Array<{ parentId: string; childId: string; type: string; status: string }>
+  relations: Array<{ sourceId: string; targetId: string; type: string; status: string }>
   units: Array<{ id: string; title: string; summary: string; session: string; conceptIds: string[] }>
   includeMessages?: string
 }): string {
@@ -107,11 +129,13 @@ ${JSON.stringify(input.concepts, null, 2)}
 现有关系：
 ${JSON.stringify(input.relations, null, 2)}
 
+关系语义：sourceId/targetId 在 hierarchy 中分别表示父主题和子主题；related 是无向关联，不存在父子顺序。
+
 知识单元：
 ${JSON.stringify(input.units, null, 2)}
 ${input.includeMessages ? `\n补充原文：\n${input.includeMessages}` : ''}
 
 只返回 JSON：
-{"suggestions":[{"type":"merge","source_concept_id":"待合并主题 id","target_concept_id":"保留主题 id","reason":"理由"},{"type":"alias","concept_id":"主题 id","alias":"别名","reason":"理由"},{"type":"relation","parent_concept_id":"父主题 id","child_concept_id":"子主题 id","relation_type":"hierarchy","reason":"理由"},{"type":"unit_relink","unit_id":"知识单元 id","concept_id":"主题 id","reason":"理由"},{"type":"unit_revision","unit_id":"知识单元 id","title":"建议标题","summary":"建议摘要","reason":"理由"}]}
+{"suggestions":[{"type":"merge","source_concept_id":"待合并主题 id","target_concept_id":"保留主题 id","reason":"理由"},{"type":"alias","concept_id":"主题 id","alias":"别名","reason":"理由"},{"type":"relation","source_concept_id":"关系一端；hierarchy 时为父主题","target_concept_id":"关系另一端；hierarchy 时为子主题","relation_type":"hierarchy|related","reason":"理由"},{"type":"unit_relink","unit_id":"知识单元 id","concept_id":"主题 id","reason":"理由"},{"type":"unit_revision","unit_id":"知识单元 id","title":"建议标题","summary":"建议摘要","reason":"理由"}]}
 只返回确有依据的建议；没有建议时返回空数组。不要输出解释文字。`
 }

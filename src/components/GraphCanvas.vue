@@ -42,6 +42,7 @@ const palette: Record<string, string> = {
 function edgeColor(edge: GraphEdge): string {
   if (edge.type === 'hierarchy') return '#2c6e9e'
   if (edge.type === 'related') return '#6c8e9e'
+  if (edge.type === 'conversation') return '#d5a85a'
   if (edge.type === 'association') return '#b4c1cb'
   return '#93a4b2'
 }
@@ -96,7 +97,7 @@ function render(): void {
     .attr('class', 'graph-link')
     .attr('stroke', edgeColor)
     .attr('stroke-width', (edge) => Math.min(6, 1 + Math.log2(edge.weight + 1)))
-    .attr('stroke-dasharray', (edge) => (edge.status === 'proposed' || edge.type === 'related' ? '5 5' : null))
+    .attr('stroke-dasharray', (edge) => (edge.status === 'proposed' || edge.type === 'related' || edge.type === 'conversation' ? '5 5' : null))
     .attr('marker-end', (edge) => (edge.type === 'hierarchy' ? 'url(#graph-arrow)' : null))
 
   const defs = root.append('defs')
@@ -171,7 +172,7 @@ function render(): void {
   simulation?.stop()
   simulation = d3
     .forceSimulation(nodes)
-    .force('link', d3.forceLink<GraphNode & d3.SimulationNodeDatum, GraphEdge>(links).id((node) => node.id).distance((edge) => edge.type === 'hierarchy' ? 130 : edge.type === 'association' ? 82 : 105).strength((edge) => edge.type === 'hierarchy' ? 0.75 : Math.min(0.65, 0.25 + edge.weight * 0.06)))
+    .force('link', d3.forceLink<GraphNode & d3.SimulationNodeDatum, GraphEdge>(links).id((node) => node.id).distance((edge) => edge.type === 'hierarchy' ? 130 : edge.type === 'conversation' ? 58 : edge.type === 'association' ? 82 : 105).strength((edge) => edge.type === 'hierarchy' ? 0.75 : edge.type === 'conversation' ? 0.42 : Math.min(0.65, 0.25 + edge.weight * 0.06)))
     .force('charge', d3.forceManyBody<GraphNode & d3.SimulationNodeDatum>().strength((node) => (node as GraphNode).type === 'concept' ? -330 : -125))
     .force('center', d3.forceCenter(width / 2, height / 2))
     .force('collide', d3.forceCollide<GraphNode & d3.SimulationNodeDatum>().radius((node) => (node as GraphNode).type === 'concept' ? 50 : 28))

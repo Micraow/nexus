@@ -28,6 +28,8 @@ type YamlConfig = {
       showMessages?: boolean
       show_proposed?: boolean
       showProposed?: boolean
+      show_retained_sessions?: boolean
+      showRetainedSessions?: boolean
     }
   }
   storage?: { database_path?: string; databasePath?: string }
@@ -57,6 +59,7 @@ export function serializeConfig(config: AppConfig): string {
         show_units: config.ui.graph.showUnits,
         show_messages: config.ui.graph.showMessages,
         show_proposed: config.ui.graph.showProposed,
+        show_retained_sessions: config.ui.graph.showRetainedSessions,
       },
     },
     storage: { database_path: config.storage.databasePath },
@@ -90,6 +93,7 @@ export function parseConfig(value: unknown): Partial<AppConfig> {
         showUnits: raw.ui?.graph?.show_units ?? raw.ui?.graph?.showUnits ?? false,
         showMessages: raw.ui?.graph?.show_messages ?? raw.ui?.graph?.showMessages ?? false,
         showProposed: raw.ui?.graph?.show_proposed ?? raw.ui?.graph?.showProposed ?? false,
+        showRetainedSessions: raw.ui?.graph?.show_retained_sessions ?? raw.ui?.graph?.showRetainedSessions ?? false,
       },
     },
     storage: { databasePath: raw.storage?.database_path ?? raw.storage?.databasePath ?? '' },

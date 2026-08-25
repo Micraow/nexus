@@ -5,7 +5,7 @@ import { httpRequest } from '@/services/http'
 import { parseConfigText, readConfigText, writeConfig } from '@/services/config'
 import { buildGraph, graphStats } from '@/services/graph'
 import { buildSearchDocuments, searchKnowledge } from '@/services/search'
-import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildRepairPrompt, buildSegmentationPrompt, buildSummaryPrompt, buildTitlePrompt, PROMPT_VERSION, renderQuickPhrase } from '@/services/prompts'
+import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildRepairPrompt, buildSegmentationPrompt, buildSessionTriagePrompt, buildSummaryPrompt, buildTitlePrompt, PROMPT_VERSION, renderQuickPhrase } from '@/services/prompts'
 import { importPayloadSchema, parseImportPayload, validateSegmentationResult, validateUnitText } from '@/services/validation'
 import { combineSegmentationChunks, splitMessageChunks } from '@/utils/chunks'
 import { wouldCreateHierarchyCycle } from '@/utils/graph-rules'
@@ -43,7 +43,7 @@ type Row = Record<string, unknown>
 const DEFAULT_CONFIG: AppConfig = {
   llm: { mode: null, defaultProvider: null, concurrency: 2, tokenBudget: 8000, providers: [], taskOverrides: {} },
   prompts: { overrideDir: '' },
-  ui: { theme: 'system', reducedMotion: false, graph: { showUnits: false, showMessages: false, showProposed: false } },
+  ui: { theme: 'system', reducedMotion: false, graph: { showUnits: false, showMessages: false, showProposed: false, showRetainedSessions: false } },
   storage: { databasePath: '' },
 }
 
@@ -77,6 +77,10 @@ function sessionFromRow(row: Row): Session {
     updatedAt: text(row.updated_at),
     messageCount: number(row.message_count),
     unitCount: number(row.unit_count),
+    knowledgeKind: (text(row.knowledge_kind) || 'unknown') as Session['knowledgeKind'],
+    knowledgeConfidence: row.knowledge_confidence == null ? null : number(row.knowledge_confidence),
+    knowledgeJudgment: row.knowledge_judgment == null ? null : text(row.knowledge_judgment),
+    knowledgeRetainInGraph: bool(row.knowledge_retain_in_graph),
     revision: number(row.revision, 1),
     localOnly: bool(row.local_only),
     deletedAt: row.deleted_at == null ? null : text(row.deleted_at),
@@ -352,12 +356,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     showUnits?: boolean
     showMessages?: boolean
     showProposed?: boolean
+    showRetainedSessions?: boolean
     expandedConceptIds?: string[]
   }
 
   function graphCacheKey(options: GraphViewOptions): string {
     const expanded = [...(options.expandedConceptIds ?? [])].sort().join(',')
-    return `${graphRevision.value}:${options.showUnits ? 1 : 0}:${options.showMessages ? 1 : 0}:${options.showProposed ? 1 : 0}:${expanded}`
+    return `${graphRevision.value}:${options.showUnits ? 1 : 0}:${options.showMessages ? 1 : 0}:${options.showProposed ? 1 : 0}:${options.showRetainedSessions ? 1 : 0}:${expanded}`
   }
 
   function applyGraphLayout(snapshot: GraphSnapshot): GraphSnapshot {
@@ -375,6 +380,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       concepts: concepts.value,
       units: units.value.filter((unit) => activeSessionIds.value.has(unit.sessionId)),
       messages: messages.value.filter((message) => activeSessionIds.value.has(message.sessionId)),
+      sessions: sessions.value.filter((session) => activeSessionIds.value.has(session.id)),
       unitConcepts: unitConcepts.value.filter((link) => units.value.some((unit) => unit.id === link.unitId && activeSessionIds.value.has(unit.sessionId))),
       relations: relations.value,
       manualEdges: manualEdges.value,
@@ -504,7 +510,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       ] as const
       resetStatements.forEach((statement) => db.run(statement))
       const records = parsed as any
-      records.sessions.forEach((item: Session) => db.run('INSERT INTO sessions(id, source, platform, model, external_session_id, title, created_at, updated_at, message_count, unit_count, revision, local_only, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.source, item.platform, item.model ?? null, item.externalSessionId ?? null, item.title, item.createdAt, item.updatedAt, item.messageCount, item.unitCount, item.revision, item.localOnly ? 1 : 0, item.deletedAt ?? null]))
+      records.sessions.forEach((item: Session) => db.run('INSERT INTO sessions(id, source, platform, model, external_session_id, title, created_at, updated_at, message_count, unit_count, knowledge_kind, knowledge_confidence, knowledge_judgment, knowledge_retain_in_graph, revision, local_only, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.source, item.platform, item.model ?? null, item.externalSessionId ?? null, item.title, item.createdAt, item.updatedAt, item.messageCount, item.unitCount, item.knowledgeKind ?? 'unknown', item.knowledgeConfidence ?? null, item.knowledgeJudgment ?? null, item.knowledgeRetainInGraph ? 1 : 0, item.revision, item.localOnly ? 1 : 0, item.deletedAt ?? null]))
       records.concepts.forEach((item: Concept) => db.run('INSERT INTO concepts(id, name, normalized_name, notes, status, merged_into_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.name, item.normalizedName, item.notes, item.status, item.mergedIntoId ?? null, item.createdAt, item.updatedAt, item.deletedAt ?? null]))
       records.units.forEach((item: KnowledgeUnit) => db.run('INSERT INTO knowledge_units(id, session_id, title, summary, order_in_session, status, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.sessionId, item.title ?? null, item.summary ?? null, item.orderInSession, item.status, item.revision, item.createdAt, item.updatedAt]))
       records.messages.forEach((item: Message) => db.run('INSERT INTO messages(id, session_id, unit_id, role, content, order_in_session, timestamp, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.sessionId, item.unitId ?? null, item.role, item.content, item.orderInSession, item.timestamp ?? null, item.metadata ? JSON.stringify(item.metadata) : null]))
@@ -564,6 +570,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         const session = sessionFromRow(db.query<Row>('SELECT * FROM sessions WHERE id = ?', [sessionId])[0])
         const importedMessages = db.query<Row>('SELECT * FROM messages WHERE session_id = ? ORDER BY order_in_session', [sessionId]).map(messageFromRow)
         const chunks = splitMessageChunks(importedMessages, config.value.llm.tokenBudget)
+        const triageTaskId = createTask({
+          type: 'session_triage',
+          mode: config.value.llm.mode ?? 'prompt_paste',
+          providerId: config.value.llm.defaultProvider,
+          model: null,
+          promptVersion: PROMPT_VERSION,
+          inputRevision: `${session.id}:${session.revision}`,
+          prompt: buildSessionTriagePrompt(session, importedMessages),
+          status: 'pending',
+          scopeLabel: `${session.title} · 会话分类`,
+        })
+        report.taskIds.push(triageTaskId)
         chunks.forEach((chunk, chunkIndex) => {
           const chunkSuffix = chunks.length > 1 ? `:chunk:${chunk.start}:${chunk.end}:${chunks.length}` : ''
           const taskId = createTask({
@@ -586,7 +604,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           model: null,
           promptVersion: PROMPT_VERSION,
           inputRevision: `${session.id}:${session.revision}`,
-          prompt: `请从下面的 Session 中提取 1～3 个核心 Concept，只返回 JSON：{"concepts":["..."]}\n\n${importedMessages.map((message) => `${message.role}: ${message.content}`).join('\n')}`,
+          prompt: `请从下面的 Session 中提取 1～8 个核心 Concept，并给出有明确证据的 Concept 关系。探讨或流程内容也可以提取其中稳定的知识；不要为了凑数建立关系。hierarchy 使用 source 作为父主题、target 作为子主题；related 是无向关联，不存在父子顺序。只返回 JSON：{"concepts":[{"name":"...","aliases":[]}],"relations":[{"source":"Concept 名称","target":"Concept 名称","type":"hierarchy|related"}]}\n\n${importedMessages.map((message) => `${message.role}: ${message.content}`).join('\n')}`,
           status: 'pending',
           scopeLabel: `${session.title} · 起始知识主题`,
         })
@@ -757,10 +775,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   function createRelation(parentId: string, childId: string, relationType: ConceptRelation['relationType'], status: ConceptRelation['status'] = 'confirmed'): void {
     if (relationType === 'hierarchy' && wouldCreateHierarchyCycle(parentId, childId, relations.value)) throw new Error('这个父子关系会形成环，无法建立')
+    const [sourceId, targetId] = relationType === 'related' && parentId > childId ? [childId, parentId] : [parentId, childId]
     const before = captureConceptOperationSnapshot()
     mutate(() => {
       const now = isoNow()
-      db.run('INSERT OR IGNORE INTO concept_relations(id, parent_concept_id, child_concept_id, relation_type, source, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [createId('relation'), parentId, childId, relationType, status === 'confirmed' ? 'manual' : 'llm', status, now, now])
+      db.run('INSERT OR IGNORE INTO concept_relations(id, parent_concept_id, child_concept_id, relation_type, source, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [createId('relation'), sourceId, targetId, relationType, status === 'confirmed' ? 'manual' : 'llm', status, now, now])
       recordOperation('建立知识主题关系', before, captureConceptOperationSnapshot())
     })
   }
@@ -900,7 +919,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const unitIds = new Set(unitScope.map((unit) => unit.id))
     const prompt = buildMaintenancePrompt({
       concepts: conceptScope.map((concept) => ({ id: concept.id, name: concept.name, aliases: aliases.value.filter((alias) => alias.conceptId === concept.id).map((alias) => alias.alias), notes: concept.notes })),
-      relations: relations.value.filter((relation) => conceptIds.has(relation.parentConceptId) || conceptIds.has(relation.childConceptId)).map((relation) => ({ parentId: relation.parentConceptId, childId: relation.childConceptId, type: relation.relationType, status: relation.status })),
+      relations: relations.value.filter((relation) => conceptIds.has(relation.parentConceptId) || conceptIds.has(relation.childConceptId)).map((relation) => ({ sourceId: relation.parentConceptId, targetId: relation.childConceptId, type: relation.relationType, status: relation.status })),
       units: unitScope.map((unit) => ({ id: unit.id, title: unit.title ?? '', summary: unit.summary ?? '', session: sessions.value.find((session) => session.id === unit.sessionId)?.title ?? '', conceptIds: unitConcepts.value.filter((link) => link.unitId === unit.id).map((link) => link.conceptId) })),
       includeMessages: input.includeFullContent ? unitScope.map((unit) => `## ${unit.id}\n${unitMessages(unit.id).map((message) => `${message.role}: ${message.content}`).join('\n')}`).join('\n\n') : undefined,
     })
@@ -929,9 +948,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         if (!suggestion.alias?.trim()) errors.push(`suggestions.${index}.alias 不能为空`)
       }
       if (suggestion.type === 'relation') {
-        if (!concepts.value.some((concept) => concept.id === suggestion.parent_concept_id) || !concepts.value.some((concept) => concept.id === suggestion.child_concept_id)) errors.push(`suggestions.${index} 的关系端点不存在`)
+        const sourceId = suggestion.source_concept_id ?? suggestion.parent_concept_id
+        const targetId = suggestion.target_concept_id ?? suggestion.child_concept_id
+        if (!concepts.value.some((concept) => concept.id === sourceId) || !concepts.value.some((concept) => concept.id === targetId)) errors.push(`suggestions.${index} 的关系端点不存在`)
+        if (sourceId === targetId) errors.push(`suggestions.${index} 不能连接自身`)
         if (suggestion.relation_type !== 'hierarchy' && suggestion.relation_type !== 'related') errors.push(`suggestions.${index}.relation_type 无效`)
-        if (suggestion.relation_type === 'hierarchy' && suggestion.parent_concept_id && suggestion.child_concept_id && wouldCreateHierarchyCycle(suggestion.parent_concept_id, suggestion.child_concept_id, relations.value)) errors.push(`suggestions.${index} 会形成父子关系环`)
+        if (suggestion.relation_type === 'hierarchy' && sourceId && targetId && wouldCreateHierarchyCycle(sourceId, targetId, relations.value)) errors.push(`suggestions.${index} 会形成父子关系环`)
       }
       if (suggestion.type === 'unit_relink') {
         if (!units.value.some((unit) => unit.id === suggestion.unit_id)) errors.push(`suggestions.${index} 的知识单元不存在`)
@@ -967,7 +989,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         } else if (suggestion.type === 'alias') {
           db.run('INSERT OR IGNORE INTO concept_aliases(id, concept_id, alias, normalized_alias, source, created_at) VALUES (?, ?, ?, ?, ?, ?)', [createId('alias'), suggestion.concept_id, suggestion.alias?.trim(), normalizeText(suggestion.alias ?? ''), 'maintenance', now])
         } else if (suggestion.type === 'relation') {
-          db.run('INSERT OR IGNORE INTO concept_relations(id, parent_concept_id, child_concept_id, relation_type, source, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [createId('relation'), suggestion.parent_concept_id, suggestion.child_concept_id, suggestion.relation_type, 'maintenance', 'proposed', now, now])
+          const rawSourceId = suggestion.source_concept_id ?? suggestion.parent_concept_id
+          const rawTargetId = suggestion.target_concept_id ?? suggestion.child_concept_id
+          const [sourceId, targetId] = suggestion.relation_type === 'related' && rawSourceId && rawTargetId && rawSourceId > rawTargetId
+            ? [rawTargetId, rawSourceId]
+            : [rawSourceId, rawTargetId]
+          db.run('INSERT OR IGNORE INTO concept_relations(id, parent_concept_id, child_concept_id, relation_type, source, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [createId('relation'), sourceId, targetId, suggestion.relation_type, 'maintenance', 'proposed', now, now])
         } else if (suggestion.type === 'unit_relink') {
           db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [suggestion.unit_id, suggestion.concept_id, 'maintenance', now])
         } else if (suggestion.type === 'unit_revision') {
@@ -997,6 +1024,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       return { ok: false, errors }
     }
     const data = parsed.data
+    const errors: string[] = []
+    const inputParts = task.inputRevision.split(':')
+    const targetId = inputParts[0]
+    const targetRevision = inputParts[1]
 
     if (task.type === 'maintenance') {
       const validation = maintenanceSuggestionErrors(data)
@@ -1010,10 +1041,29 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       return { ok: true, errors: [] }
     }
 
-    const errors: string[] = []
-    const inputParts = task.inputRevision.split(':')
-    const targetId = inputParts[0]
-    const targetRevision = inputParts[1]
+    if (task.type === 'session_triage') {
+      const kind = data.kind
+      const confidence = data.confidence
+      const reason = data.reason
+      const retainInGraph = data.retain_in_graph
+      const triageSession = sessions.value.find((item) => item.id === targetId)
+      if (!triageSession) errors.push('任务所属的会话不存在')
+      if (!['knowledge', 'discussion', 'procedure', 'mixed'].includes(String(kind))) errors.push('kind 必须是 knowledge、discussion、procedure 或 mixed')
+      if (typeof confidence !== 'number' || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) errors.push('confidence 必须是 0 到 1 之间的数字')
+      if (typeof reason !== 'string' || !reason.trim()) errors.push('reason 必须是非空字符串')
+      if (typeof retainInGraph !== 'boolean') errors.push('retain_in_graph 必须是布尔值')
+      if (errors.length) {
+        markTask(taskId, errors.some((error) => error.includes('版本')) ? 'stale' : 'needs_review', responseText, errors)
+        return { ok: false, errors }
+      }
+      mutate(() => {
+        const now = isoNow()
+        db.run('UPDATE sessions SET knowledge_kind = ?, knowledge_confidence = ?, knowledge_judgment = ?, knowledge_retain_in_graph = ?, updated_at = ? WHERE id = ?', [kind, confidence, String(reason).trim(), retainInGraph ? 1 : 0, now, targetId])
+        db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = ?, validation_errors = NULL, error_message = NULL, updated_at = ? WHERE id = ?', ['success', responseText, JSON.stringify(data), now, taskId])
+      })
+      return { ok: true, errors: [] }
+    }
+
     const unit = units.value.find((item) => item.id === targetId)
     const session = sessions.value.find((item) => item.id === targetId)
 
@@ -1060,9 +1110,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       mutate(() => {
         const now = isoNow()
         const conceptIds: string[] = []
+        const conceptIdsByName = new Map<string, string>()
         candidates.forEach((candidate) => {
           const conceptId = ensureConcept(candidate.name, 'llm')
           conceptIds.push(conceptId)
+          conceptIdsByName.set(normalizeText(candidate.name), conceptId)
           candidate.aliases.forEach((alias) => {
             const normalizedAlias = normalizeText(alias)
             if (!normalizedAlias || normalizedAlias === normalizeText(candidate.name)) return
@@ -1075,6 +1127,22 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         if (task.type === 'origin_concepts' && session) {
           units.value.filter((item) => item.sessionId === session.id).forEach((sessionUnit) => conceptIds.forEach((conceptId) => db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [sessionUnit.id, conceptId, 'llm', now])))
         }
+        const pendingRelations: ConceptRelation[] = []
+        if (Array.isArray(data.relations)) data.relations.forEach((rawRelation) => {
+          if (!rawRelation || typeof rawRelation !== 'object') return
+          const value = rawRelation as Record<string, unknown>
+          const sourceName = typeof value.source === 'string' ? value.source : typeof value.parent === 'string' ? value.parent : typeof value.source_name === 'string' ? value.source_name : typeof value.parent_name === 'string' ? value.parent_name : ''
+          const targetName = typeof value.target === 'string' ? value.target : typeof value.child === 'string' ? value.child : typeof value.target_name === 'string' ? value.target_name : typeof value.child_name === 'string' ? value.child_name : ''
+          const sourceRawId = conceptIdsByName.get(normalizeText(sourceName))
+          const targetRawId = conceptIdsByName.get(normalizeText(targetName))
+          const relationType = value.type === 'related' ? 'related' as const : value.type === 'hierarchy' ? 'hierarchy' as const : null
+          if (!sourceRawId || !targetRawId || !relationType || sourceRawId === targetRawId) return
+          const [sourceId, targetId] = relationType === 'related' && sourceRawId > targetRawId ? [targetRawId, sourceRawId] : [sourceRawId, targetRawId]
+          if (relationType === 'hierarchy' && wouldCreateHierarchyCycle(sourceId, targetId, [...relations.value, ...pendingRelations])) return
+          const relation: ConceptRelation = { id: createId('relation'), parentConceptId: sourceId, childConceptId: targetId, relationType, source: 'llm', status: 'proposed', createdAt: now, updatedAt: now }
+          pendingRelations.push(relation)
+          db.run('INSERT OR IGNORE INTO concept_relations(id, parent_concept_id, child_concept_id, relation_type, source, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [relation.id, sourceId, targetId, relationType, 'llm', 'proposed', now, now])
+        })
         db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = ?, validation_errors = NULL, updated_at = ? WHERE id = ?', ['success', responseText, JSON.stringify(data), now, taskId])
       })
       return { ok: true, errors: [] }

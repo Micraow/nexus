@@ -4,7 +4,7 @@ import wasmUrl from 'sql.js/dist/sql-wasm.wasm?url'
 
 const STORAGE_KEY = 'nexus:sqlite:v1'
 const BACKUP_STORAGE_PREFIX = 'nexus:sqlite:backup:'
-const CURRENT_SCHEMA_VERSION = 2
+const CURRENT_SCHEMA_VERSION = 3
 
 export interface DatabaseIntegrityReport {
   ok: boolean
@@ -50,6 +50,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   updated_at TEXT NOT NULL,
   message_count INTEGER NOT NULL DEFAULT 0,
   unit_count INTEGER NOT NULL DEFAULT 0,
+  knowledge_kind TEXT NOT NULL DEFAULT 'unknown',
+  knowledge_confidence REAL,
+  knowledge_judgment TEXT,
+  knowledge_retain_in_graph INTEGER NOT NULL DEFAULT 0,
   revision INTEGER NOT NULL DEFAULT 1,
   local_only INTEGER NOT NULL DEFAULT 0,
   deleted_at TEXT
@@ -216,6 +220,16 @@ const migrations: Array<{ version: number; apply: (database: Database) => void }
       `)
     },
   },
+  {
+    version: 3,
+    apply(database) {
+      const columns = database.exec('PRAGMA table_info(sessions)')[0]?.values.map((row) => String(row[1])) ?? []
+      if (!columns.includes('knowledge_kind')) database.run("ALTER TABLE sessions ADD COLUMN knowledge_kind TEXT NOT NULL DEFAULT 'unknown'")
+      if (!columns.includes('knowledge_confidence')) database.run('ALTER TABLE sessions ADD COLUMN knowledge_confidence REAL')
+      if (!columns.includes('knowledge_judgment')) database.run('ALTER TABLE sessions ADD COLUMN knowledge_judgment TEXT')
+      if (!columns.includes('knowledge_retain_in_graph')) database.run('ALTER TABLE sessions ADD COLUMN knowledge_retain_in_graph INTEGER NOT NULL DEFAULT 0')
+    },
+  },
 ]
 
 export class SqliteStore {
@@ -317,6 +331,11 @@ export class SqliteStore {
       );
       CREATE INDEX IF NOT EXISTS idx_search_documents_kind_ref ON search_documents(kind, ref_id);
     `)
+    const columns = this.requireDb().exec('PRAGMA table_info(sessions)')[0]?.values.map((row) => String(row[1])) ?? []
+    if (!columns.includes('knowledge_kind')) this.requireDb().run("ALTER TABLE sessions ADD COLUMN knowledge_kind TEXT NOT NULL DEFAULT 'unknown'")
+    if (!columns.includes('knowledge_confidence')) this.requireDb().run('ALTER TABLE sessions ADD COLUMN knowledge_confidence REAL')
+    if (!columns.includes('knowledge_judgment')) this.requireDb().run('ALTER TABLE sessions ADD COLUMN knowledge_judgment TEXT')
+    if (!columns.includes('knowledge_retain_in_graph')) this.requireDb().run('ALTER TABLE sessions ADD COLUMN knowledge_retain_in_graph INTEGER NOT NULL DEFAULT 0')
   }
 
   private requireDb(): Database {

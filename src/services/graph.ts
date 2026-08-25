@@ -7,6 +7,7 @@ import type {
   KnowledgeUnit,
   ManualGraphEdge,
   Message,
+  Session,
   UnitConcept,
 } from '@/types/domain'
 
@@ -14,6 +15,7 @@ export interface GraphInput {
   concepts: Concept[]
   units: KnowledgeUnit[]
   messages: Message[]
+  sessions?: Session[]
   unitConcepts: UnitConcept[]
   relations: ConceptRelation[]
   manualEdges?: ManualGraphEdge[]
@@ -21,6 +23,7 @@ export interface GraphInput {
   showUnits?: boolean
   showMessages?: boolean
   showProposed?: boolean
+  showRetainedSessions?: boolean
   expandedConceptIds?: string[]
 }
 
@@ -63,6 +66,25 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
   }
 
   const conceptNode = (id: string) => `concept:${id}`
+  const visibleUnitIds = new Set<string>()
+  const ensureUnitNode = (unitId: string, conceptIds: Set<string>): void => {
+    if (visibleUnitIds.has(unitId)) return
+    const unit = unitById.get(unitId)
+    if (!unit) return
+    visibleUnitIds.add(unitId)
+    const unitNodeId = `unit:${unit.id}`
+    nodes.push({
+      id: unitNodeId,
+      type: 'unit',
+      refId: unit.id,
+      label: unit.title || '待命名知识单元',
+      subtitle: unit.summary || '尚未生成摘要',
+      degree: conceptIds.size,
+      unitCount: 0,
+    })
+    conceptIds.forEach((conceptId) => ensureEdge(conceptNode(conceptId), unitNodeId, 'association'))
+  }
+
   for (const [unitId, conceptIds] of conceptsByUnit) {
     const ids = [...conceptIds]
     ids.forEach((conceptId) => {
@@ -78,26 +100,18 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
       }
     }
     if (input.showUnits || ids.some((conceptId) => expandedConceptIds.has(conceptId))) {
-      const unit = unitById.get(unitId)
-      if (!unit) continue
-      const unitNodeId = `unit:${unit.id}`
-      nodes.push({
-        id: unitNodeId,
-        type: 'unit',
-        refId: unit.id,
-        label: unit.title || '待命名知识单元',
-        subtitle: unit.summary || '尚未生成摘要',
-        degree: ids.length,
-        unitCount: 0,
-      })
-      ids.forEach((conceptId) => ensureEdge(conceptNode(conceptId), unitNodeId, 'association'))
+      ensureUnitNode(unitId, conceptIds)
     }
   }
 
-  if (input.showMessages) {
-    input.messages
-      .filter((message) => !message.unitId || input.showUnits)
-      .forEach((message) => {
+  if (input.showMessages || input.showRetainedSessions) {
+    const sessionsById = new Map((input.sessions ?? []).map((session) => [session.id, session]))
+    const visibleMessages = input.messages.filter((message) => {
+      const session = sessionsById.get(message.sessionId)
+      const retained = Boolean(input.showRetainedSessions && session?.knowledgeRetainInGraph && session.knowledgeKind !== 'knowledge')
+      return input.showMessages || retained
+    })
+    visibleMessages.forEach((message) => {
         const messageNodeId = `message:${message.id}`
         nodes.push({
           id: messageNodeId,
@@ -105,11 +119,25 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
           refId: message.id,
           label: message.content.slice(0, 34) || '空消息',
           subtitle: message.role,
-          degree: message.unitId ? 1 : 0,
+          degree: 0,
           unitCount: 0,
         })
-        if (message.unitId && input.showUnits) ensureEdge(`unit:${message.unitId}`, messageNodeId, 'association')
+        if (message.unitId && visibleUnitIds.has(message.unitId)) ensureEdge(`unit:${message.unitId}`, messageNodeId, 'association')
+    })
+    const messagesBySession = new Map<string, GraphNode[]>()
+    visibleMessages.forEach((message) => {
+      const list = messagesBySession.get(message.sessionId) ?? []
+      list.push(nodes.find((node) => node.id === `message:${message.id}`) as GraphNode)
+      messagesBySession.set(message.sessionId, list)
+    })
+    messagesBySession.forEach((sessionNodes) => {
+      sessionNodes.sort((left, right) => {
+        const l = visibleMessages.find((message) => message.id === left.refId)?.orderInSession ?? 0
+        const r = visibleMessages.find((message) => message.id === right.refId)?.orderInSession ?? 0
+        return l - r
       })
+      for (let index = 1; index < sessionNodes.length; index += 1) ensureEdge(sessionNodes[index - 1].id, sessionNodes[index].id, 'conversation')
+    })
   }
 
   input.relations

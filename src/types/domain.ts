@@ -6,7 +6,9 @@ export type ConceptStatus = 'active' | 'archived' | 'merged'
 export type RelationType = 'hierarchy' | 'related'
 export type RelationStatus = 'proposed' | 'confirmed' | 'rejected'
 export type Provenance = 'llm' | 'manual' | 'maintenance' | 'merge'
+export type SessionKnowledgeKind = 'unknown' | 'knowledge' | 'discussion' | 'procedure' | 'mixed'
 export type TaskType =
+  | 'session_triage'
   | 'segmentation'
   | 'concept_extraction'
   | 'title'
@@ -35,6 +37,10 @@ export interface Session {
   updatedAt: string
   messageCount: number
   unitCount: number
+  knowledgeKind: SessionKnowledgeKind
+  knowledgeConfidence?: number | null
+  knowledgeJudgment?: string | null
+  knowledgeRetainInGraph: boolean
   revision: number
   localOnly: boolean
   deletedAt?: string | null
@@ -161,10 +167,12 @@ export interface MaintenanceSuggestion {
   type: MaintenanceSuggestionType
   applied?: boolean
   reason?: string
-  source_concept_id?: string
-  target_concept_id?: string
   concept_id?: string
   alias?: string
+  /** Canonical relation endpoints. For related edges, the pair is undirected. */
+  source_concept_id?: string
+  target_concept_id?: string
+  /** Legacy aliases accepted when applying older maintenance task results. */
   parent_concept_id?: string
   child_concept_id?: string
   relation_type?: RelationType
@@ -193,7 +201,7 @@ export interface ManualGraphEdge {
 }
 
 export type GraphNodeType = 'concept' | 'unit' | 'message'
-export type GraphEdgeType = 'co_occurrence' | 'association' | 'hierarchy' | 'related' | 'manual'
+export type GraphEdgeType = 'co_occurrence' | 'association' | 'conversation' | 'hierarchy' | 'related' | 'manual'
 
 export interface GraphNode {
   id: string
@@ -261,7 +269,7 @@ export interface AppConfig {
   ui: {
     theme: 'light' | 'dark' | 'system'
     reducedMotion: boolean
-    graph: { showUnits: boolean; showMessages: boolean; showProposed: boolean }
+    graph: { showUnits: boolean; showMessages: boolean; showProposed: boolean; showRetainedSessions: boolean }
   }
   storage: { databasePath: string }
 }
