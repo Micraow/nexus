@@ -133,6 +133,7 @@ textarea { resize: vertical; }
 .queue-toolbar, .task-command-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; margin-bottom: 12px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 7px; }
 .queue-status, .task-command-bar > span { flex: 1; min-width: 180px; color: var(--muted); font-size: 12px; }
 .queue-estimate { color: var(--faint); font-size: 11px; }
+.sort-inline { display: inline-flex; align-items: center; gap: 8px; }.sort-inline select { min-height: 28px; padding: 0 6px; font-size: 11px; }
 .feedback-banner .icon-button { margin-left: auto; width: 28px; height: 28px; }
 .feedback-success { color: var(--success); background: var(--success-soft); border-color: color-mix(in srgb, var(--success) 22%, var(--line)); }
 .feedback-error { color: var(--danger); background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 22%, var(--line)); }
