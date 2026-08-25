@@ -62,6 +62,7 @@
 
 * { box-sizing: border-box; }
 html, body, #app { margin: 0; min-width: 320px; min-height: 100%; width: 100%; }
+html { overflow-y: scroll; }
 body { background: var(--bg); color: var(--text); font-size: 15px; line-height: 1.55; }
 button, input, textarea, select { font: inherit; }
 button { border: 0; cursor: pointer; color: inherit; }
@@ -70,7 +71,7 @@ input, textarea, select { color: var(--text); background: var(--surface); border
 input::placeholder, textarea::placeholder { color: var(--faint); }
 textarea { resize: vertical; }
 
-.app-shell { min-height: 100dvh; display: flex; overflow: hidden; background: var(--bg); }
+.app-shell { min-height: 100dvh; display: flex; overflow: visible; background: var(--bg); }
 .sidebar { position: relative; z-index: 30; width: 232px; min-width: 232px; display: flex; flex-direction: column; overflow: hidden; padding: 22px 14px 16px; background: var(--surface); border-right: 1px solid var(--line); transition: width var(--motion) ease, min-width var(--motion) ease; }
 .sidebar.collapsed { width: 72px; min-width: 72px; }
 .brand-lockup { height: 68px; min-height: 68px; display: flex; align-items: center; gap: 11px; padding: 0 10px 24px; }
@@ -102,7 +103,7 @@ textarea { resize: vertical; }
 .status-dot { width: 7px; height: 7px; display: inline-block; flex: 0 0 auto; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 4px var(--success-soft); }
 .sidebar-meta { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font-size: 11px; }
 
-.main-shell { min-width: 0; flex: 1; display: flex; flex-direction: column; }
+.main-shell { min-width: 0; min-height: 100dvh; flex: 1; display: flex; flex-direction: column; }
 .topbar { min-height: 88px; display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 18px 34px; background: color-mix(in srgb, var(--surface) 92%, transparent); border-bottom: 1px solid var(--line); }
 .topbar-title { display: grid; gap: 1px; }
 .topbar-title h1, .page-toolbar h2, .hero-band h2 { margin: 0; letter-spacing: -.025em; }
@@ -133,7 +134,7 @@ textarea { resize: vertical; }
 .text-button { min-height: 32px; display: inline-flex; align-items: center; gap: 5px; padding: 0 2px; color: var(--primary); background: transparent; font-size: 12px; font-weight: 650; }
 .text-button:hover { color: var(--primary-strong); }
 
-.content-shell { min-width: 0; flex: 1; overflow: auto; padding: 24px 26px 34px; }
+.content-shell { min-width: 0; flex: 1 0 auto; overflow: visible; padding: 24px 26px 34px; }
 .view-panel { width: 100%; max-width: 1680px; margin: 0 auto; animation: view-enter var(--motion) ease-out both; }
 @keyframes view-enter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
 .feedback-banner { min-height: 42px; display: flex; align-items: center; gap: 9px; margin-bottom: 18px; padding: 0 12px; border: 1px solid var(--line); border-radius: 7px; font-size: 13px; }

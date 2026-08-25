@@ -61,14 +61,14 @@ function render(): void {
   let restoringViewport = true
   let fittingProgrammatically = false
   const zoom = d3.zoom<SVGSVGElement, unknown>().scaleExtent([0.35, 3.2]).filter((event) => {
-    if (event.type === 'mousedown' && event.shiftKey) return false
+    if ((event.type === 'mousedown' || event.type === 'pointerdown') && event.shiftKey) return false
     return (!event.ctrlKey || event.type === 'wheel') && !event.button
   }).on('zoom', (event) => {
     viewport.attr('transform', event.transform)
     liveTransform = event.transform
     if (!restoringViewport) {
       if (!fittingProgrammatically) userMovedViewport = true
-      emit('viewport-change', { x: event.transform.x, y: event.transform.y, scale: event.transform.k })
+      if (!fittingProgrammatically) emit('viewport-change', { x: event.transform.x, y: event.transform.y, scale: event.transform.k })
     }
   })
   root.call(zoom)
@@ -218,11 +218,11 @@ function render(): void {
     .attr('fill', 'rgba(44,110,158,.12)')
     .attr('stroke', '#2c6e9e')
     .attr('stroke-dasharray', '4 3')
-  const pointerPoint = (event: MouseEvent): [number, number] => {
+  const pointerPoint = (event: PointerEvent): [number, number] => {
     const bounds = element.getBoundingClientRect()
     return [(event.clientX - bounds.left) * (width / Math.max(bounds.width, 1)), (event.clientY - bounds.top) * (height / Math.max(bounds.height, 1))]
   }
-  const finishBrush = (event: MouseEvent): void => {
+  const finishBrush = (event: PointerEvent): void => {
     if (!brushOrigin) return
     const [x0, y0] = brushOrigin
     const [x1, y1] = pointerPoint(event)
@@ -237,22 +237,23 @@ function render(): void {
       if (node.x >= topLeft[0] && node.x <= bottomRight[0] && node.y >= topLeft[1] && node.y <= bottomRight[1]) emit('box-select-unit', node.refId)
     })
   }
-  root.on('mousedown.graph-brush', (event: MouseEvent) => {
+  root.on('pointerdown.graph-brush', (event: PointerEvent) => {
     if (!event.shiftKey || event.button !== 0) return
     if ((event.target as Element).closest('.graph-node')) return
     event.preventDefault()
+    ;(event.currentTarget as SVGSVGElement).setPointerCapture?.(event.pointerId)
     brushOrigin = pointerPoint(event)
     brushRect.attr('x', brushOrigin[0]).attr('y', brushOrigin[1]).attr('width', 0).attr('height', 0).attr('visibility', 'visible')
   })
-  root.on('mousemove.graph-brush', (event: MouseEvent) => {
+  root.on('pointermove.graph-brush', (event: PointerEvent) => {
     if (!brushOrigin) return
     event.preventDefault()
     const [x0, y0] = brushOrigin
     const [x1, y1] = pointerPoint(event)
     brushRect.attr('x', Math.min(x0, x1)).attr('y', Math.min(y0, y1)).attr('width', Math.abs(x1 - x0)).attr('height', Math.abs(y1 - y0))
   })
-  root.on('mouseup.graph-brush', finishBrush)
-  root.on('mouseleave.graph-brush', finishBrush)
+  root.on('pointerup.graph-brush', finishBrush)
+  root.on('pointercancel.graph-brush', finishBrush)
 }
 
 onMounted(() => {
@@ -263,8 +264,12 @@ onMounted(() => {
   }
 })
 
-// 视口以 liveTransform 为准，不随 props.viewport 重渲染；持久化视口只在组件挂载时恢复。
-watch(() => [props.snapshot, props.selectedUnitIds], render, { deep: true })
+// 视口以 liveTransform 为准；只有图谱拓扑或可见节点选择变化时才重建画布。
+watch(() => {
+  const nodes = props.snapshot.nodes.map((node) => `${node.id}:${node.label}:${node.subtitle ?? ''}`).join('|')
+  const edges = props.snapshot.edges.map((edge) => `${edge.id}:${edge.source}:${edge.target}:${edge.type}:${edge.status ?? ''}`).join('|')
+  return `${props.snapshot.revision}|${nodes}|${edges}|${props.selectedUnitIds.join(',')}`
+}, render)
 
 onBeforeUnmount(() => {
   simulation?.stop()

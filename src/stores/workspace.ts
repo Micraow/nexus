@@ -1407,12 +1407,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   function saveGraphLayout(entry: Omit<GraphLayoutEntry, 'layoutVersion'>): void {
-    mutate(() => db.run('INSERT INTO graph_layout(node_type, ref_id, x, y, fixed, layout_version) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(node_type, ref_id) DO UPDATE SET x = excluded.x, y = excluded.y, fixed = excluded.fixed, layout_version = excluded.layout_version', [entry.nodeType, entry.refId, entry.x, entry.y, entry.fixed ? 1 : 0, graphViewport.value.layoutVersion + 1]))
+    const layoutVersion = graphViewport.value.layoutVersion + 1
+    db.transaction(() => db.run('INSERT INTO graph_layout(node_type, ref_id, x, y, fixed, layout_version) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(node_type, ref_id) DO UPDATE SET x = excluded.x, y = excluded.y, fixed = excluded.fixed, layout_version = excluded.layout_version', [entry.nodeType, entry.refId, entry.x, entry.y, entry.fixed ? 1 : 0, layoutVersion]))
+    const existing = graphLayout.value.find((item) => item.nodeType === entry.nodeType && item.refId === entry.refId)
+    const next = { ...entry, layoutVersion }
+    graphLayout.value = existing
+      ? graphLayout.value.map((item) => item === existing ? next : item)
+      : [...graphLayout.value, next]
   }
 
   function saveGraphViewport(viewport: Omit<GraphViewport, 'layoutVersion'>): void {
     const layoutVersion = graphViewport.value.layoutVersion + 1
-    mutate(() => db.run('INSERT INTO graph_viewport(id, x, y, scale, layout_version) VALUES (1, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET x = excluded.x, y = excluded.y, scale = excluded.scale, layout_version = excluded.layout_version', [viewport.x, viewport.y, viewport.scale, layoutVersion]))
+    db.transaction(() => db.run('INSERT INTO graph_viewport(id, x, y, scale, layout_version) VALUES (1, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET x = excluded.x, y = excluded.y, scale = excluded.scale, layout_version = excluded.layout_version', [viewport.x, viewport.y, viewport.scale, layoutVersion]))
     // 同步内存值：GraphCanvas 重渲染时按该值恢复缩放，过期会导致缩放被重置。
     graphViewport.value = { ...viewport, layoutVersion }
   }
