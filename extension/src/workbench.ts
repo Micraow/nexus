@@ -124,6 +124,7 @@ function buildRow(item: SessionState): HTMLElement {
     if (checkbox.checked) state.selected.add(item.entry.externalSessionId)
     else state.selected.delete(item.entry.externalSessionId)
     render()
+    if (checkbox.checked) void runQueue()
   })
   const title = document.createElement('span')
   title.className = 'session-title'
@@ -221,16 +222,29 @@ async function exportOne(id: string): Promise<void> {
   item.status = 'running'
   item.error = undefined
   render()
-  const response = await sendToSource({ type: 'EXPORT_SESSION', externalSessionId: id })
-  if (response.ok && response.kind === 'conversation' && response.conversation) {
-    item.status = 'success'
-    item.conversation = response.conversation
-    if (response.conversation.title) item.entry.title = response.conversation.title
-  } else {
+  const workbenchTab = await chrome.tabs.getCurrent()
+  try {
+    if (!(await findSourceTab())) throw new Error('未找到 DeepSeek 标签页')
+    if (state.sourceTabId != null) {
+      await chrome.tabs.update(state.sourceTabId, { active: true })
+      await new Promise((resolve) => window.setTimeout(resolve, 400))
+    }
+    const response = await sendToSource({ type: 'EXPORT_SESSION', externalSessionId: id })
+    if (response.ok && response.kind === 'conversation' && response.conversation) {
+      item.status = 'success'
+      item.conversation = response.conversation
+      if (response.conversation.title) item.entry.title = response.conversation.title
+    } else {
+      item.status = 'failed'
+      item.error = response.ok ? '返回内容为空' : response.error
+    }
+  } catch (error) {
     item.status = 'failed'
-    item.error = response.ok ? '返回内容为空' : response.error
+    item.error = error instanceof Error ? error.message : String(error)
+  } finally {
+    if (workbenchTab?.id != null) await chrome.tabs.update(workbenchTab.id, { active: true })
+    render()
   }
-  render()
 }
 
 async function runQueue(): Promise<void> {

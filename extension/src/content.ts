@@ -36,7 +36,8 @@ function normalizeRole(value: unknown): ExportedMessage['role'] | null {
 
 function normalizeTimestamp(value: unknown): string | undefined {
   if (typeof value !== 'string' && typeof value !== 'number') return undefined
-  const date = new Date(value)
+  const numeric = typeof value === 'number' && value < 1_000_000_000_000 ? value * 1000 : value
+  const date = new Date(numeric)
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString()
 }
 
@@ -48,10 +49,20 @@ function collectMessages(node: unknown, out: Array<{ message: ExportedMessage; a
   if (!node || typeof node !== 'object') return out.length
   const record = node as Record<string, unknown>
   const role = normalizeRole(record.role ?? record.sender)
-  const content = typeof record.content === 'string' ? record.content : undefined
-  if (role && content != null && content.trim() && !(record.content != null && typeof record.content === 'object')) {
+  let content = typeof record.content === 'string' ? record.content : ''
+  if (role && Array.isArray(record.fragments)) {
+    const expectedType = role === 'user' ? 'REQUEST' : 'RESPONSE'
+    const fragmentContent = record.fragments
+      .filter((fragment): fragment is Record<string, unknown> => Boolean(fragment && typeof fragment === 'object'))
+      .filter((fragment) => String(fragment.type ?? '').toUpperCase() === expectedType)
+      .map((fragment) => typeof fragment.content === 'string' ? fragment.content : '')
+      .filter(Boolean)
+      .join('\n\n')
+    if (fragmentContent) content = fragmentContent
+  }
+  if (role && content.trim()) {
     out.push({
-      message: { role, content },
+      message: { role, content: content.trim() },
       at: normalizeTimestamp(record.insert_time ?? record.created_at),
       order: out.length,
     })
@@ -81,6 +92,12 @@ function storeCaptured(url: string, body: string): void {
   const sessionIds = new Set<string>()
   const urlMatch = url.match(SESSION_HREF_PATTERN)
   if (urlMatch) sessionIds.add(urlMatch[1])
+  try {
+    const querySessionId = new URL(url, window.location.href).searchParams.get('chat_session_id')
+    if (querySessionId) sessionIds.add(querySessionId)
+  } catch {
+    // Ignore malformed response URLs.
+  }
   const huntIds = (node: unknown): void => {
     if (Array.isArray(node)) return void node.forEach(huntIds)
     if (!node || typeof node !== 'object') return
@@ -90,6 +107,7 @@ function storeCaptured(url: string, body: string): void {
     })
   }
   huntIds(parsed)
+  if (!sessionIds.size) discovered.forEach((entry) => sessionIds.add(entry.externalSessionId))
   if (!sessionIds.size) return
   const messages = collected
     .sort((left, right) => {
@@ -98,6 +116,78 @@ function storeCaptured(url: string, body: string): void {
     })
     .map((entry) => ({ role: entry.message.role, content: entry.message.content, ...(entry.at ? { timestamp: entry.at } : {}) }))
   sessionIds.forEach((id) => captureCache.set(id, messages))
+}
+
+function findConversationPayload(node: unknown, sessionId: string, depth = 0): Record<string, unknown> | null {
+  if (!node || typeof node !== 'object' || depth > 10) return null
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const found = findConversationPayload(item, sessionId, depth + 1)
+      if (found) return found
+    }
+    return null
+  }
+  const record = node as Record<string, unknown>
+  const session = record.chat_session
+  const messages = record.chat_messages
+  if (session && typeof session === 'object' && (session as Record<string, unknown>).id === sessionId && Array.isArray(messages) && messages.length) return record
+  for (const value of Object.values(record)) {
+    const found = findConversationPayload(value, sessionId, depth + 1)
+    if (found) return found
+  }
+  return null
+}
+
+async function readIndexedDbSession(sessionId: string): Promise<boolean> {
+  if (!indexedDB.databases) return false
+  try {
+    const databases = await indexedDB.databases()
+    for (const info of databases) {
+      if (!info.name) continue
+      let database: IDBDatabase | null = null
+      try {
+        database = await new Promise<IDBDatabase>((resolve, reject) => {
+          const request = indexedDB.open(info.name as string)
+          request.onsuccess = () => resolve(request.result)
+          request.onerror = () => reject(request.error)
+        })
+        for (const storeName of Array.from(database.objectStoreNames)) {
+          const records = await new Promise<unknown[]>((resolve) => {
+            const values: unknown[] = []
+            const request = database!.transaction(storeName, 'readonly').objectStore(storeName).openCursor()
+            request.onsuccess = () => {
+              const cursor = request.result
+              if (!cursor) return resolve(values)
+              values.push(cursor.value)
+              cursor.continue()
+            }
+            request.onerror = () => resolve(values)
+          })
+          for (const value of records) {
+            const payload = findConversationPayload(value, sessionId)
+            if (!payload) continue
+            const messages: Array<{ message: ExportedMessage; at?: string; order: number }> = []
+            collectMessages(payload.chat_messages, messages)
+            if (!messages.length) continue
+            const session = payload.chat_session as Record<string, unknown>
+            captureCache.set(sessionId, messages.sort((left, right) => {
+              if (left.at && right.at) return left.at.localeCompare(right.at)
+              return left.order - right.order
+            }).map((entry) => ({ role: entry.message.role, content: entry.message.content, ...(entry.at ? { timestamp: entry.at } : {}) })))
+            sessionCache.set(sessionId, { externalSessionId: sessionId, title: typeof session.title === 'string' ? session.title.trim().slice(0, 120) : '' })
+            return true
+          }
+        }
+      } catch {
+        // A stale or unavailable object store must not prevent other stores from being searched.
+      } finally {
+        database?.close()
+      }
+    }
+  } catch {
+    // IndexedDB access is a fallback only; DOM/API paths still remain available.
+  }
+  return false
 }
 
 window.addEventListener(CAPTURE_EVENT, (event) => {
@@ -174,9 +264,16 @@ function isSessionReady(sessionId: string | null, baselineMarkdownCount = 0): bo
 }
 
 async function waitForSession(sessionId: string | null, timeoutMs = 20_000): Promise<boolean> {
+  if (sessionId && !captureCache.has(sessionId)) await readIndexedDbSession(sessionId)
   const deadline = Date.now() + timeoutMs
+  let idbRetried = false
   while (Date.now() < deadline) {
     if (sessionId && captureCache.has(sessionId)) return true
+    if (!idbRetried && Date.now() + 10_000 < deadline) {
+      idbRetried = true
+      await readIndexedDbSession(sessionId as string)
+      if (captureCache.has(sessionId as string)) return true
+    }
     if (currentSessionId() === sessionId && document.querySelectorAll('.ds-markdown').length > 0) {
       await wait(500)
       return currentSessionId() === sessionId && (Boolean(sessionId && captureCache.has(sessionId)) || document.querySelectorAll('.ds-markdown').length > 0)
