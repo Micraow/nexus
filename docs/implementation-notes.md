@@ -63,15 +63,20 @@
 - 长列表使用分段加载而非虚拟滚动：会话每页 40、知识主题每页 60、历史任务每页 30，底部“加载更多”递增可见数。该阈值是界面常量，后续接入虚拟滚动时可整体替换。
 - 知识主题详情的关联单元列表支持三种排序：最近更新、创建时间、名称（中文 `Intl.Collator('zh-Hans-CN')` 排序）；父/子/相关主题行按对方主题关联的单元数量降序排列，常用主体靠前。
 - 首次启动不注入演示数据。空库直接显示导入引导，避免把示例内容误认为用户自己的知识。
+- 新对话主页直接提供问题输入、知识主题、快捷短语和上下文入口；创建动作复用同一 composer，仍只创建本地任务，不在点击时隐式发出网络请求。原有导入、最近会话和图谱入口降为辅助区域，确保首次打开应用即可开始提问。首页和普通工作页使用更宽的内容列，空列表也用占满面板的空状态承接主要空间。
+- 侧边栏收起时保留固定网格尺寸，品牌文字、导航文字、badge 使用 `display: none`，底部状态使用 `visibility: hidden`；这样不会因 v-if 销毁导航节点造成按钮横向重排，窄窗口自动收起也使用同一网格规则。底部状态只展示本地保存提示和简短路径摘要。
+- 图谱首次布局只在力向模拟结束或首帧有效时执行一次 bounds fit，不在每个 tick 调用 `zoom.transform`；首次快照为空时保留“尚未 fit”状态，异步节点回来后再适配一次。用户开始缩放或平移后保留实时变换，不再被快照重绘覆盖。
 
 ## Chrome 扩展（DeepSeek 导出器）
 
-- MV3 结构：`bridge.js` 注入 MAIN world（`document_start`，要求 Chrome 111+）包装 `fetch`/`XHR`，把 `/api/` 响应的 JSON 通过 `CustomEvent('nexus:captured-json')` 转发给隔离世界；`content.js` 在隔离世界深搜响应对象树（递归查找含 `role` + `content` 的数组）并按会话 id 缓存。页面结构变化时自动降级为 DOM 提取（`.ds-markdown` 交替块），两类来源都失败才计入错误。
-- 侧边栏会话列表采用“锚点定位 + 滚动容器步进”懒加载，逐屏触发 DeepSeek 自己的加载请求；工作台可暂停/继续，失败项可重试。
-- 导出策略：全部会话失败时不生成文件；部分成功仍导出，失败项进入 `errors` 数组随 JSON 一并保存，便于补导。工作台通过向源页面发消息驱动抓取，不自行注入网络请求。
+- MV3 结构：`bridge.js` 注入 MAIN world（`document_start`，要求 Chrome 111+）包装 `fetch`/`XHR`，只捕获当前页面同源且看起来是 JSON 的响应，再通过 `CustomEvent('nexus:captured-json')` 转发给隔离世界；`content.js` 在隔离世界深搜响应对象树（递归查找含 `role` + `content` 的数组）并按会话 id 缓存。页面结构变化时自动降级为 DOM 提取（`.ds-markdown` 交替块），两类来源都失败才计入错误。
+- `session` 侧边栏列表采用增量滚动：每次移动约 0.8 个可视高度并等待懒加载，连续两次在滚动底部没有新节点后才判定结束，避免一次跳到底部导致虚拟列表只发现首批会话。导出等待同时确认当前路由已切换，不能只因为旧页面仍有 `.ds-markdown` 就提前成功。
+- 扩展下载使用 `chrome.downloads` 的 data URL，并允许只包含失败项的结果文件；部分成功时成功会话和 `errors` 一并导出。这样不会依赖工作台页面的 Blob 点击行为，也不会因为一个失败项阻止保留诊断结果。
+- DeepSeek 适配器明确记录三类前端耦合：`/a/chat/s/<id>` 路由、同源 JSON 响应和 `.ds-markdown` DOM 回退。网络层优先、DOM 层兜底；页面改版时应根据工作台错误提示提交最小复现信息，不上传会话内容。
 
 ## 桌面打包（Tauri）
 
+- Linux Tauri 壳层在创建窗口前为未显式设置的进程变量注入 `GTK_IM_MODULE=fcitx`、`QT_IM_MODULE=fcitx` 和 `XMODIFIERS=@im=fcitx`，兼容 Arch Linux + KDE + Wayland + fcitx5；用户已设置其他输入法变量时保持原值。
 - 打包配置在 `src-tauri/tauri.conf.json`：`bundle.active` 已开启，Linux 产物为 deb / rpm / AppImage，输出到 `src-tauri/target/release/bundle/<目标>/`。图标由 `pnpm tauri icon <1024px 源图>` 从 `icons/icon.svg` 生成整套尺寸。
 - 生产 CSP 的 `script-src` 必须包含 `'wasm-unsafe-eval'`，否则 sql.js 的 WASM 在 WebView2（Windows）中无法实例化；`connect-src` 放行 `https:` 供用户自配的 Provider 端点使用，并包含 Tauri v2 的 IPC 源（`ipc:` 与 `http://ipc.localhost`）。
 - AppImage 打包需要运行 linuxdeploy 工具链。宿主机只有 fuse3（缺 fuse2）时，linuxdeploy AppImage 无法直接执行，需加环境变量 `APPIMAGE_EXTRACT_AND_RUN=1` 让其自解压运行；deb 与 rpm 由 Tauri 纯 Rust 实现，无需系统 dpkg/rpm 工具。
@@ -79,5 +84,5 @@
 
 ## 验收覆盖说明（对应设计 15.1）
 
-- 单元测试（vitest，30 项）覆盖纯函数：Markdown 渲染与注入防护、分块切分与合并校验、图谱关系建环规则、中文搜索回退与排序。`services/db.ts` 与 store 的数据库耦合路径（导入、合并撤销、stale 防覆盖、备份恢复）依赖 sql.js WASM，未纳入 vitest 自动化。
+- 单元测试（vitest，33 项）覆盖纯函数：Markdown 渲染与注入防护、分块切分与合并校验、图谱关系建环规则、中文搜索回退与排序、扩展会话发现。`services/db.ts` 与 store 的数据库耦合路径（导入、合并撤销、stale 防覆盖、备份恢复）依赖 sql.js WASM，未纳入 vitest 自动化。
 - 数据库耦合路径通过 headless Chromium + CDP 冒烟脚本人工验收：空态加载、图谱渲染、帮助弹窗、Provider 保存、导入 JSON → 任务中心 → Prompt 粘贴应用分段 → 标题/摘要/主题任务逐个应用 → 图谱出现主题与单元节点 → 会话列表核对，全程断言无运行时异常。该脚本为临时验收工具，不随应用分发。

@@ -56,6 +56,7 @@ pnpm tauri dev
   - Linux：`~/.local/share/com.nexus.weave/`（`nexus.db` + `config.yaml`）；
   - Windows：`%APPDATA%\com.nexus.weave\`；
 - 设置页可以切换自定义数据库位置（切换前自动备份）。
+- Linux 壳层启动前会为未设置的变量补齐 `GTK_IM_MODULE=fcitx`、`QT_IM_MODULE=fcitx`、`XMODIFIERS=@im=fcitx`，适配 Arch Linux + KDE + Wayland + fcitx5；如使用其他输入法，先在启动命令前显式设置对应变量即可覆盖默认值。可用 `env | rg '^(GTK|QT)_IM_MODULE|^XMODIFIERS'` 检查当前终端环境。
 
 ### 3.3 调试技巧
 
@@ -120,7 +121,27 @@ pnpm tauri icon /tmp/icon-1024.png
 pnpm build:extension      # 产物在 extension/dist/
 ```
 
-在 Chrome 打开 `chrome://extensions` → 开启「开发者模式」→「加载已解压的扩展程序」→ 选择 `extension/dist/`。使用方式：保持一个已登录的 DeepSeek 标签页，在扩展导出工作台中勾选会话批量导出 JSON，再把 JSON 导入桌面应用。
+### 5.1 使用扩展
+
+1. 在 DeepSeek 网页端完成登录，并保持 `chat.deepseek.com` 标签页打开。
+2. 打开扩展的「Nexus 织知导出工作台」，点击「刷新列表」；首次使用建议点击「加载全部历史」，让页面逐屏触发懒加载。
+3. 勾选会话后开始读取。读取中的会话会逐个打开网页并优先使用网络响应缓存，页面结构变化时回退到当前页面内容提取；失败项可单独重试。
+4. 即使部分会话失败，也可以下载 JSON。文件会包含成功会话，以及 `errors` 中的失败原因，导入桌面应用前可先重试失败项。
+
+扩展目前只适配 DeepSeek，不会读取或上传其他网站内容。它有三层适配边界：会话链接路径 `/a/chat/s/<id>`、网页端同源 JSON 响应，以及当前消息展示的 `.ds-markdown`。因此普通的样式调整通常不会影响网络捕获；如果 DeepSeek 更换路由、改用非 JSON 通道、取消这些选择器或改动消息字段，列表或导出可能失效。工作台会显示具体失败原因。遇到页面更新时，请先刷新 DeepSeek 标签页、重新构建并加载 `extension/dist/`，再提交带有浏览器版本、页面地址和失败提示的 issue；不要在 issue 中附带会话内容或 API Key。
+
+### 5.2 扩展调试
+
+- `chrome://extensions` 中点击扩展的「重新加载」，再重新打开工作台；旧工作台页面不会自动加载新脚本。
+- 在 DeepSeek 页面开发者工具的 Console 中查看 content script 错误，在扩展详情页打开 service worker 检查后台错误。
+- 若列表数量少于网页实际数量，先点击「加载全部历史」并等待提示停止增长；DeepSeek 使用虚拟列表时，扩展必须逐屏滚动才能发现更早会话。
+
+### 5.3 真实 DeepSeek 验收
+
+1. 使用 Chrome/Chromium 登录 `chat.deepseek.com`，确认侧边栏能看到至少两个会话，并保持该标签页打开。
+2. 执行 `pnpm build:extension`，在 `chrome://extensions` 重新加载 `extension/dist/`，从扩展按钮打开工作台。
+3. 先点「刷新列表」确认当前可见会话，再点「加载全部历史」观察数量是否逐屏增长；勾选会话并执行读取，确认成功项和失败原因均显示。
+4. 点击下载后检查 JSON 的 `conversations` 与 `errors`；下载接口不可用时应看到页面下载回退提示。不要把真实会话内容、Cookie 或 API Key 放进日志和 issue。
 
 ## 6. 常见问题
 
@@ -131,4 +152,6 @@ pnpm build:extension      # 产物在 extension/dist/
 | AppImage 阶段 `failed to run linuxdeploy` | 用 `APPIMAGE_EXTRACT_AND_RUN=1` 重试，或安装 fuse2 |
 | 应用内 WASM 无法初始化 / 白屏 | 确认未改动 `tauri.conf.json` CSP 中的 `'wasm-unsafe-eval'` |
 | 5173 端口被占用 | 关闭占用进程，或临时改 `vite.config.ts` 的端口并同步 `devUrl` |
-| 桌面端与浏览器端数据不一致 | 两套存储本就独立（SQLite vs localStorage），属预期行为 |
+| DeepSeek 历史只显示首批 | 在工作台点击「加载全部历史」；扩展使用逐屏滚动适配虚拟列表，连续两轮没有增长后才结束 |
+| 导出按钮不可用或文件为空 | 先勾选会话并至少执行一次读取；部分成功和仅失败的结果都可生成 JSON，失败原因会写入 `errors` |
+| 扩展更新后仍表现旧行为 | 在 `chrome://extensions` 重新加载扩展，并关闭旧工作台页面后从扩展按钮重新打开 |
