@@ -167,9 +167,15 @@ async function refreshList(): Promise<void> {
 async function loadAllHistory(): Promise<void> {
   if (state.loadingAll) return
   if (!(await findSourceTab())) return
+  const workbenchTab = await chrome.tabs.getCurrent()
   state.loadingAll = true
   if (elements.loadAll) elements.loadAll.disabled = true
   try {
+    // DeepSeek only fetches the next session page while its virtual list is active.
+    if (state.sourceTabId != null) {
+      await chrome.tabs.update(state.sourceTabId, { active: true })
+      await new Promise((resolve) => window.setTimeout(resolve, 400))
+    }
     const reset = await sendToSource({ type: 'LIST_RESET' })
     if (!reset.ok) throw new Error(reset.error)
     if (reset.kind === 'list') mergeSessions(reset.sessions)
@@ -192,6 +198,7 @@ async function loadAllHistory(): Promise<void> {
   } finally {
     state.loadingAll = false
     if (elements.loadAll) elements.loadAll.disabled = false
+    if (workbenchTab?.id != null) await chrome.tabs.update(workbenchTab.id, { active: true })
     render()
   }
 }
