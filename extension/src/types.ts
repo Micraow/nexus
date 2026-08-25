@@ -36,6 +36,7 @@ export interface SessionEntry {
 export type WorkbenchRequest =
   | { type: 'PING' }
   | { type: 'SOURCE_STATUS' }
+  | { type: 'LIST_RESET' }
   | { type: 'LIST_VISIBLE' }
   | { type: 'LIST_SCROLL_STEP' }
   | { type: 'CURRENT_SESSION_ID' }

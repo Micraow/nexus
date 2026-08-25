@@ -102,19 +102,20 @@ function render(): void {
   }
   const counts = { success: 0, failed: 0, pending: 0 }
   let finished = 0
-  state.sessions.forEach((item) => {
+  const selectedItems = [...state.selected].map((id) => state.sessions.get(id)).filter(Boolean) as SessionState[]
+  selectedItems.forEach((item) => {
     if (item.status === 'success') counts.success += 1
     if (item.status === 'failed') counts.failed += 1
     if (item.status === 'pending') counts.pending += 1
     if (item.status === 'success' || item.status === 'failed') finished += 1
   })
-  const total = Math.max(1, counts.success + counts.failed + counts.pending + (state.running ? 0 : 0))
+  const total = Math.max(1, selectedItems.length)
   if (elements.progressBar) elements.progressBar.style.width = `${Math.round((finished / total) * 100)}%`
-  if (elements.progressText) elements.progressText.textContent = `已处理 ${finished} / ${finished + counts.pending} 个选中会话`
+  if (elements.progressText) elements.progressText.textContent = state.selected.size ? `已处理 ${finished} / ${total} 个选中会话` : '尚未选择会话'
   if (elements.countSuccess) elements.countSuccess.textContent = String(counts.success)
   if (elements.countFailed) elements.countFailed.textContent = String(counts.failed)
   if (elements.countPending) elements.countPending.textContent = String([...state.selected].filter((id) => state.sessions.get(id)?.status === 'pending').length)
-  if (elements.download) elements.download.disabled = counts.success === 0 && counts.failed > 0 && !counts.pending
+  if (elements.download) elements.download.disabled = state.selected.size === 0 || (counts.success === 0 && counts.failed === 0)
   renderErrors()
 }
 
@@ -175,7 +176,10 @@ async function loadAllHistory(): Promise<void> {
   state.loadingAll = true
   if (elements.loadAll) elements.loadAll.disabled = true
   try {
-    for (let step = 0; step < 60; step += 1) {
+    const reset = await sendToSource({ type: 'LIST_RESET' })
+    if (!reset.ok) throw new Error(reset.error)
+    if (reset.kind === 'list') mergeSessions(reset.sessions)
+    for (let step = 0; step < 240; step += 1) {
       if (state.paused || state.sourceTabId == null) break
       const response = await sendToSource({ type: 'LIST_SCROLL_STEP' })
       if (!response.ok) throw new Error(response.error)
@@ -288,18 +292,34 @@ function buildPayload(): ExportPayload {
 
 function downloadJson(): void {
   const payload = buildPayload()
-  if (!payload.conversations.length) {
-    notify('全部会话都读取失败，未生成文件；请根据失败原因重试。', 'error')
+  if (!payload.conversations.length && !payload.errors.length) {
+    notify('请先选择并读取至少一个会话。', 'error')
     return
   }
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = `deepseek-export-${new Date().toISOString().slice(0, 10)}.json`
-  anchor.click()
-  URL.revokeObjectURL(url)
-  notify(`已导出 ${payload.conversations.length} 个会话${payload.errors.length ? `，另有 ${payload.errors.length} 个失败项写入 errors` : ''}`)
+  const filename = `deepseek-export-${new Date().toISOString().slice(0, 10)}.json`
+  const content = JSON.stringify(payload, null, 2)
+  const url = `data:application/json;charset=utf-8,${encodeURIComponent(content)}`
+  const fallbackDownload = (): void => {
+    const blobUrl = URL.createObjectURL(new Blob([content], { type: 'application/json' }))
+    const anchor = document.createElement('a')
+    anchor.href = blobUrl
+    anchor.download = filename
+    anchor.click()
+    window.setTimeout(() => URL.revokeObjectURL(blobUrl), 30_000)
+  }
+  try {
+    chrome.downloads.download({ url, filename, saveAs: true, conflictAction: 'uniquify' }, (downloadId) => {
+    if (chrome.runtime.lastError || downloadId == null) {
+      fallbackDownload()
+      notify(`浏览器下载接口未接受请求，已切换为页面下载：${chrome.runtime.lastError?.message ?? '未知错误'}`, 'error')
+      return
+    }
+    notify(`已导出 ${payload.conversations.length} 个会话${payload.errors.length ? `，另有 ${payload.errors.length} 个失败项写入 errors` : ''}`)
+    })
+  } catch (error) {
+    fallbackDownload()
+    notify(`下载接口不可用，已切换为页面下载：${error instanceof Error ? error.message : String(error)}`, 'error')
+  }
 }
 
 elements.refreshList?.addEventListener('click', () => void refreshList())

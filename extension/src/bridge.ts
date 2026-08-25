@@ -23,7 +23,8 @@
     const response = await originalFetch(...args)
     try {
       const url = typeof args[0] === 'string' ? args[0] : args[0] instanceof Request ? args[0].url : String(args[0])
-      if (url.includes('/api/')) {
+      const parsedUrl = new URL(url, window.location.href)
+      if (parsedUrl.origin === window.location.origin) {
         const cloned = response.clone()
         void cloned.text().then((body) => {
           if (looksLikeJson(cloned.headers.get('content-type'), body)) dispatch(body, url)
@@ -47,7 +48,8 @@
     this.addEventListener('load', () => {
       try {
         const url = this.__nexusUrl ?? ''
-        if (!url.includes('/api/')) return
+        const parsedUrl = new URL(url, window.location.href)
+        if (parsedUrl.origin !== window.location.origin) return
         const contentType = this.getResponseHeader('content-type')
         const body = typeof this.responseText === 'string' ? this.responseText : ''
         if (looksLikeJson(contentType, body)) dispatch(body, url)
