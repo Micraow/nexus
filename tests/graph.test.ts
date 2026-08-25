@@ -70,6 +70,20 @@ describe('derived graph', () => {
     expect(buildGraph({ ...input, showRetainedSessions: true }).nodes).toHaveLength(1)
   })
 
+  it('shows unclassified imported sessions in the unarchived view', () => {
+    const input = {
+      concepts: [], units: [], unitConcepts: [], relations: [], revision: 1,
+      messages: [
+        { id: 'm1', sessionId: 's', role: 'user' as const, content: '原始问题', orderInSession: 0 },
+        { id: 'm2', sessionId: 's', role: 'assistant' as const, content: '原始回答', orderInSession: 1 },
+      ],
+      sessions: [{ id: 's', source: 'chrome_import' as const, platform: 'deepseek', title: '待分类', createdAt: now, updatedAt: now, messageCount: 2, unitCount: 0, knowledgeKind: 'unknown' as const, knowledgeRetainInGraph: false, revision: 1, localOnly: false }],
+    }
+    const snapshot = buildGraph({ ...input, showRetainedSessions: true })
+    expect(snapshot.nodes.filter((node) => node.type === 'message')).toHaveLength(2)
+    expect(snapshot.edges.filter((edge) => edge.type === 'conversation')).toHaveLength(1)
+  })
+
   it('treats related concept edges as undirected', () => {
     const concepts = [
       { id: 'c1', name: '甲', normalizedName: '甲', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },

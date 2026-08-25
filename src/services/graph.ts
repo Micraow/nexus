@@ -112,7 +112,15 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
     })
     const visibleMessages = input.messages.filter((message) => {
       const session = sessionsById.get(message.sessionId)
-      const retained = Boolean(input.showRetainedSessions && session?.knowledgeRetainInGraph && session.knowledgeKind !== 'knowledge')
+      // Imported sessions remain `unknown` until triage completes. Treat them
+      // as unarchived here so users can inspect the original conversation
+      // chain before choosing an LLM mode or applying a classification.
+      const retained = Boolean(
+        input.showRetainedSessions
+        && session
+        && session.knowledgeKind !== 'knowledge'
+        && (session.knowledgeKind === 'unknown' || session.knowledgeRetainInGraph),
+      )
       return input.showMessages || retained || (message.unitId != null && expandedUnitIds.has(message.unitId))
     })
     visibleMessages.forEach((message) => {
