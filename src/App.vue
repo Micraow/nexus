@@ -44,7 +44,7 @@ import GraphCanvas from '@/components/GraphCanvas.vue'
 import NavTree from '@/components/NavTree.vue'
 import { serializeConfig } from '@/services/config'
 import { useWorkspaceStore } from '@/stores/workspace'
-import type { Concept, GraphNodeType, KnowledgeUnit, LLMTask, Session } from '@/types/domain'
+import type { Concept, GraphNodeType, KnowledgeUnit, LLMTask, MaintenanceSuggestion, Session } from '@/types/domain'
 
 type ViewName = 'overview' | 'graph' | 'sessions' | 'concepts' | 'tasks' | 'settings'
 
@@ -79,6 +79,7 @@ const taskDrafts = ref<Record<string, string>>({})
 const expandedSessionIds = ref<string[]>([])
 const contextIncludeFull = ref(false)
 const composerOpen = ref(false)
+const maintenancePanelOpen = ref(false)
 const composerQuestion = ref('')
 const composerTopicId = ref<string | null>(null)
 const composerPhraseId = ref('')
@@ -121,6 +122,16 @@ const selectedConcept = computed(() => store.concepts.find((concept) => concept.
 const selectedUnit = computed(() => store.units.find((unit) => unit.id === selectedUnitId.value) ?? null)
 const selectedMessage = computed(() => store.messages.find((message) => message.id === selectedMessageId.value) ?? null)
 const selectedTask = computed(() => store.tasks.find((task) => task.id === selectedTaskId.value) ?? null)
+const maintenanceSuggestions = computed(() => {
+  if (!selectedTask.value || selectedTask.value.type !== 'maintenance' || !selectedTask.value.parsedResult) return [] as Array<MaintenanceSuggestion & { applied?: boolean }>
+  try {
+    const parsed = JSON.parse(selectedTask.value.parsedResult) as { suggestions?: unknown }
+    return Array.isArray(parsed.suggestions) ? parsed.suggestions as Array<MaintenanceSuggestion & { applied?: boolean }> : []
+  } catch {
+    return [] as Array<MaintenanceSuggestion & { applied?: boolean }>
+  }
+})
+const selectedConceptRelations = computed(() => selectedConcept.value ? store.relations.filter((relation) => relation.parentConceptId === selectedConcept.value?.id || relation.childConceptId === selectedConcept.value?.id) : [])
 const selectedSession = computed(() => store.sessions.find((session) => session.id === store.selectedSessionId) ?? null)
 const selectedConceptUnits = computed(() => selectedConcept.value ? store.units.filter((unit) => store.unitConcepts.some((link) => link.unitId === unit.id && link.conceptId === selectedConcept.value?.id)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) : [])
 const selectedConceptParents = computed(() => selectedConcept.value ? store.relations.filter((relation) => relation.childConceptId === selectedConcept.value?.id && relation.relationType === 'hierarchy') : [])
@@ -267,6 +278,89 @@ function mergeSelectedConcept(): void {
     notify('知识主题已合并')
   } catch (error) {
     notify(error instanceof Error ? error.message : '合并失败')
+  }
+}
+
+function createMaintenanceTask(input: { conceptIds?: string[]; unitIds?: string[]; includeFullContent?: boolean }, label: string): void {
+  try {
+    const taskId = store.createMaintenanceTask(input)
+    selectedTaskId.value = taskId
+    maintenancePanelOpen.value = true
+    setView('tasks')
+    notify(`${label}已创建，等待生成维护建议`)
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '维护任务创建失败')
+  }
+}
+
+function openMaintenancePanel(): void {
+  maintenancePanelOpen.value = true
+  isDetailOpen.value = false
+}
+
+function createConceptMaintenance(): void {
+  if (!selectedConcept.value) return
+  createMaintenanceTask({ conceptIds: [selectedConcept.value.id] }, `“${selectedConcept.value.name}”维护任务`)
+}
+
+function createSessionMaintenance(): void {
+  if (!selectedSession.value) return
+  const unitIds = store.units.filter((unit) => unit.sessionId === selectedSession.value?.id).map((unit) => unit.id)
+  createMaintenanceTask({ unitIds }, `“${selectedSession.value.title}”维护任务`)
+}
+
+function createContextMaintenance(): void {
+  createMaintenanceTask({ unitIds: store.selectedContextIds, includeFullContent: contextIncludeFull.value }, '选中上下文维护任务')
+}
+
+function applyMaintenanceSuggestion(index: number): void {
+  if (!selectedTask.value) return
+  const result = store.applyMaintenanceSuggestion(selectedTask.value.id, index)
+  if (!result.ok) return notify(result.error ?? '维护建议应用失败')
+  notify('维护建议已应用；关系建议仍需确认')
+}
+
+function maintenanceSuggestionLabel(type: MaintenanceSuggestion['type']): string {
+  return ({ merge: '合并知识主题', alias: '添加别名', relation: '建立关系', unit_relink: '重新关联单元', unit_revision: '修订单元' } as Record<string, string>)[type] ?? '维护建议'
+}
+
+function conceptName(conceptId?: string): string {
+  return conceptId ? store.concepts.find((concept) => concept.id === conceptId)?.name ?? '未知知识主题' : '未指定'
+}
+
+function maintenanceSuggestionSummary(suggestion: MaintenanceSuggestion): string {
+  if (suggestion.type === 'merge') return `${conceptName(suggestion.source_concept_id)} → ${conceptName(suggestion.target_concept_id)}`
+  if (suggestion.type === 'alias') return `${conceptName(suggestion.concept_id)} · “${suggestion.alias ?? ''}”`
+  if (suggestion.type === 'relation') return `${conceptName(suggestion.parent_concept_id)} ${suggestion.relation_type === 'hierarchy' ? '→' : '↔'} ${conceptName(suggestion.child_concept_id)}`
+  if (suggestion.type === 'unit_relink') return `${store.units.find((unit) => unit.id === suggestion.unit_id)?.title || '未命名知识单元'} → ${conceptName(suggestion.concept_id)}`
+  return `${store.units.find((unit) => unit.id === suggestion.unit_id)?.title || '未命名知识单元'} · ${suggestion.title || suggestion.summary || '修订标题或摘要'}`
+}
+
+function confirmConceptRelation(relationId: string, status: 'confirmed' | 'rejected'): void {
+  try {
+    store.confirmRelation(relationId, status)
+    notify(status === 'confirmed' ? '关系已确认' : '关系已拒绝')
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '关系状态更新失败')
+  }
+}
+
+function deleteConceptRelation(relationId: string): void {
+  if (!window.confirm('删除这条知识主题关系？')) return
+  try {
+    store.deleteRelation(relationId)
+    notify('关系已删除')
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '关系删除失败')
+  }
+}
+
+function undoLatestOperation(): void {
+  try {
+    store.undoOperation()
+    notify('最近一次维护操作已撤销')
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '没有可撤销的操作')
   }
 }
 
@@ -474,8 +568,8 @@ function applyTask(task: LLMTask): void {
   if (!response.trim()) return notify('请先粘贴 LLM 返回结果')
   const result = store.applyTaskResult(task.id, response)
   if (result.ok) {
-    notify(task.type === 'segmentation' ? '分段结果已校验并写入知识库' : '结构化结果已校验并写入知识库')
-    selectedTaskId.value = null
+    notify(task.type === 'segmentation' ? '分段结果已校验并写入知识库' : task.type === 'maintenance' ? '维护建议已校验，请逐条确认应用' : '结构化结果已校验并写入知识库')
+    if (task.type !== 'maintenance') selectedTaskId.value = null
   } else notify(result.errors[0] ?? '校验失败，请修正后重试')
 }
 
@@ -602,6 +696,11 @@ watch(selectedUnitId, (unitId) => {
   }
 })
 
+watch(selectedTaskId, (taskId) => {
+  const task = taskId ? store.tasks.find((item) => item.id === taskId) : null
+  if (task?.type === 'maintenance') maintenancePanelOpen.value = true
+})
+
 watch(() => store.config.ui.theme, (theme) => {
   document.documentElement.dataset.theme = theme
 }, { immediate: true })
@@ -719,6 +818,46 @@ onMounted(async () => {
       </section>
       <section v-if="activeView === 'sessions' && selectedSession" class="surface-section session-tree-overview"><div class="section-heading"><div><span class="eyebrow">EXPLORATION TREE</span><h3>{{ selectedSession.title }} 的探索树</h3></div><History :size="18" /></div><NavTree :nodes="store.navNodes.filter((node) => node.sessionId === selectedSession?.id && !node.parentId)" :node-units="store.navNodeUnits" :units="store.units" :selected-node-id="selectedNavNodeId" @select-node="openNavNode" /></section>
     </main>
+
+    <button v-if="!maintenancePanelOpen && ((activeView === 'concepts' && selectedConcept) || (activeView === 'sessions' && selectedSession) || store.selectedUnits.length || maintenanceSuggestions.length || selectedTask?.type === 'maintenance' || (activeView === 'settings' && store.operationLogs.length))" class="maintenance-launcher button secondary-button" aria-label="打开知识维护" title="打开知识维护" @click="openMaintenancePanel"><Sparkles :size="15" />知识维护</button>
+
+    <section v-if="maintenancePanelOpen && ((activeView === 'concepts' && selectedConcept) || (activeView === 'sessions' && selectedSession) || store.selectedUnits.length || maintenanceSuggestions.length || selectedTask?.type === 'maintenance' || (activeView === 'settings' && store.operationLogs.length))" class="maintenance-panel surface-section" aria-label="知识维护">
+      <div class="maintenance-panel-header">
+        <div><span class="eyebrow">KNOWLEDGE MAINTENANCE</span><h3>知识维护</h3></div>
+        <div class="maintenance-panel-actions"><Sparkles :size="18" /><button class="icon-button" aria-label="关闭知识维护" title="关闭知识维护" @click="maintenancePanelOpen = false"><X :size="15" /></button></div>
+      </div>
+      <div v-if="activeView === 'concepts' && selectedConcept" class="maintenance-scope">
+        <div class="maintenance-scope-copy"><strong>{{ selectedConcept.name }}</strong><span>检查该知识主题的别名、关系和关联单元</span></div>
+        <button class="button primary-button" @click="createConceptMaintenance"><Sparkles :size="14" />生成维护建议</button>
+      </div>
+      <div v-if="activeView === 'sessions' && selectedSession" class="maintenance-scope">
+        <div class="maintenance-scope-copy"><strong>{{ selectedSession.title }}</strong><span>检查当前会话中的知识主题和知识单元</span></div>
+        <button class="button primary-button" @click="createSessionMaintenance"><Sparkles :size="14" />生成维护建议</button>
+      </div>
+      <div v-if="store.selectedUnits.length" class="maintenance-scope">
+        <div class="maintenance-scope-copy"><strong>已选 {{ store.selectedUnits.length }} 个知识单元</strong><span>按当前上下文顺序检查关联和标题摘要</span></div>
+        <button class="button secondary-button" @click="createContextMaintenance"><Sparkles :size="14" />检查选中内容</button>
+      </div>
+      <div v-if="maintenanceSuggestions.length" class="maintenance-results">
+        <div class="subsection-title"><strong>建议差异</strong><span>{{ maintenanceSuggestions.filter((item) => !item.applied).length }} 条待处理</span></div>
+        <article v-for="(suggestion, index) in maintenanceSuggestions" :key="`${index}-${suggestion.type}`" class="maintenance-suggestion" :class="{ applied: suggestion.applied }">
+          <div class="maintenance-suggestion-main"><div class="maintenance-suggestion-title"><span class="soft-tag">{{ maintenanceSuggestionLabel(suggestion.type) }}</span><strong>{{ maintenanceSuggestionSummary(suggestion) }}</strong></div><p>{{ suggestion.reason || '未提供理由' }}</p></div>
+          <button v-if="!suggestion.applied" class="button secondary-button" @click="applyMaintenanceSuggestion(index)"><Check :size="14" />应用</button>
+          <span v-else class="status-label label-success">已应用</span>
+        </article>
+      </div>
+      <div v-if="activeView === 'concepts' && selectedConcept && selectedConceptRelations.length" class="maintenance-results">
+        <div class="subsection-title"><strong>关系审核</strong><span>{{ selectedConceptRelations.filter((relation) => relation.status === 'proposed').length }} 条待确认</span></div>
+        <article v-for="relation in selectedConceptRelations" :key="relation.id" class="maintenance-relation-row">
+          <div><strong>{{ conceptName(relation.parentConceptId) }} {{ relation.relationType === 'hierarchy' ? '→' : '↔' }} {{ conceptName(relation.childConceptId) }}</strong><span>{{ relation.status === 'proposed' ? '待确认' : relation.status === 'confirmed' ? '已确认' : '已拒绝' }} · {{ relation.source === 'maintenance' ? '维护建议' : relation.source === 'manual' ? '手动建立' : '自动提取' }}</span></div>
+          <div class="maintenance-relation-actions"><button v-if="relation.status === 'proposed'" class="text-button" @click="confirmConceptRelation(relation.id, 'confirmed')"><Check :size="13" />确认</button><button v-if="relation.status === 'proposed'" class="text-button" @click="confirmConceptRelation(relation.id, 'rejected')"><X :size="13" />拒绝</button><button class="icon-button" title="删除关系" aria-label="删除关系" @click="deleteConceptRelation(relation.id)"><Trash2 :size="14" /></button></div>
+        </article>
+      </div>
+      <div v-if="activeView === 'settings' && store.operationLogs.length" class="maintenance-results">
+        <div class="subsection-title"><strong>操作记录</strong><button class="text-button" :disabled="!store.operationLogs.some((item) => !item.undoneAt)" @click="undoLatestOperation"><RotateCcw :size="13" />撤销最近一次</button></div>
+        <div class="operation-log-list"><div v-for="operation in store.operationLogs.slice(0, 8)" :key="operation.id" class="operation-log-row"><span>{{ operation.action }}</span><small>{{ new Date(operation.createdAt).toLocaleString('zh-CN') }}{{ operation.undoneAt ? ' · 已撤销' : '' }}</small></div></div>
+      </div>
+    </section>
 
     <aside v-if="isDetailOpen && (selectedConcept || selectedUnit || selectedMessage)" class="detail-drawer" :class="{ open: isDetailOpen }">
       <div class="drawer-header"><div><span class="eyebrow">DETAIL</span><h3>{{ selectedConcept?.name || selectedUnit?.title || '消息详情' }}</h3></div><button class="icon-button" aria-label="关闭详情" title="关闭详情" @click="isDetailOpen = false"><X :size="17" /></button></div>

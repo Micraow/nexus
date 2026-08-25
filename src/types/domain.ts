@@ -155,6 +155,33 @@ export interface LLMTask {
   scopeLabel?: string
 }
 
+export type MaintenanceSuggestionType = 'merge' | 'alias' | 'relation' | 'unit_relink' | 'unit_revision'
+
+export interface MaintenanceSuggestion {
+  type: MaintenanceSuggestionType
+  applied?: boolean
+  reason?: string
+  source_concept_id?: string
+  target_concept_id?: string
+  concept_id?: string
+  alias?: string
+  parent_concept_id?: string
+  child_concept_id?: string
+  relation_type?: RelationType
+  unit_id?: string
+  title?: string
+  summary?: string
+}
+
+export interface OperationLog {
+  id: string
+  action: string
+  beforeJson: string
+  afterJson?: string | null
+  createdAt: string
+  undoneAt?: string | null
+}
+
 export interface ManualGraphEdge {
   id: string
   sourceType: GraphNodeType

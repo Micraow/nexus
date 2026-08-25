@@ -3,7 +3,7 @@ import { defineStore } from 'pinia'
 import { db } from '@/services/db'
 import { parseConfigText, readConfigText, writeConfig } from '@/services/config'
 import { buildGraph, graphStats } from '@/services/graph'
-import { buildConceptPrompt, buildConversationPrompt, buildRepairPrompt, buildSegmentationPrompt, buildSummaryPrompt, buildTitlePrompt, PROMPT_VERSION, renderQuickPhrase } from '@/services/prompts'
+import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildRepairPrompt, buildSegmentationPrompt, buildSummaryPrompt, buildTitlePrompt, PROMPT_VERSION, renderQuickPhrase } from '@/services/prompts'
 import { importPayloadSchema, parseImportPayload, validateSegmentationResult, validateUnitText } from '@/services/validation'
 import { createId, isoNow, normalizeText, parseIsoTimestamp, stableHash } from '@/utils/id'
 import type {
@@ -19,10 +19,12 @@ import type {
   ImportReport,
   KnowledgeUnit,
   LLMTask,
+  MaintenanceSuggestion,
   ManualGraphEdge,
   Message,
   NavTreeNode,
   NavTreeNodeUnit,
+  OperationLog,
   QuickPhrase,
   Session,
   UnitConcept,
@@ -191,6 +193,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const contextReferences = ref<ContextReference[]>([])
   const manualEdges = ref<ManualGraphEdge[]>([])
   const quickPhrases = ref<QuickPhrase[]>([])
+  const operationLogs = ref<OperationLog[]>([])
   const graphLayout = ref<GraphLayoutEntry[]>([])
   const graphViewport = ref<GraphViewport>({ x: 0, y: 0, scale: 1, layoutVersion: 1 })
   const graphRevision = ref(1)
@@ -284,6 +287,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       template: text(row.template),
       isBuiltin: bool(row.is_builtin),
       sortOrder: number(row.sort_order),
+    }))
+    operationLogs.value = db.query<Row>('SELECT * FROM operation_log ORDER BY created_at DESC').map((row) => ({
+      id: text(row.id),
+      action: text(row.action),
+      beforeJson: text(row.before_json),
+      afterJson: row.after_json == null ? null : text(row.after_json),
+      createdAt: text(row.created_at),
+      undoneAt: row.undone_at == null ? null : text(row.undone_at),
     }))
     graphLayout.value = db.query<Row>('SELECT * FROM graph_layout ORDER BY node_type, ref_id').map((row) => ({
       nodeType: text(row.node_type) as GraphLayoutEntry['nodeType'],
@@ -412,6 +423,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       ;['context_references', 'nav_tree_node_units', 'nav_tree_nodes', 'manual_graph_edges', 'unit_concepts', 'concept_aliases', 'concept_relations', 'knowledge_units', 'messages', 'llm_tasks', 'sessions', 'concepts'].forEach((table) => db.run(`DELETE FROM ${table}`))
       db.run('DELETE FROM graph_layout')
       db.run('DELETE FROM graph_viewport')
+      db.run('DELETE FROM operation_log')
       const records = parsed as any
       records.sessions.forEach((item: Session) => db.run('INSERT INTO sessions(id, source, platform, model, external_session_id, title, created_at, updated_at, message_count, unit_count, revision, local_only, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.source, item.platform, item.model ?? null, item.externalSessionId ?? null, item.title, item.createdAt, item.updatedAt, item.messageCount, item.unitCount, item.revision, item.localOnly ? 1 : 0, item.deletedAt ?? null]))
       records.concepts.forEach((item: Concept) => db.run('INSERT INTO concepts(id, name, normalized_name, notes, status, merged_into_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.name, item.normalizedName, item.notes, item.status, item.mergedIntoId ?? null, item.createdAt, item.updatedAt, item.deletedAt ?? null]))
@@ -608,6 +620,62 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     mutate(() => db.run('DELETE FROM manual_graph_edges WHERE id = ?', [edgeId]))
   }
 
+  function captureConceptOperationSnapshot(): string {
+    return JSON.stringify({
+      concepts: db.query<Row>('SELECT * FROM concepts'),
+      aliases: db.query<Row>('SELECT * FROM concept_aliases'),
+      unit_concepts: db.query<Row>('SELECT * FROM unit_concepts'),
+      relations: db.query<Row>('SELECT * FROM concept_relations'),
+      manual_edges: db.query<Row>('SELECT * FROM manual_graph_edges'),
+      graph_layout: db.query<Row>('SELECT * FROM graph_layout'),
+      knowledge_units: db.query<Row>('SELECT * FROM knowledge_units'),
+      sessions: db.query<Row>('SELECT id, revision, updated_at FROM sessions'),
+      tasks: db.query<Row>('SELECT id, parsed_result, updated_at FROM llm_tasks'),
+    })
+  }
+
+  function restoreConceptOperationSnapshot(snapshotText: string): void {
+    const snapshot = JSON.parse(snapshotText) as {
+      concepts: Row[]
+      aliases: Row[]
+      unit_concepts: Row[]
+      relations: Row[]
+      manual_edges: Row[]
+      graph_layout: Row[]
+      knowledge_units?: Row[]
+      sessions?: Row[]
+      tasks?: Row[]
+    }
+    db.run('DELETE FROM unit_concepts')
+    db.run('DELETE FROM concept_aliases')
+    db.run('DELETE FROM concept_relations')
+    db.run('DELETE FROM manual_graph_edges')
+    db.run('DELETE FROM graph_layout')
+    db.run('DELETE FROM concepts')
+    snapshot.concepts.forEach((row) => db.run('INSERT INTO concepts(id, name, normalized_name, notes, status, merged_into_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [text(row.id), text(row.name), text(row.normalized_name), text(row.notes), text(row.status), row.merged_into_id ?? null, text(row.created_at), text(row.updated_at), row.deleted_at ?? null]))
+    snapshot.aliases.forEach((row) => db.run('INSERT INTO concept_aliases(id, concept_id, alias, normalized_alias, source, created_at) VALUES (?, ?, ?, ?, ?, ?)', [text(row.id), text(row.concept_id), text(row.alias), text(row.normalized_alias), text(row.source), text(row.created_at)]))
+    snapshot.unit_concepts.forEach((row) => db.run('INSERT INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [text(row.unit_id), text(row.concept_id), text(row.source), text(row.created_at)]))
+    snapshot.relations.forEach((row) => db.run('INSERT INTO concept_relations(id, parent_concept_id, child_concept_id, relation_type, source, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [text(row.id), text(row.parent_concept_id), text(row.child_concept_id), text(row.relation_type), text(row.source), text(row.status), text(row.created_at), text(row.updated_at)]))
+    snapshot.manual_edges.forEach((row) => db.run('INSERT INTO manual_graph_edges(id, source_type, source_ref_id, target_type, target_ref_id, label, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [text(row.id), text(row.source_type), text(row.source_ref_id), text(row.target_type), text(row.target_ref_id), row.label ?? null, text(row.created_at)]))
+    snapshot.graph_layout.forEach((row) => db.run('INSERT INTO graph_layout(node_type, ref_id, x, y, fixed, layout_version) VALUES (?, ?, ?, ?, ?, ?)', [text(row.node_type), text(row.ref_id), number(row.x), number(row.y), bool(row.fixed) ? 1 : 0, number(row.layout_version, 1)]))
+    snapshot.knowledge_units?.forEach((row) => db.run('UPDATE knowledge_units SET title = ?, summary = ?, order_in_session = ?, status = ?, revision = ?, updated_at = ? WHERE id = ?', [row.title ?? null, row.summary ?? null, number(row.order_in_session), text(row.status), number(row.revision, 1), text(row.updated_at), text(row.id)]))
+    snapshot.sessions?.forEach((row) => db.run('UPDATE sessions SET revision = ?, updated_at = ? WHERE id = ?', [number(row.revision, 1), text(row.updated_at), text(row.id)]))
+    snapshot.tasks?.forEach((row) => db.run('UPDATE llm_tasks SET parsed_result = ?, updated_at = ? WHERE id = ?', [row.parsed_result ?? null, text(row.updated_at), text(row.id)]))
+  }
+
+  function recordOperation(action: string, beforeJson: string, afterJson: string): void {
+    db.run('INSERT INTO operation_log(id, action, before_json, after_json, created_at, undone_at) VALUES (?, ?, ?, ?, ?, NULL)', [createId('operation'), action, beforeJson, afterJson, isoNow()])
+  }
+
+  function undoOperation(operationId?: string): void {
+    const operation = operationLogs.value.find((item) => item.id === operationId) ?? operationLogs.value.find((item) => !item.undoneAt)
+    if (!operation || operation.undoneAt) throw new Error('没有可撤销的操作')
+    mutate(() => {
+      restoreConceptOperationSnapshot(operation.beforeJson)
+      db.run('UPDATE operation_log SET undone_at = ? WHERE id = ?', [isoNow(), operation.id])
+    })
+  }
+
   function wouldCreateCycle(parentId: string, childId: string): boolean {
     if (parentId === childId) return true
     const children = new Map<string, string[]>()
@@ -630,18 +698,33 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   function createRelation(parentId: string, childId: string, relationType: ConceptRelation['relationType'], status: ConceptRelation['status'] = 'confirmed'): void {
     if (relationType === 'hierarchy' && wouldCreateCycle(parentId, childId)) throw new Error('这个父子关系会形成环，无法建立')
+    const before = captureConceptOperationSnapshot()
     mutate(() => {
       const now = isoNow()
       db.run('INSERT OR IGNORE INTO concept_relations(id, parent_concept_id, child_concept_id, relation_type, source, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [createId('relation'), parentId, childId, relationType, status === 'confirmed' ? 'manual' : 'llm', status, now, now])
+      recordOperation('建立知识主题关系', before, captureConceptOperationSnapshot())
     })
   }
 
   function confirmRelation(relationId: string, status: 'confirmed' | 'rejected'): void {
-    mutate(() => db.run('UPDATE concept_relations SET status = ?, updated_at = ? WHERE id = ?', [status, isoNow(), relationId]))
+    const before = captureConceptOperationSnapshot()
+    mutate(() => {
+      db.run('UPDATE concept_relations SET status = ?, updated_at = ? WHERE id = ?', [status, isoNow(), relationId])
+      recordOperation(status === 'confirmed' ? '确认知识主题关系' : '拒绝知识主题关系', before, captureConceptOperationSnapshot())
+    })
+  }
+
+  function deleteRelation(relationId: string): void {
+    const before = captureConceptOperationSnapshot()
+    mutate(() => {
+      db.run('DELETE FROM concept_relations WHERE id = ?', [relationId])
+      recordOperation('删除知识主题关系', before, captureConceptOperationSnapshot())
+    })
   }
 
   function mergeConcept(sourceId: string, targetId: string): void {
     if (sourceId === targetId) return
+    const before = captureConceptOperationSnapshot()
     mutate(() => {
       const source = concepts.value.find((concept) => concept.id === sourceId)
       const target = concepts.value.find((concept) => concept.id === targetId)
@@ -661,18 +744,25 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const mergedNotes = [target.notes, source.notes ? `来自 ${source.name} 的笔记：${source.notes}` : ''].filter(Boolean).join('\n\n')
       db.run('UPDATE concepts SET notes = ?, updated_at = ? WHERE id = ?', [mergedNotes, now, targetId])
       db.run('UPDATE concepts SET status = ?, merged_into_id = ?, deleted_at = ?, updated_at = ? WHERE id = ?', ['merged', targetId, now, now, sourceId])
+      recordOperation('合并知识主题', before, captureConceptOperationSnapshot())
     })
   }
 
   function deleteConcept(conceptId: string): void {
+    const before = captureConceptOperationSnapshot()
     mutate(() => {
       const now = isoNow()
       db.run('UPDATE concepts SET status = ?, deleted_at = ?, updated_at = ? WHERE id = ?', ['archived', now, now, conceptId])
+      recordOperation('归档知识主题', before, captureConceptOperationSnapshot())
     })
   }
 
   function restoreConcept(conceptId: string): void {
-    mutate(() => db.run('UPDATE concepts SET status = ?, deleted_at = NULL, merged_into_id = NULL, updated_at = ? WHERE id = ?', ['active', isoNow(), conceptId]))
+    const before = captureConceptOperationSnapshot()
+    mutate(() => {
+      db.run('UPDATE concepts SET status = ?, deleted_at = NULL, merged_into_id = NULL, updated_at = ? WHERE id = ?', ['active', isoNow(), conceptId])
+      recordOperation('恢复知识主题', before, captureConceptOperationSnapshot())
+    })
   }
 
   function markTask(taskId: string, status: LLMTask['status'], response?: string, errors?: string[]): void {
@@ -701,6 +791,117 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     return { data: value as Record<string, unknown> }
   }
 
+  function createMaintenanceTask(input: { conceptIds?: string[]; unitIds?: string[]; includeFullContent?: boolean } = {}): string {
+    const requestedConceptIds = input.conceptIds?.length ? new Set(input.conceptIds) : null
+    const requestedUnitIds = input.unitIds?.length ? new Set(input.unitIds) : null
+    const inferredConceptIds = requestedUnitIds
+      ? new Set(unitConcepts.value.filter((link) => requestedUnitIds.has(link.unitId)).map((link) => link.conceptId))
+      : null
+    const conceptScope = (requestedConceptIds ? [...requestedConceptIds] : inferredConceptIds ? [...inferredConceptIds] : activeConcepts.value.map((concept) => concept.id))
+      .map((id) => concepts.value.find((concept) => concept.id === id))
+      .filter(Boolean) as Concept[]
+    const inferredUnitIds = requestedConceptIds
+      ? new Set(unitConcepts.value.filter((link) => requestedConceptIds.has(link.conceptId)).map((link) => link.unitId))
+      : null
+    const unitScope = (requestedUnitIds ? [...requestedUnitIds] : inferredUnitIds ? [...inferredUnitIds] : units.value.filter((unit) => unit.sessionId && activeSessionIds.value.has(unit.sessionId)).map((unit) => unit.id))
+      .map((id) => units.value.find((unit) => unit.id === id))
+      .filter(Boolean) as KnowledgeUnit[]
+    if (!conceptScope.length && !unitScope.length) throw new Error('没有可供维护检查的知识主题或知识单元')
+    const conceptIds = new Set(conceptScope.map((concept) => concept.id))
+    const unitIds = new Set(unitScope.map((unit) => unit.id))
+    const prompt = buildMaintenancePrompt({
+      concepts: conceptScope.map((concept) => ({ id: concept.id, name: concept.name, aliases: aliases.value.filter((alias) => alias.conceptId === concept.id).map((alias) => alias.alias), notes: concept.notes })),
+      relations: relations.value.filter((relation) => conceptIds.has(relation.parentConceptId) || conceptIds.has(relation.childConceptId)).map((relation) => ({ parentId: relation.parentConceptId, childId: relation.childConceptId, type: relation.relationType, status: relation.status })),
+      units: unitScope.map((unit) => ({ id: unit.id, title: unit.title ?? '', summary: unit.summary ?? '', session: sessions.value.find((session) => session.id === unit.sessionId)?.title ?? '', conceptIds: unitConcepts.value.filter((link) => link.unitId === unit.id).map((link) => link.conceptId) })),
+      includeMessages: input.includeFullContent ? unitScope.map((unit) => `## ${unit.id}\n${unitMessages(unit.id).map((message) => `${message.role}: ${message.content}`).join('\n')}`).join('\n\n') : undefined,
+    })
+    let taskId = ''
+    mutate(() => {
+      taskId = createTask({ type: 'maintenance', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `maintenance:${stableHash(JSON.stringify({ concepts: [...conceptIds], units: [...unitIds] }))}`, prompt, status: 'pending', scopeLabel: `维护建议 · ${conceptScope.length} 个知识主题 · ${unitScope.length} 个知识单元` })
+    })
+    return taskId
+  }
+
+  function maintenanceSuggestionErrors(value: unknown): { suggestions: MaintenanceSuggestion[]; errors: string[] } {
+    const errors: string[] = []
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return { suggestions: [], errors: ['维护结果必须是 JSON 对象'] }
+    const rawSuggestions = (value as Record<string, unknown>).suggestions
+    if (!Array.isArray(rawSuggestions)) return { suggestions: [], errors: ['suggestions 必须是数组'] }
+    const suggestions = rawSuggestions.map((item) => item && typeof item === 'object' ? item as MaintenanceSuggestion : { type: '' as MaintenanceSuggestion['type'] })
+    suggestions.forEach((suggestion, index) => {
+      if (!['merge', 'alias', 'relation', 'unit_relink', 'unit_revision'].includes(String(suggestion.type))) errors.push(`suggestions.${index}.type 不受支持`)
+      if (suggestion.type === 'merge') {
+        if (!concepts.value.some((concept) => concept.id === suggestion.source_concept_id)) errors.push(`suggestions.${index} 的源知识主题不存在`)
+        if (!concepts.value.some((concept) => concept.id === suggestion.target_concept_id)) errors.push(`suggestions.${index} 的目标知识主题不存在`)
+        if (suggestion.source_concept_id === suggestion.target_concept_id) errors.push(`suggestions.${index} 不能合并自身`)
+      }
+      if (suggestion.type === 'alias') {
+        if (!concepts.value.some((concept) => concept.id === suggestion.concept_id)) errors.push(`suggestions.${index} 的知识主题不存在`)
+        if (!suggestion.alias?.trim()) errors.push(`suggestions.${index}.alias 不能为空`)
+      }
+      if (suggestion.type === 'relation') {
+        if (!concepts.value.some((concept) => concept.id === suggestion.parent_concept_id) || !concepts.value.some((concept) => concept.id === suggestion.child_concept_id)) errors.push(`suggestions.${index} 的关系端点不存在`)
+        if (suggestion.relation_type !== 'hierarchy' && suggestion.relation_type !== 'related') errors.push(`suggestions.${index}.relation_type 无效`)
+        if (suggestion.relation_type === 'hierarchy' && suggestion.parent_concept_id && suggestion.child_concept_id && wouldCreateCycle(suggestion.parent_concept_id, suggestion.child_concept_id)) errors.push(`suggestions.${index} 会形成父子关系环`)
+      }
+      if (suggestion.type === 'unit_relink') {
+        if (!units.value.some((unit) => unit.id === suggestion.unit_id)) errors.push(`suggestions.${index} 的知识单元不存在`)
+        if (!concepts.value.some((concept) => concept.id === suggestion.concept_id)) errors.push(`suggestions.${index} 的知识主题不存在`)
+      }
+      if (suggestion.type === 'unit_revision') {
+        if (!units.value.some((unit) => unit.id === suggestion.unit_id)) errors.push(`suggestions.${index} 的知识单元不存在`)
+        if (!suggestion.title?.trim() && !suggestion.summary?.trim()) errors.push(`suggestions.${index} 至少需要标题或摘要`)
+        errors.push(...validateUnitText(suggestion.title, suggestion.summary).map((issue) => `suggestions.${index}.${issue.path}：${issue.message}`))
+      }
+    })
+    return { suggestions, errors }
+  }
+
+  function applyMaintenanceSuggestion(taskId: string, suggestionIndex: number): { ok: boolean; error?: string } {
+    const task = tasks.value.find((item) => item.id === taskId)
+    if (!task || task.type !== 'maintenance' || !task.parsedResult) return { ok: false, error: '维护任务结果尚未校验' }
+    let parsed: unknown
+    try { parsed = JSON.parse(task.parsedResult) } catch { return { ok: false, error: '维护结果无法解析' } }
+    const validation = maintenanceSuggestionErrors(parsed)
+    const suggestion = validation.suggestions[suggestionIndex]
+    if (validation.errors.length || !suggestion) return { ok: false, error: validation.errors[0] ?? '找不到这条建议' }
+    const raw = parsed as { suggestions: Array<MaintenanceSuggestion & { applied?: boolean }> }
+    if (raw.suggestions[suggestionIndex]?.applied) return { ok: false, error: '这条建议已经应用' }
+    const before = captureConceptOperationSnapshot()
+    try {
+      mutate(() => {
+        const now = isoNow()
+        if (suggestion.type === 'merge') {
+          const sourceId = suggestion.source_concept_id as string
+          const targetId = suggestion.target_concept_id as string
+          const source = concepts.value.find((concept) => concept.id === sourceId)
+          if (!source) throw new Error('源知识主题不存在')
+          db.run('INSERT OR IGNORE INTO concept_aliases(id, concept_id, alias, normalized_alias, source, created_at) VALUES (?, ?, ?, ?, ?, ?)', [createId('alias'), targetId, source.name, normalizeText(source.name), 'merge', now])
+          db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) SELECT unit_id, ?, ?, created_at FROM unit_concepts WHERE concept_id = ?', [targetId, 'merge', sourceId])
+          db.run('DELETE FROM unit_concepts WHERE concept_id = ?', [sourceId])
+          db.run('UPDATE concepts SET status = ?, merged_into_id = ?, deleted_at = ?, updated_at = ? WHERE id = ?', ['merged', targetId, now, now, sourceId])
+        } else if (suggestion.type === 'alias') {
+          db.run('INSERT OR IGNORE INTO concept_aliases(id, concept_id, alias, normalized_alias, source, created_at) VALUES (?, ?, ?, ?, ?, ?)', [createId('alias'), suggestion.concept_id, suggestion.alias?.trim(), normalizeText(suggestion.alias ?? ''), 'maintenance', now])
+        } else if (suggestion.type === 'relation') {
+          db.run('INSERT OR IGNORE INTO concept_relations(id, parent_concept_id, child_concept_id, relation_type, source, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [createId('relation'), suggestion.parent_concept_id, suggestion.child_concept_id, suggestion.relation_type, 'maintenance', 'proposed', now, now])
+        } else if (suggestion.type === 'unit_relink') {
+          db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [suggestion.unit_id, suggestion.concept_id, 'maintenance', now])
+        } else if (suggestion.type === 'unit_revision') {
+          const unit = units.value.find((item) => item.id === suggestion.unit_id)
+          if (!unit) throw new Error('知识单元不存在')
+          db.run('UPDATE knowledge_units SET title = COALESCE(?, title), summary = COALESCE(?, summary), revision = revision + 1, status = \'ready\', updated_at = ? WHERE id = ?', [suggestion.title?.trim() || null, suggestion.summary?.trim() || null, now, suggestion.unit_id])
+          db.run('UPDATE sessions SET revision = revision + 1, updated_at = ? WHERE id = ?', [now, unit.sessionId])
+        }
+        raw.suggestions[suggestionIndex] = { ...raw.suggestions[suggestionIndex], applied: true }
+        db.run('UPDATE llm_tasks SET parsed_result = ?, updated_at = ? WHERE id = ?', [JSON.stringify(raw), now, taskId])
+        recordOperation(`应用维护建议：${suggestion.type}`, before, captureConceptOperationSnapshot())
+      })
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : '应用维护建议失败' }
+    }
+  }
+
   function applyTaskResult(taskId: string, responseText: string): { ok: boolean; errors: string[] } {
     const task = tasks.value.find((item) => item.id === taskId)
     if (!task) return { ok: false, errors: ['找不到任务'] }
@@ -712,6 +913,19 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       return { ok: false, errors }
     }
     const data = parsed.data
+
+    if (task.type === 'maintenance') {
+      const validation = maintenanceSuggestionErrors(data)
+      if (validation.errors.length) {
+        markTask(taskId, 'needs_review', responseText, validation.errors)
+        return { ok: false, errors: validation.errors }
+      }
+      mutate(() => {
+        db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = ?, validation_errors = NULL, error_message = NULL, updated_at = ? WHERE id = ?', ['success', responseText, JSON.stringify(data), isoNow(), taskId])
+      })
+      return { ok: true, errors: [] }
+    }
+
     const errors: string[] = []
     const inputParts = task.inputRevision.split(':')
     const targetId = inputParts[0]
@@ -1201,6 +1415,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       db.run('DELETE FROM llm_tasks')
       db.run('DELETE FROM graph_layout')
       db.run('DELETE FROM graph_viewport')
+      db.run('DELETE FROM operation_log')
     })
     selectedContextIds.value = []
   }
@@ -1257,6 +1472,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     restoreConcept,
     markTask,
     applyTaskResult,
+    createMaintenanceTask,
+    maintenanceSuggestionErrors,
+    applyMaintenanceSuggestion,
     retryTask,
     cancelTask,
     executeTask,
@@ -1274,6 +1492,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     clearAllData,
     addManualGraphEdge,
     removeManualGraphEdge,
+    operationLogs,
+    undoOperation,
+    deleteRelation,
     graphLayout,
     graphViewport,
     saveGraphLayout,

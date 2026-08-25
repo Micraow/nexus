@@ -175,6 +175,15 @@ CREATE TABLE IF NOT EXISTS quick_phrases (
   is_builtin INTEGER NOT NULL DEFAULT 0,
   sort_order INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS operation_log (
+  id TEXT PRIMARY KEY,
+  action TEXT NOT NULL,
+  before_json TEXT NOT NULL,
+  after_json TEXT,
+  created_at TEXT NOT NULL,
+  undone_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_operation_log_created ON operation_log(created_at DESC);
 `
 
 export class SqliteStore {
