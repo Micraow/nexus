@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { searchKnowledge } from '@/services/search'
+import { rankSearchDocuments, searchKnowledge } from '@/services/search'
 import type { Concept, ConceptAlias, KnowledgeUnit, Message } from '@/types/domain'
 
 const concept = (id: string, name: string, updatedAt = '2026-08-25T00:00:00.000Z'): Concept => ({
@@ -64,5 +64,29 @@ describe('中文知识搜索', () => {
   it('英文名称匹配不区分大小写', () => {
     const result = searchKnowledge('rdma', { concepts: [concept('c1', 'RDMA')], aliases: [], units: [], messages: [] })
     expect(result.concepts[0]?.item.name).toBe('RDMA')
+  })
+
+  it('带空格的中文短语经字符级回退命中，排序低于子串直接命中', () => {
+    const spaced = unit('u_spaced', '拥塞控制协议', '')
+    const exact = unit('u_exact', '拥塞 控制入门', '')
+    const result = searchKnowledge('拥塞 控制', { concepts: [], aliases: [], units: [spaced, exact], messages: [] })
+    // 查询里的空格使子串匹配失败，回退按二元组命中“拥塞控制协议”；无空格的标题子串命中排前。
+    expect(result.units.map((item) => item.item.id)).toEqual(['u_exact', 'u_spaced'])
+  })
+
+  it('二元组覆盖率不足 72% 时不返回模糊结果', () => {
+    const result = searchKnowledge('拥塞协议', { concepts: [], aliases: [], units: [unit('u1', '拥塞控制协议', '')], messages: [] })
+    // “拥塞协议”的三个二元组只有两个出现在文本里（缺“塞协”），按设计不命中，避免过度召回。
+    expect(result.units).toEqual([])
+  })
+
+  it('FTS5 bm25 仅作为同分时的决胜项', () => {
+    const documents = [
+      { id: 'message:m1', kind: 'message' as const, refId: 'm1', fields: { content: '拥塞控制' }, updatedAt: '2026-08-25T00:00:00.000Z' },
+      { id: 'message:m2', kind: 'message' as const, refId: 'm2', fields: { content: '拥塞控制' }, updatedAt: '2026-08-25T00:00:00.000Z' },
+    ]
+    const ranked = rankSearchDocuments('拥塞', documents, new Map([['message:m2', -1], ['message:m1', -5]]))
+    // bm25 越接近 0 越好：m2（rank=-1）排在 m1（rank=-5）之前，其余得分完全相同。
+    expect(ranked.map((item) => item.refId)).toEqual(['m2', 'm1'])
   })
 })
