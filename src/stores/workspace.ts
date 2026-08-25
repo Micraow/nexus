@@ -531,7 +531,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           inputRevision: `${session.id}:${session.revision}`,
           prompt: `请从下面的 Session 中提取 1～3 个核心 Concept，只返回 JSON：{"concepts":["..."]}\n\n${importedMessages.map((message) => `${message.role}: ${message.content}`).join('\n')}`,
           status: 'pending',
-          scopeLabel: `${session.title} · 起源 Concept`,
+          scopeLabel: `${session.title} · 起始知识主题`,
         })
         report.taskIds.push(originTaskId)
         report.importedSessionIds.push(sessionId)
@@ -591,9 +591,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (linked) {
         const unit = units.value.find((item) => item.id === unitId)
         const concept = concepts.value.find((item) => item.id === conceptId && item.status === 'active')
-        if (!unit || !concept) throw new Error('KnowledgeUnit 或 Concept 不存在')
+        if (!unit || !concept) throw new Error('知识单元或知识主题不存在')
         const belongsToUnitSession = messages.value.some((message) => message.unitId === unitId && message.sessionId === unit.sessionId)
-        if (!belongsToUnitSession) throw new Error('KnowledgeUnit 必须包含当前 Session 的消息')
+        if (!belongsToUnitSession) throw new Error('关联的知识单元不属于当前会话')
         db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [unitId, conceptId, 'manual', isoNow()])
       } else {
         db.run('DELETE FROM unit_concepts WHERE unit_id = ? AND concept_id = ?', [unitId, conceptId])
@@ -622,7 +622,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     let conceptId = ''
     mutate(() => {
       const unit = units.value.find((item) => item.id === unitId)
-      if (!unit) throw new Error('KnowledgeUnit 不存在')
+      if (!unit) throw new Error('知识单元不存在')
       conceptId = ensureConcept(name)
       db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [unitId, conceptId, 'manual', isoNow()])
     })
@@ -981,7 +981,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const session = sessions.value.find((item) => item.id === targetId)
 
     if (task.type === 'title' || task.type === 'summary') {
-      if (!unit) errors.push('任务所属 KnowledgeUnit 不存在')
+      if (!unit) errors.push('任务所属的知识单元不存在')
       else if (String(unit.revision) !== targetRevision) errors.push('任务输入版本已过期，请重新生成 Prompt')
       const field = task.type === 'title' ? 'title' : 'summary'
       const value = data[field]
@@ -1050,7 +1050,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (!Array.isArray(rawUnits) || rawUnits.length === 0) errors.push('units 必须是非空数组')
       const conversationSession = sessions.value.find((item) => item.id === targetId)
       const userMessage = messages.value.find((message) => message.sessionId === targetId && message.orderInSession === 0)
-      if (!conversationSession || !userMessage) errors.push('对话目标 Session 不存在')
+      if (!conversationSession || !userMessage) errors.push('找不到对话目标会话')
       if (String(conversationSession?.revision ?? '') !== targetRevision) errors.push('任务输入版本已过期，请重新生成 Prompt')
       const normalizedUnits = Array.isArray(rawUnits) ? rawUnits.map((item) => {
         const value = item && typeof item === 'object' ? item as Record<string, unknown> : {}
@@ -1064,7 +1064,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       normalizedUnits.forEach((unit) => {
         if (!unit.title) errors.push('对话知识单元标题不能为空')
         if (validateUnitText(unit.title, unit.summary).length) errors.push('对话知识单元标题或摘要超出长度限制')
-        unit.concepts.forEach((concept) => { if (!normalizeText(concept.name)) errors.push('对话 Concept 名称不能为空') })
+        unit.concepts.forEach((concept) => { if (!normalizeText(concept.name)) errors.push('对话返回的知识主题名称不能为空') })
       })
       if (errors.length) {
         markTask(taskId, errors.some((error) => error.includes('版本')) ? 'stale' : 'needs_review', responseText, errors)
@@ -1121,7 +1121,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const targetId = task.inputRevision.split(':')[0]
     const ownerUnit = units.value.find((item) => item.id === targetId)
     const session = sessions.value.find((item) => item.id === (ownerUnit?.sessionId ?? targetId))
-    if (session?.localOnly) return { ok: false, error: '仅本地 Session 禁止 API 任务，请切换 Prompt 粘贴模式' }
+    if (session?.localOnly) return { ok: false, error: '该会话已标记为仅本地，禁止 API 任务；可以改用 Prompt 粘贴模式' }
     mutate(() => db.run("UPDATE llm_tasks SET status = 'running', updated_at = ? WHERE id = ?", [isoNow(), taskId]))
     let lastError: Error | null = null
     try {
@@ -1268,11 +1268,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         const createdUnit = unitFromRow(db.query<Row>('SELECT * FROM knowledge_units WHERE id = ?', [unitId])[0])
         createTask({ type: 'title', mode: task.mode, providerId: task.providerId, model: task.model, promptVersion: PROMPT_VERSION, inputRevision: `${unitId}:1`, prompt: buildTitlePrompt(session, createdUnit, unitMessages, []), status: 'pending', scopeLabel: `${session.title} · 标题` })
         createTask({ type: 'summary', mode: task.mode, providerId: task.providerId, model: task.model, promptVersion: PROMPT_VERSION, inputRevision: `${unitId}:1`, prompt: buildSummaryPrompt(session, createdUnit, unitMessages, []), status: 'pending', scopeLabel: `${session.title} · 摘要` })
-        createTask({ type: 'concept_extraction', mode: task.mode, providerId: task.providerId, model: task.model, promptVersion: PROMPT_VERSION, inputRevision: `${unitId}:1`, prompt: buildConceptPrompt(session, createdUnit, unitMessages, []), status: 'pending', scopeLabel: `${session.title} · Concept` })
+        createTask({ type: 'concept_extraction', mode: task.mode, providerId: task.providerId, model: task.model, promptVersion: PROMPT_VERSION, inputRevision: `${unitId}:1`, prompt: buildConceptPrompt(session, createdUnit, unitMessages, []), status: 'pending', scopeLabel: `${session.title} · 知识主题` })
       })
       db.run('UPDATE sessions SET message_count = ?, unit_count = ?, revision = revision + 1, updated_at = ? WHERE id = ?', [sessionMessages.length, segmentation.units.length, now, session.id])
       const refreshedSession = sessionFromRow(db.query<Row>('SELECT * FROM sessions WHERE id = ?', [session.id])[0])
-      db.run("UPDATE llm_tasks SET status = 'pending', input_revision = ?, validation_errors = NULL, error_message = NULL, updated_at = ? WHERE type = 'origin_concepts' AND scope_label LIKE ? AND status = 'stale'", [`${session.id}:${refreshedSession.revision}`, now, `${session.title} · 起源 Concept%`])
+      db.run("UPDATE llm_tasks SET status = 'pending', input_revision = ?, validation_errors = NULL, error_message = NULL, updated_at = ? WHERE type = 'origin_concepts' AND scope_label LIKE ? AND status = 'stale'", [`${session.id}:${refreshedSession.revision}`, now, `${session.title} · 起始知识主题%`])
       segmentationTaskIds.forEach((id) => db.run('UPDATE llm_tasks SET status = ?, response = CASE WHEN id = ? THEN ? ELSE response END, parsed_result = COALESCE(parsed_result, ?), validation_errors = NULL, error_message = NULL, updated_at = ? WHERE id = ?', ['success', id, responseText, JSON.stringify(segmentation), now, id]))
     })
   }
@@ -1301,7 +1301,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const input = segmentationInput(task)
     const sessionId = input.sessionId
     const session = sessions.value.find((item) => item.id === sessionId)
-    if (!session) return { ok: false, errors: ['任务所属 Session 不存在'] }
+    if (!session) return { ok: false, errors: ['任务所属会话不存在'] }
     const sessionMessages = messages.value.filter((message) => message.sessionId === sessionId).sort((a, b) => a.orderInSession - b.orderInSession)
     const expectedIndices = input.total > 1 ? sessionMessages.slice(input.start, input.end).map((message) => message.orderInSession) : undefined
     const validation = validateSegmentationResult(parsed, sessionMessages.length, expectedIndices)
@@ -1454,8 +1454,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
-  function clearAllData(): void {
-    mutate(() => {
+  async function createDatabaseBackup(): Promise<string | null> {
+    const backup = await db.createBackup()
+    return backup.reference
+  }
+
+  function clearAllData(): void {    mutate(() => {
       db.run('DELETE FROM context_references')
       db.run('DELETE FROM nav_tree_node_units')
       db.run('DELETE FROM nav_tree_nodes')
@@ -1544,6 +1548,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     clearContext,
     setSelectedSession,
     search,
+    createDatabaseBackup,
     clearAllData,
     addManualGraphEdge,
     removeManualGraphEdge,

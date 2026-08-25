@@ -12,6 +12,8 @@
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
+    "@tauri-apps/plugin-clipboard-manager": "^2.3.2",
+    "@tauri-apps/plugin-http": "^2.5.9",
     "d3": "^7.9.0",
     "js-yaml": "^4.1.0",
     "lucide-vue-next": "^0.468.0",
@@ -22,6 +24,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
     "@types/d3": "^7.4.3",
     "@types/js-yaml": "^4.0.9",
     "@types/sql.js": "^1.4.9",
