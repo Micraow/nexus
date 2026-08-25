@@ -82,6 +82,7 @@ textarea { resize: vertical; }
 .sidebar.collapsed .brand-lockup { justify-content: center; gap: 0; padding-left: 0; padding-right: 0; }
 .sidebar.collapsed .brand-copy { display: none; }
 .collapse-button { position: absolute; top: 22px; right: 12px; }
+.sidebar.collapsed .collapse-button { top: 68px; right: 18px; }
 .icon-button { width: 36px; height: 36px; display: inline-grid; place-items: center; border-radius: 6px; color: var(--muted); background: transparent; transition: background var(--motion-fast), color var(--motion-fast), transform var(--motion-fast); }
 .icon-button:hover { color: var(--text); background: var(--surface-muted); }
 .icon-button:active { transform: scale(.96); }
