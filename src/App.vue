@@ -43,6 +43,8 @@ import {
 import GraphCanvas from '@/components/GraphCanvas.vue'
 import NavTree from '@/components/NavTree.vue'
 import { serializeConfig } from '@/services/config'
+import { saveTextFile } from '@/services/files'
+import type { SaveFileRequest } from '@/services/files'
 import { renderMarkdown } from '@/services/markdown'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import { invokeTauri, isTauriRuntime } from '@/services/tauri'
@@ -709,30 +711,25 @@ function copyTaskPrompt(task: LLMTask): void {
   selectedTaskId.value = task.id
 }
 
-function downloadText(filename: string, content: string, type = 'text/plain'): void {
-  const blob = new Blob([content], { type })
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = filename
-  anchor.click()
-  URL.revokeObjectURL(url)
+async function saveExport(filename: string, content: string, kind: SaveFileRequest['kind'], message: string): Promise<void> {
+  try {
+    if (await saveTextFile({ filename, content, kind })) notify(message)
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '导出失败')
+  }
 }
 
 function exportConfig(): void {
-  downloadText('nexus-config.yaml', serializeConfig(store.config), 'text/yaml;charset=utf-8')
-  notify('配置 YAML 已导出')
+  void saveExport('nexus-config.yaml', serializeConfig(store.config), 'yaml', '配置 YAML 已导出')
 }
 
 function exportSnapshot(): void {
   const payload = { export_version: 1, exported_at: new Date().toISOString(), graph: currentGraph.value, concepts: store.concepts, units: store.units }
-  downloadText('nexus-graph-snapshot.json', JSON.stringify(payload, null, 2), 'application/json')
-  notify('图谱快照已导出')
+  void saveExport('nexus-graph-snapshot.json', JSON.stringify(payload, null, 2), 'json', '图谱快照已导出')
 }
 
 function exportKnowledgeBase(): void {
-  downloadText('nexus-knowledge-base.json', store.exportKnowledgeBase(), 'application/json')
-  notify('完整知识库 JSON 已导出')
+  void saveExport('nexus-knowledge-base.json', store.exportKnowledgeBase(), 'json', '完整知识库 JSON 已导出')
 }
 
 function triggerRestore(): void {
@@ -759,14 +756,12 @@ function exportConceptMarkdown(concept: Concept): void {
   const conceptAliases = store.aliases.filter((alias) => alias.conceptId === concept.id)
   const relations = store.relations.filter((relation) => relation.parentConceptId === concept.id || relation.childConceptId === concept.id)
   const lines = [`# ${concept.name}`, '', `状态：${concept.status}`, '', '## 别名', ...(conceptAliases.length ? conceptAliases.map((alias) => `- ${alias.alias}`) : ['- 暂无']), '', '## 笔记', concept.notes || '暂无', '', '## 关联知识单元', ...(conceptUnits.length ? conceptUnits.map((unit) => `- ${unit.title || '待命名知识单元'}：${unit.summary || '暂无摘要'}`) : ['- 暂无']), '', '## 关系', ...(relations.length ? relations.map((relation) => `- ${relation.relationType}：${store.concepts.find((item) => item.id === (relation.parentConceptId === concept.id ? relation.childConceptId : relation.parentConceptId))?.name ?? '未知'}`) : ['- 暂无'])]
-  downloadText(`${concept.name.replace(/[^\w\u4e00-\u9fff-]+/g, '_')}.md`, lines.join('\n'), 'text/markdown;charset=utf-8')
-  notify('知识主题 Markdown 已导出')
+  void saveExport(`${concept.name.replace(/[^\w\u4e00-\u9fff-]+/g, '_')}.md`, lines.join('\n'), 'markdown', '知识主题 Markdown 已导出')
 }
 
 function exportSession(session: Session): void {
   const payload = { export_version: 1, exported_at: new Date().toISOString(), session, messages: store.messages.filter((message) => message.sessionId === session.id), units: store.units.filter((unit) => unit.sessionId === session.id), nav: store.navNodes.filter((node) => node.sessionId === session.id) }
-  downloadText(`${session.title || 'session'}.json`, JSON.stringify(payload, null, 2), 'application/json')
-  notify('会话 JSON 已导出')
+  void saveExport(`${session.title || 'session'}.json`, JSON.stringify(payload, null, 2), 'json', '会话 JSON 已导出')
 }
 
 function saveProvider(): void {
