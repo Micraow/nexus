@@ -726,26 +726,56 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (sourceId === targetId) return
     const before = captureConceptOperationSnapshot()
     mutate(() => {
-      const source = concepts.value.find((concept) => concept.id === sourceId)
-      const target = concepts.value.find((concept) => concept.id === targetId)
-      if (!source || !target) throw new Error('找不到需要合并的 Concept')
       const now = isoNow()
-      db.run('INSERT OR IGNORE INTO concept_aliases(id, concept_id, alias, normalized_alias, source, created_at) VALUES (?, ?, ?, ?, ?, ?)', [createId('alias'), targetId, source.name, normalizeText(source.name), 'merge', now])
-      db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) SELECT unit_id, ?, ?, created_at FROM unit_concepts WHERE concept_id = ?', [targetId, 'merge', sourceId])
-      db.run('DELETE FROM unit_concepts WHERE concept_id = ?', [sourceId])
-      const sourceRelations = db.query<Row>('SELECT * FROM concept_relations WHERE parent_concept_id = ? OR child_concept_id = ?', [sourceId, sourceId])
-      sourceRelations.forEach((relation) => {
-        const parentId = text(relation.parent_concept_id) === sourceId ? targetId : text(relation.parent_concept_id)
-        const childId = text(relation.child_concept_id) === sourceId ? targetId : text(relation.child_concept_id)
-        if (parentId === childId) return
-        db.run('INSERT OR IGNORE INTO concept_relations(id, parent_concept_id, child_concept_id, relation_type, source, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [createId('relation'), parentId, childId, text(relation.relation_type), text(relation.source), text(relation.status), text(relation.created_at), now])
-      })
-      db.run('DELETE FROM concept_relations WHERE parent_concept_id = ? OR child_concept_id = ?', [sourceId, sourceId])
-      const mergedNotes = [target.notes, source.notes ? `来自 ${source.name} 的笔记：${source.notes}` : ''].filter(Boolean).join('\n\n')
-      db.run('UPDATE concepts SET notes = ?, updated_at = ? WHERE id = ?', [mergedNotes, now, targetId])
-      db.run('UPDATE concepts SET status = ?, merged_into_id = ?, deleted_at = ?, updated_at = ? WHERE id = ?', ['merged', targetId, now, now, sourceId])
+      mergeConceptRecords(sourceId, targetId, now)
       recordOperation('合并知识主题', before, captureConceptOperationSnapshot())
     })
+  }
+
+  /** Merge every user-visible relation carried by a Concept in one transaction. */
+  function mergeConceptRecords(sourceId: string, targetId: string, now = isoNow()): void {
+    if (sourceId === targetId) throw new Error('不能将知识主题合并到自身')
+    const source = db.query<Row>('SELECT * FROM concepts WHERE id = ?', [sourceId])[0]
+    const target = db.query<Row>('SELECT * FROM concepts WHERE id = ?', [targetId])[0]
+    if (!source || !target) throw new Error('找不到需要合并的知识主题')
+    if (text(source.status) === 'merged' && text(source.merged_into_id) === targetId) return
+
+    const sourceName = text(source.name)
+    const sourceAliases = db.query<Row>('SELECT * FROM concept_aliases WHERE concept_id = ?', [sourceId])
+    db.run('INSERT OR IGNORE INTO concept_aliases(id, concept_id, alias, normalized_alias, source, created_at) VALUES (?, ?, ?, ?, ?, ?)', [createId('alias'), targetId, sourceName, normalizeText(sourceName), 'merge', now])
+    sourceAliases.forEach((alias) => {
+      db.run('INSERT OR IGNORE INTO concept_aliases(id, concept_id, alias, normalized_alias, source, created_at) VALUES (?, ?, ?, ?, ?, ?)', [createId('alias'), targetId, text(alias.alias), text(alias.normalized_alias), 'merge', text(alias.created_at) || now])
+    })
+    db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) SELECT unit_id, ?, ?, created_at FROM unit_concepts WHERE concept_id = ?', [targetId, 'merge', sourceId])
+    db.run('DELETE FROM unit_concepts WHERE concept_id = ?', [sourceId])
+
+    const sourceRelations = db.query<Row>('SELECT * FROM concept_relations WHERE parent_concept_id = ? OR child_concept_id = ?', [sourceId, sourceId])
+    sourceRelations.forEach((relation) => {
+      const parentId = text(relation.parent_concept_id) === sourceId ? targetId : text(relation.parent_concept_id)
+      const childId = text(relation.child_concept_id) === sourceId ? targetId : text(relation.child_concept_id)
+      if (parentId === childId) return
+      db.run('INSERT OR IGNORE INTO concept_relations(id, parent_concept_id, child_concept_id, relation_type, source, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [createId('relation'), parentId, childId, text(relation.relation_type), text(relation.source), text(relation.status), text(relation.created_at) || now, now])
+    })
+    db.run('DELETE FROM concept_relations WHERE parent_concept_id = ? OR child_concept_id = ?', [sourceId, sourceId])
+
+    const sourceEdges = db.query<Row>('SELECT * FROM manual_graph_edges WHERE (source_type = ? AND source_ref_id = ?) OR (target_type = ? AND target_ref_id = ?)', ['concept', sourceId, 'concept', sourceId])
+    sourceEdges.forEach((edge) => {
+      const sourceType = text(edge.source_type)
+      const targetType = text(edge.target_type)
+      const edgeSource = sourceType === 'concept' && text(edge.source_ref_id) === sourceId ? targetId : text(edge.source_ref_id)
+      const edgeTarget = targetType === 'concept' && text(edge.target_ref_id) === sourceId ? targetId : text(edge.target_ref_id)
+      if (sourceType === targetType && edgeSource === edgeTarget) return
+      const duplicate = db.query<Row>('SELECT id FROM manual_graph_edges WHERE source_type = ? AND source_ref_id = ? AND target_type = ? AND target_ref_id = ? LIMIT 1', [sourceType, edgeSource, targetType, edgeTarget])[0]
+      if (!duplicate) db.run('INSERT INTO manual_graph_edges(id, source_type, source_ref_id, target_type, target_ref_id, label, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [createId('edge'), sourceType, edgeSource, targetType, edgeTarget, edge.label ?? null, text(edge.created_at) || now])
+    })
+    db.run("DELETE FROM manual_graph_edges WHERE (source_type = 'concept' AND source_ref_id = ?) OR (target_type = 'concept' AND target_ref_id = ?)", [sourceId, sourceId])
+    db.run('UPDATE nav_tree_nodes SET trigger_concept_id = ? WHERE trigger_concept_id = ?', [targetId, sourceId])
+    db.run('INSERT OR IGNORE INTO graph_layout(node_type, ref_id, x, y, fixed, layout_version) SELECT node_type, ?, x, y, fixed, layout_version FROM graph_layout WHERE node_type = ? AND ref_id = ?', [targetId, 'concept', sourceId])
+    db.run('DELETE FROM graph_layout WHERE node_type = ? AND ref_id = ?', ['concept', sourceId])
+
+    const mergedNotes = [text(target.notes), text(source.notes) ? `来自 ${sourceName} 的笔记：${text(source.notes)}` : ''].filter(Boolean).join('\n\n')
+    db.run('UPDATE concepts SET notes = ?, updated_at = ? WHERE id = ?', [mergedNotes, now, targetId])
+    db.run('UPDATE concepts SET status = ?, merged_into_id = ?, deleted_at = ?, updated_at = ? WHERE id = ?', ['merged', targetId, now, now, sourceId])
   }
 
   function deleteConcept(conceptId: string): void {
@@ -874,12 +904,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         if (suggestion.type === 'merge') {
           const sourceId = suggestion.source_concept_id as string
           const targetId = suggestion.target_concept_id as string
-          const source = concepts.value.find((concept) => concept.id === sourceId)
-          if (!source) throw new Error('源知识主题不存在')
-          db.run('INSERT OR IGNORE INTO concept_aliases(id, concept_id, alias, normalized_alias, source, created_at) VALUES (?, ?, ?, ?, ?, ?)', [createId('alias'), targetId, source.name, normalizeText(source.name), 'merge', now])
-          db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) SELECT unit_id, ?, ?, created_at FROM unit_concepts WHERE concept_id = ?', [targetId, 'merge', sourceId])
-          db.run('DELETE FROM unit_concepts WHERE concept_id = ?', [sourceId])
-          db.run('UPDATE concepts SET status = ?, merged_into_id = ?, deleted_at = ?, updated_at = ? WHERE id = ?', ['merged', targetId, now, now, sourceId])
+          mergeConceptRecords(sourceId, targetId, now)
         } else if (suggestion.type === 'alias') {
           db.run('INSERT OR IGNORE INTO concept_aliases(id, concept_id, alias, normalized_alias, source, created_at) VALUES (?, ?, ?, ?, ?, ?)', [createId('alias'), suggestion.concept_id, suggestion.alias?.trim(), normalizeText(suggestion.alias ?? ''), 'maintenance', now])
         } else if (suggestion.type === 'relation') {
