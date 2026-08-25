@@ -169,6 +169,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const graphViewport = ref<GraphViewport>({ x: 0, y: 0, scale: 1, layoutVersion: 1 })
   const graphRevision = ref(1)
   const config = ref<AppConfig>(structuredClone(DEFAULT_CONFIG))
+  const configWarning = ref<string | null>(null)
   const selectedContextIds = ref<string[]>([])
   const selectedSessionId = ref<string | null>(null)
   const lastImport = ref<ImportReport | null>(null)
@@ -296,7 +297,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   async function init(): Promise<void> {
     if (ready.value || loading.value) return
     loading.value = true
-    await db.init()
     const storedConfig = await readConfigText()
     if (storedConfig) {
       try {
@@ -309,12 +309,36 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           storage: { ...DEFAULT_CONFIG.storage, ...(parsed.storage ?? {}) },
         }
       } catch {
-        config.value = structuredClone(DEFAULT_CONFIG)
+        // YAML 解析失败：保留原文件，沿用上一次有效配置并提示用户。
+        configWarning.value = '配置文件解析失败，已沿用上一次有效配置；请修复 config.yaml 后重启应用。'
       }
+    } else {
+      config.value = structuredClone(DEFAULT_CONFIG)
     }
+    db.setDatabasePathOverride(config.value.storage.databasePath || null)
+    await db.init()
     refreshFromDb()
     ready.value = true
     loading.value = false
+  }
+
+  /** Switch to another database location after confirming and backing up. */
+  async function changeDatabasePath(path: string): Promise<string | null> {
+    const trimmed = path.trim()
+    if ((config.value.storage.databasePath ?? '') === trimmed) return null
+    let backupReference: string | null = null
+    try {
+      backupReference = (await db.createBackup())?.reference ?? null
+    } catch {
+      // 当前还没有数据库文件时无需备份。
+    }
+    db.setDatabasePathOverride(trimmed || null)
+    updateConfig({ storage: { databasePath: trimmed } })
+    await db.reopen()
+    refreshFromDb()
+    selectedContextIds.value = []
+    selectedSessionId.value = activeSessions.value[0]?.id ?? null
+    return backupReference
   }
 
   function mutate(callback: () => void): void {
@@ -1062,8 +1086,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (typeof answer !== 'string' || !answer.trim()) errors.push('answer 必须是非空字符串')
       if (!Array.isArray(rawUnits) || rawUnits.length === 0) errors.push('units 必须是非空数组')
       const conversationSession = sessions.value.find((item) => item.id === targetId)
-      const userMessage = messages.value.find((message) => message.sessionId === targetId && message.orderInSession === 0)
-      if (!conversationSession || !userMessage) errors.push('找不到对话目标会话')
+      const userMessage = messages.value.find((message) => {
+        if (message.sessionId !== targetId || message.role !== 'user') return false
+        try {
+          const meta = JSON.parse(message.metadata ? text(message.metadata) : '{}') as Record<string, unknown>
+          return meta.taskId === task.id
+        } catch {
+          return false
+        }
+      })
+      if (!conversationSession) errors.push('找不到对话目标会话')
+      else if (!userMessage) errors.push('找不到这次提问对应的消息')
       if (String(conversationSession?.revision ?? '') !== targetRevision) errors.push('任务输入版本已过期，请重新生成 Prompt')
       const normalizedUnits = Array.isArray(rawUnits) ? rawUnits.map((item) => {
         const value = item && typeof item === 'object' ? item as Record<string, unknown> : {}
@@ -1085,17 +1118,43 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       }
       mutate(() => {
         const now = isoNow()
-        const nodeParent = db.query<Row>('SELECT id FROM nav_tree_nodes WHERE session_id = ? AND parent_id IS NULL LIMIT 1', [targetId])[0]
-        const rootId = nodeParent ? text(nodeParent.id) : createId('nav')
-        if (!nodeParent) db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, NULL, NULL, ?, 0, ?)', [rootId, conversationSession?.title ?? '新的知识对话', now])
+        let meta: { mode?: string; parentNodeId?: string | null; topicId?: string | null } = {}
+        try {
+          meta = JSON.parse(userMessage?.metadata ? text(userMessage.metadata) : '{}') as typeof meta
+        } catch {
+          meta = {}
+        }
+        const followUp = meta.mode === 'follow_up'
+        // Determine where the answer branches from.
+        let parentNodeId: string
+        let parentDepth: number
+        if (followUp) {
+          const parentRow = db.query<Row>('SELECT id, depth FROM nav_tree_nodes WHERE id = ?', [meta.parentNodeId ?? ''])[0]
+          if (!parentRow) throw new Error('找不到要继续的探索节点')
+          parentNodeId = text(parentRow.id)
+          parentDepth = number(parentRow.depth)
+        } else {
+          const rootRow = db.query<Row>('SELECT id FROM nav_tree_nodes WHERE session_id = ? AND parent_id IS NULL LIMIT 1', [targetId])[0]
+          if (rootRow) {
+            parentNodeId = text(rootRow.id)
+            parentDepth = -1
+          } else {
+            parentNodeId = createId('nav')
+            db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, NULL, NULL, ?, 0, ?)', [parentNodeId, targetId, conversationSession?.title ?? '新的知识对话', now])
+            parentDepth = -1
+          }
+        }
         const branchNodeId = createId('nav')
-        db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, ?, NULL, ?, 1, ?)', [branchNodeId, targetId, rootId, null, normalizedUnits[0]?.title || '对话回答', now])
+        db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [branchNodeId, targetId, parentNodeId, meta.topicId ?? null, normalizedUnits[0]?.title || '对话回答', parentDepth + 1, now])
+        const sessionMessages = messages.value.filter((message) => message.sessionId === targetId).sort((left, right) => left.orderInSession - right.orderInSession)
+        const assistantOrder = sessionMessages.length ? sessionMessages[sessionMessages.length - 1].orderInSession + 1 : 1
         const assistantMessageId = createId('message')
-        db.run('INSERT INTO messages(id, session_id, unit_id, role, content, order_in_session, timestamp, metadata) VALUES (?, ?, NULL, ?, ?, 1, ?, ?)', [assistantMessageId, targetId, 'assistant', String(answer).trim(), now, JSON.stringify({ taskId })])
+        db.run('INSERT INTO messages(id, session_id, unit_id, role, content, order_in_session, timestamp, metadata) VALUES (?, ?, NULL, ?, ?, ?, ?, ?)', [assistantMessageId, targetId, 'assistant', String(answer).trim(), assistantOrder, now, JSON.stringify({ taskId })])
+        const unitOffset = units.value.filter((unit) => unit.sessionId === targetId).length
         normalizedUnits.forEach((item, index) => {
           const unitId = createId('unit')
-          db.run('INSERT INTO knowledge_units(id, session_id, title, summary, order_in_session, status, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)', [unitId, targetId, item.title, item.summary || null, index, item.summary ? 'ready' : 'pending', now, now])
-          if (index === 0) db.run('UPDATE messages SET unit_id = ? WHERE id IN (?, ?)', [unitId, userMessage?.id, assistantMessageId])
+          db.run('INSERT INTO knowledge_units(id, session_id, title, summary, order_in_session, status, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)', [unitId, targetId, item.title, item.summary || null, unitOffset + index, item.summary ? 'ready' : 'pending', now, now])
+          if (index === 0 && userMessage) db.run('UPDATE messages SET unit_id = ? WHERE id IN (?, ?)', [unitId, userMessage.id, assistantMessageId])
           db.run('INSERT INTO nav_tree_node_units(node_id, unit_id, order_in_node) VALUES (?, ?, ?)', [branchNodeId, unitId, index])
           item.concepts.forEach((candidate) => {
             const conceptId = ensureConcept(candidate.name, 'llm')
@@ -1106,7 +1165,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
             })
           })
         })
-        db.run('UPDATE sessions SET message_count = 2, unit_count = ?, revision = revision + 1, updated_at = ? WHERE id = ?', [normalizedUnits.length, now, targetId])
+        if (followUp) {
+          db.run('UPDATE sessions SET unit_count = unit_count + ?, revision = revision + 1, updated_at = ? WHERE id = ?', [normalizedUnits.length, now, targetId])
+        } else {
+          db.run('UPDATE sessions SET message_count = 2, unit_count = ?, revision = revision + 1, updated_at = ? WHERE id = ?', [normalizedUnits.length, now, targetId])
+        }
         db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = ?, validation_errors = NULL, error_message = NULL, updated_at = ? WHERE id = ?', ['success', responseText, JSON.stringify(data), now, taskId])
       })
       return { ok: true, errors: [] }
@@ -1394,36 +1457,72 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     mutate(() => db.run('DELETE FROM quick_phrases WHERE id = ? AND is_builtin = 0', [id]))
   }
 
+  function buildConversationContext(sourceUnitIds: string[], includeFullContent: boolean): string {
+    const sourceUnits = sourceUnitIds.map((id) => units.value.find((unit) => unit.id === id)).filter(Boolean) as KnowledgeUnit[]
+    return sourceUnits.map((unit, index) => {
+      const session = sessions.value.find((item) => item.id === unit.sessionId)
+      const full = includeFullContent ? `\n原文：${unitMessages(unit.id).map((message) => `${message.role}: ${message.content}`).join('\n')}` : ''
+      return `# ${index + 1} ${unit.title || '未命名知识单元'}\n来源 Session：${session?.title || ''}\n摘要：${unit.summary || ''}\nConcept：${unitConceptNames(unit.id).join('、')}${full}`
+    }).join('\n\n')
+  }
+
+  /** Start a brand-new session seeded with one user question. */
   function createConversationTask(input: { question: string; topicId?: string; parentNodeId?: string; sourceUnitIds?: string[]; includeFullContent?: boolean }): string {
     const question = input.question.trim()
     if (!question) throw new Error('问题不能为空')
-    const sourceUnits = (input.sourceUnitIds ?? selectedContextIds.value).map((id) => units.value.find((unit) => unit.id === id)).filter(Boolean) as KnowledgeUnit[]
-    const sourceSession = input.parentNodeId ? navNodes.value.find((node) => node.id === input.parentNodeId)?.sessionId : sourceUnits[0]?.sessionId
+    const sourceUnitIds = input.sourceUnitIds ?? selectedContextIds.value
+    const sourceSession = input.parentNodeId ? navNodes.value.find((node) => node.id === input.parentNodeId)?.sessionId : undefined
     const targetSessionId = createId('session')
     const now = isoNow()
     const topic = input.topicId ? concepts.value.find((concept) => concept.id === input.topicId)?.name : undefined
-    const context = sourceUnits.map((unit, index) => {
-      const session = sessions.value.find((item) => item.id === unit.sessionId)
-      const full = input.includeFullContent ? `\n原文：${unitMessages(unit.id).map((message) => `${message.role}: ${message.content}`).join('\n')}` : ''
-      return `# ${index + 1} ${unit.title || '未命名知识单元'}\n来源 Session：${session?.title || ''}\n摘要：${unit.summary || ''}\nConcept：${unitConceptNames(unit.id).join('、')}${full}`
-    }).join('\n\n')
+    const context = buildConversationContext(sourceUnitIds, input.includeFullContent ?? false)
     mutate(() => {
-        db.run('INSERT INTO sessions(id, source, platform, model, external_session_id, title, created_at, updated_at, message_count, unit_count, revision, local_only) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 1, 0, 1, 0)', [targetSessionId, 'in_app', 'local', null, topic ? `围绕 ${topic} 的新对话` : '新的知识对话', now, now])
+      db.run('INSERT INTO sessions(id, source, platform, model, external_session_id, title, created_at, updated_at, message_count, unit_count, revision, local_only) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 1, 0, 1, 0)', [targetSessionId, 'in_app', 'local', null, topic ? `围绕 ${topic} 的新对话` : '新的知识对话', now, now])
       const messageId = createId('message')
-      db.run('INSERT INTO messages(id, session_id, unit_id, role, content, order_in_session, timestamp, metadata) VALUES (?, ?, NULL, ?, ?, 0, ?, ?)', [messageId, targetSessionId, 'user', question, now, JSON.stringify({ topicId: input.topicId ?? null })])
+      db.run('INSERT INTO messages(id, session_id, unit_id, role, content, order_in_session, timestamp, metadata) VALUES (?, ?, NULL, ?, ?, 0, ?, ?)', [messageId, targetSessionId, 'user', question, now, JSON.stringify({ mode: 'new', topicId: input.topicId ?? null })])
       const rootId = createId('nav')
       db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [rootId, targetSessionId, null, input.topicId ?? null, topic ? `围绕 ${topic}` : '新的知识对话', 0, now])
-      const targetNodeId = input.parentNodeId ?? rootId
-      ;(input.sourceUnitIds ?? selectedContextIds.value).forEach((unitId, index) => {
-        const unit = units.value.find((item) => item.id === unitId)
-        if (!unit) return
-        db.run('INSERT INTO context_references(id, target_session_id, source_session_id, source_unit_id, source_message_id, order_in_context, include_full_content) VALUES (?, ?, ?, ?, NULL, ?, ?)', [createId('context'), targetSessionId, unit.sessionId, unit.id, index, input.includeFullContent ? 1 : 0])
-      })
       const taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${targetSessionId}:1`, prompt: buildConversationPrompt({ question, topic, context }), status: 'pending', scopeLabel: `新对话 · ${topic || '知识探索'}` })
-      db.run('UPDATE messages SET metadata = ? WHERE id = ?', [JSON.stringify({ topicId: input.topicId ?? null, parentNodeId: targetNodeId, taskId, sourceSessionId: sourceSession ?? null }), messageId])
-      void sourceSession
+      db.run('UPDATE messages SET metadata = ? WHERE id = ?', [JSON.stringify({ mode: 'new', topicId: input.topicId ?? null, parentNodeId: rootId, taskId, sourceSessionId: sourceSession ?? null }), messageId])
+      writeSourceReferences(targetSessionId, sourceUnitIds, input.includeFullContent ?? false)
     })
     return targetSessionId
+  }
+
+  function writeSourceReferences(targetSessionId: string, sourceUnitIds: string[], includeFullContent: boolean): void {
+    sourceUnitIds.forEach((unitId, index) => {
+      const unit = units.value.find((item) => item.id === unitId)
+      if (!unit) return
+      db.run('INSERT INTO context_references(id, target_session_id, source_session_id, source_unit_id, source_message_id, order_in_context, include_full_content) VALUES (?, ?, ?, ?, NULL, ?, ?)', [createId('context'), targetSessionId, unit.sessionId, unit.id, index, includeFullContent ? 1 : 0])
+    })
+  }
+
+  /**
+   * Continue exploring inside an existing session: the question becomes a new
+   * message and its answer will branch from the given navigation node.
+   */
+  function createFollowUpTask(input: { sessionId: string; parentNodeId: string; question: string; topicId?: string; sourceUnitIds?: string[]; includeFullContent?: boolean }): string {
+    const question = input.question.trim()
+    if (!question) throw new Error('问题不能为空')
+    const session = sessions.value.find((item) => item.id === input.sessionId)
+    if (!session) throw new Error('找不到目标会话')
+    const parentNode = navNodes.value.find((node) => node.id === input.parentNodeId && node.sessionId === input.sessionId)
+    if (!parentNode) throw new Error('找不到要继续的探索节点')
+    const now = isoNow()
+    const revision = session.revision
+    const nextOrder = messages.value.filter((message) => message.sessionId === session.id).length
+    const context = buildConversationContext(input.sourceUnitIds ?? [], input.includeFullContent ?? false)
+    const topic = input.topicId ? concepts.value.find((concept) => concept.id === input.topicId)?.name : undefined
+    let taskId = ''
+    mutate(() => {
+      const messageId = createId('message')
+      db.run('INSERT INTO messages(id, session_id, unit_id, role, content, order_in_session, timestamp, metadata) VALUES (?, ?, NULL, ?, ?, ?, ?, ?)', [messageId, session.id, 'user', question, nextOrder, now, JSON.stringify({ mode: 'follow_up', parentNodeId: parentNode.id })])
+      db.run('UPDATE sessions SET message_count = message_count + 1, updated_at = ? WHERE id = ?', [now, session.id])
+      taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${session.id}:${revision}`, prompt: buildConversationPrompt({ question, topic, context }), status: 'pending', scopeLabel: `${session.title} · 追问` })
+      db.run('UPDATE messages SET metadata = ? WHERE id = ?', [JSON.stringify({ mode: 'follow_up', topicId: input.topicId ?? null, parentNodeId: parentNode.id, taskId }), messageId])
+      writeSourceReferences(session.id, input.sourceUnitIds ?? [], input.includeFullContent ?? false)
+    })
+    return taskId
   }
 
   function setSelectedSession(sessionId: string | null): void {
@@ -1488,6 +1587,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     manualEdges,
     graphRevision,
     config,
+    configWarning,
     selectedContextIds,
     selectedSessionId,
     lastImport,
@@ -1535,6 +1635,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     applySegmentationTask,
     persistConfig,
     updateConfig,
+    changeDatabasePath,
     selectContext,
     reorderContext,
     clearContext,
@@ -1559,5 +1660,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     updateQuickPhrase,
     removeQuickPhrase,
     createConversationTask,
+    createFollowUpTask,
   }
 })

@@ -224,12 +224,26 @@ export class SqliteStore {
   private persistQueue: Promise<void> = Promise.resolve()
   private fts5Available = false
   private lastIntegrity: DatabaseIntegrityReport | null = null
+  private pathOverride: string | null = null
+
+  /** Point the store at a user-configured database location (Tauri only). */
+  setDatabasePathOverride(value: string | null): void {
+    this.pathOverride = value?.trim() ? value : null
+  }
+
+  getDatabasePathOverride(): string | null {
+    return this.pathOverride
+  }
+
+  private databaseArgs(): { customPath: string } {
+    return { customPath: this.pathOverride ?? '' }
+  }
 
   async init(): Promise<void> {
     if (this.db) return
     this.sqlJs = await initSqlJs({ locateFile: () => wasmUrl })
     const stored = isTauriRuntime()
-      ? await invokeTauri<string | null>('read_database')
+      ? await invokeTauri<string | null>('read_database', this.databaseArgs())
       : typeof localStorage === 'undefined' ? null : localStorage.getItem(STORAGE_KEY)
     this.db = stored ? new this.sqlJs.Database(decode(stored)) : new this.sqlJs.Database()
     this.db.run('PRAGMA foreign_keys = ON;')
@@ -339,7 +353,7 @@ export class SqliteStore {
     const encoded = encode(this.db.export())
     if (isTauriRuntime()) {
       this.persistQueue = this.persistQueue
-        .then(() => invokeTauri<void>('write_database', { encoded }))
+        .then(() => invokeTauri<void>('write_database', { encoded, ...this.databaseArgs() }))
         .catch((error) => console.error('保存 nexus.db 失败', error))
       return
     }
@@ -407,7 +421,7 @@ export class SqliteStore {
   async createBackup(): Promise<DatabaseBackup> {
     const createdAt = new Date().toISOString()
     if (isTauriRuntime()) {
-      const reference = await invokeTauri<string | null>('backup_database')
+      const reference = await invokeTauri<string | null>('backup_database', this.databaseArgs())
       if (!reference) throw new Error('当前没有可备份的数据库')
       return { reference, createdAt, runtime: 'tauri' }
     }
@@ -421,13 +435,22 @@ export class SqliteStore {
 
   async restoreBackup(reference: string): Promise<void> {
     if (isTauriRuntime()) {
-      await invokeTauri<void>('restore_database_backup', { path: reference })
+      await invokeTauri<void>('restore_database_backup', { path: reference, ...this.databaseArgs() })
     } else {
       if (typeof localStorage === 'undefined') throw new Error('当前运行环境不支持数据库恢复')
       const encoded = localStorage.getItem(reference)
       if (!encoded) throw new Error('找不到数据库备份')
       localStorage.setItem(STORAGE_KEY, encoded)
     }
+    if (this.db) this.db.close()
+    this.db = null
+    this.fts5Available = false
+    this.lastIntegrity = null
+    await this.init()
+  }
+
+  /** Close and re-open the database, honouring the current path override. */
+  async reopen(): Promise<void> {
     if (this.db) this.db.close()
     this.db = null
     this.fts5Available = false

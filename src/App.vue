@@ -47,7 +47,7 @@ import { renderMarkdown } from '@/services/markdown'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import { invokeTauri, isTauriRuntime } from '@/services/tauri'
 import { useWorkspaceStore } from '@/stores/workspace'
-import type { Concept, GraphNodeType, KnowledgeUnit, LLMTask, MaintenanceSuggestion, Session } from '@/types/domain'
+import type { Concept, GraphNodeType, KnowledgeUnit, LLMTask, MaintenanceSuggestion, NavTreeNode, Session } from '@/types/domain'
 
 type ViewName = 'overview' | 'graph' | 'sessions' | 'concepts' | 'tasks' | 'settings'
 
@@ -88,6 +88,7 @@ const composerTopicId = ref<string | null>(null)
 const composerPhraseId = ref('')
 const composerIncludeFull = ref(false)
 const composerSourceUnitIds = ref<string[]>([])
+const composerFollowUp = ref<{ sessionId: string; nodeId: string; label: string } | null>(null)
 const customPhraseDraft = ref('')
 const editingPhraseId = ref<string | null>(null)
 const providerDraft = ref({ id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', apiKey: '' })
@@ -96,6 +97,7 @@ const selectedNavNodeId = ref<string | null>(null)
 const draggedContextId = ref<string | null>(null)
 const helpOpen = ref(false)
 const storageInfo = ref<{ dataDir: string; databasePath: string; configPath: string } | null>(null)
+const databasePathDraft = ref('')
 const visibleSessionCount = ref(40)
 const visibleConceptCount = ref(60)
 const visibleCompletedTaskCount = ref(30)
@@ -157,6 +159,7 @@ const selectedConceptParents = computed(() => selectedConcept.value ? store.rela
 const selectedConceptChildren = computed(() => selectedConcept.value ? store.relations.filter((relation) => relation.parentConceptId === selectedConcept.value?.id && relation.relationType === 'hierarchy') : [])
 const selectedConceptRelated = computed(() => selectedConcept.value ? store.relations.filter((relation) => (relation.parentConceptId === selectedConcept.value?.id || relation.childConceptId === selectedConcept.value?.id) && relation.relationType === 'related') : [])
 const sessionUnits = computed(() => selectedSession.value ? store.units.filter((unit) => unit.sessionId === selectedSession.value?.id).sort((a, b) => a.orderInSession - b.orderInSession) : [])
+const rootNavNode = computed(() => selectedSession.value ? store.navNodes.find((node) => node.sessionId === selectedSession.value?.id && !node.parentId) ?? null : null)
 const sessionMessages = computed(() => selectedSession.value ? store.messages.filter((message) => message.sessionId === selectedSession.value?.id).sort((a, b) => a.orderInSession - b.orderInSession) : [])
 const taskGroups = computed(() => ({
   active: store.tasks.filter((task) => ['pending', 'running'].includes(task.status)),
@@ -391,14 +394,21 @@ function archiveSelectedConcept(): void {
   notify('知识主题已归档')
 }
 
-function openComposer(input: { topicId?: string | null; sourceUnitIds?: string[]; parentNodeId?: string | null } = {}): void {
+function openComposer(input: { topicId?: string | null; sourceUnitIds?: string[]; parentNodeId?: string | null; followUp?: { sessionId: string; nodeId: string; label: string } } = {}): void {
   if (!store.config.llm.mode) {
     notify('请先在设置中选择 LLM 模式')
     setView('settings')
     return
   }
-  composerTopicId.value = input.topicId ?? selectedConceptId.value
-  composerSourceUnitIds.value = [...(input.sourceUnitIds ?? store.selectedContextIds)]
+  composerFollowUp.value = input.followUp ?? null
+  if (input.followUp) {
+    const node = store.navNodes.find((item) => item.id === input.followUp?.nodeId)
+    composerTopicId.value = input.topicId ?? node?.triggerConceptId ?? null
+    composerSourceUnitIds.value = [...(input.sourceUnitIds ?? [])]
+  } else {
+    composerTopicId.value = input.topicId ?? selectedConceptId.value
+    composerSourceUnitIds.value = [...(input.sourceUnitIds ?? store.selectedContextIds)]
+  }
   composerIncludeFull.value = input.sourceUnitIds?.length ? composerIncludeFull.value : contextIncludeFull.value
   composerQuestion.value = ''
   composerPhraseId.value = ''
@@ -414,6 +424,25 @@ function applyComposerPhrase(): void {
 function submitComposer(): void {
   if (!composerQuestion.value.trim()) return notify('请输入问题，或先选择一个快捷短语')
   if (composerTokenEstimate.value > store.config.llm.tokenBudget) return notify(`上下文约 ${composerTokenEstimate.value.toLocaleString()} tokens，超过当前预算，请移除单元或关闭完整原文`)
+  if (composerFollowUp.value) {
+    try {
+      const taskId = store.createFollowUpTask({
+        sessionId: composerFollowUp.value.sessionId,
+        parentNodeId: composerFollowUp.value.nodeId,
+        question: composerQuestion.value,
+        topicId: composerTopicId.value ?? undefined,
+        sourceUnitIds: composerSourceUnitIds.value,
+        includeFullContent: composerIncludeFull.value,
+      })
+      composerOpen.value = false
+      selectedTaskId.value = taskId
+      setView('tasks')
+      notify('追问已创建，回答将挂到当前探索分支')
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '追问创建失败')
+    }
+    return
+  }
   try {
     const targetSessionId = store.createConversationTask({
       question: composerQuestion.value,
@@ -431,6 +460,11 @@ function submitComposer(): void {
   } catch (error) {
     notify(error instanceof Error ? error.message : '新对话创建失败')
   }
+}
+
+function openNodeComposer(node: NavTreeNode): void {
+  const unitIds = store.navNodeUnits.filter((link) => link.nodeId === node.id).sort((a, b) => a.orderInNode - b.orderInNode).map((link) => link.unitId)
+  openComposer({ followUp: { sessionId: node.sessionId, nodeId: node.id, label: node.label }, topicId: node.triggerConceptId, sourceUnitIds: unitIds })
 }
 
 function openNavNode(node: { id: string; sessionId: string }): void {
@@ -752,6 +786,28 @@ async function createDatabaseBackup(): Promise<void> {
   }
 }
 
+async function fetchStorageInfo(): Promise<void> {
+  if (!isTauriRuntime()) return
+  try {
+    const info = await invokeTauri<{ data_dir: string; database_path: string; config_path: string }>('storage_info', { customPath: store.config.storage.databasePath || '' })
+    storageInfo.value = { dataDir: info.data_dir, databasePath: info.database_path, configPath: info.config_path }
+  } catch {
+    // 路径信息仅用于展示，读取失败时保留默认描述。
+  }
+}
+
+function applyDatabasePath(): void {
+  const next = databasePathDraft.value.trim()
+  if (next === (store.config.storage.databasePath ?? '')) return
+  if (!window.confirm('切换数据库位置前会自动备份当前数据库；如果新位置是空文件，界面将显示空知识库。确定继续吗？')) return
+  store.changeDatabasePath(next)
+    .then((backup) => {
+      notify(backup ? `数据库位置已切换，原库备份：${backup}` : '数据库位置已更新')
+      return fetchStorageInfo()
+    })
+    .catch((error) => notify(error instanceof Error ? error.message : '切换数据库位置失败'))
+}
+
 function updateMode(mode: 'api' | 'prompt_paste' | null): void {
   store.updateConfig({ llm: { ...store.config.llm, mode } })
   notify(mode ? `已切换到 ${mode === 'api' ? 'API 模式' : 'Prompt 粘贴模式'}` : '请选择 LLM 模式')
@@ -787,11 +843,8 @@ onMounted(async () => {
   if (!store.selectedSessionId && store.activeSessions[0]) store.setSelectedSession(store.activeSessions[0].id)
   const provider = store.config.llm.providers[0]
   if (provider) providerDraft.value = { ...provider }
-  if (isTauriRuntime()) {
-    invokeTauri<{ data_dir: string; database_path: string; config_path: string }>('storage_info').then((info) => {
-      storageInfo.value = { dataDir: info.data_dir, databasePath: info.database_path, configPath: info.config_path }
-    }).catch(() => undefined)
-  }
+  databasePathDraft.value = store.config.storage.databasePath ?? ''
+  void fetchStorageInfo()
 })
 </script>
 
@@ -855,6 +908,7 @@ onMounted(async () => {
           <button v-if="['failed', 'needs_review', 'stale', 'cancelled'].includes(selectedTask.status)" class="button secondary-button" @click="retryTask(selectedTask)"><RefreshCw :size="14" />重新排队</button>
           <button v-if="['pending', 'running'].includes(selectedTask.status)" class="button secondary-button" @click="cancelTask(selectedTask)"><X :size="14" />取消</button>
         </div>
+        <div v-if="store.configWarning" class="feedback-banner feedback-warning"><CircleHelp :size="16" /><span>{{ store.configWarning }}</span><button class="icon-button" aria-label="关闭配置提示" @click="store.configWarning = null"><X :size="15" /></button></div>
         <div v-if="importFeedback" class="feedback-banner" :class="`feedback-${importFeedback.tone}`"><Check v-if="importFeedback.tone === 'success'" :size="16" /><CircleHelp v-else :size="16" /><span>{{ importFeedback.text }}</span><div v-if="pendingImportRaw" class="feedback-actions"><button class="text-button" @click="resolveChangedImport('replace')">更新变化会话</button><button class="text-button" @click="resolveChangedImport('new')">作为新会话</button><button class="text-button" @click="resolveChangedImport('skip')">跳过</button></div><button class="icon-button" aria-label="关闭提示" @click="importFeedback = null; pendingImportRaw = null"><X :size="15" /></button></div>
 
         <section v-if="activeView === 'overview'" class="view-panel overview-view">
@@ -895,10 +949,10 @@ onMounted(async () => {
 
         <section v-else-if="activeView === 'tasks'" class="view-panel tasks-view"><div class="page-toolbar"><div><span class="eyebrow">LLM TASK QUEUE</span><h2>任务中心</h2></div><div class="task-toolbar-meta"><span class="soft-tag" :class="store.config.llm.mode ? 'tag-active' : 'tag-warning'">{{ store.config.llm.mode ? (store.config.llm.mode === 'api' ? 'API 模式' : 'Prompt 粘贴') : '未选择模式' }}</span><span>{{ store.tasks.length }} 个任务</span></div></div><div v-if="!store.config.llm.mode" class="mode-callout"><Sparkles :size="19" /><div><strong>先选择 LLM 模式</strong><span>原始数据可以继续浏览；选择 API 或 Prompt 粘贴后才能启动整理任务。</span></div><button class="button primary-button" @click="setView('settings')"><Settings2 :size="15" />去设置</button></div><div class="task-layout"><div class="task-list surface-section"><div class="task-list-heading"><div><strong>任务队列</strong><span>正常结果自动落图，异常结果需要检查</span></div><button class="icon-button" title="刷新任务" aria-label="刷新任务" @click="store.refreshFromDb"><RefreshCw :size="16" /></button></div><div v-for="group in [taskGroups.active, taskGroups.review, taskGroups.completed]" :key="group[0]?.status || 'empty'" class="task-group"><button v-for="task in taskGroupSlice(group)" :key="task.id" class="task-row" :class="{ selected: selectedTaskId === task.id }" @click="selectedTaskId = task.id"><div class="task-state" :class="`state-${taskTone(task.status)}`"><LoaderCircle v-if="task.status === 'running'" class="spin" :size="15" /><Check v-else-if="task.status === 'success'" :size="15" /><CircleHelp v-else :size="15" /></div><div class="row-main"><strong>{{ taskTypeLabel(task.type) }}</strong><span>{{ task.scopeLabel || task.id }} · {{ new Date(task.createdAt).toLocaleString('zh-CN') }}</span></div><span class="status-label" :class="`label-${taskTone(task.status)}`">{{ taskStatusLabel(task.status) }}</span><ChevronRight :size="15" /></button></div><div v-if="!store.tasks.length" class="empty-state compact"><ListChecks :size="28" /><strong>还没有任务</strong><span>导入 JSON 后，整理任务会出现在这里。</span></div><button v-if="taskGroups.completed.length > visibleCompletedTaskCount" class="text-button load-more-button" @click="visibleCompletedTaskCount += 30">加载更多历史任务（还有 {{ taskGroups.completed.length - visibleCompletedTaskCount }} 个）</button></div><div class="task-detail surface-section"><template v-if="selectedTask"><div class="detail-header"><div><span class="eyebrow">TASK DETAIL</span><h3>{{ taskTypeLabel(selectedTask.type) }}</h3><span class="detail-subtitle">{{ selectedTask.scopeLabel }}</span></div><span class="status-label" :class="`label-${taskTone(selectedTask.status)}`">{{ taskStatusLabel(selectedTask.status) }}</span></div><div class="task-meta-grid"><div><span>模式</span><strong>{{ selectedTask.mode === 'api' ? 'API' : 'Prompt 粘贴' }}</strong></div><div><span>Prompt 版本</span><strong>{{ selectedTask.promptVersion }}</strong></div><div><span>重试次数</span><strong>{{ selectedTask.retryCount }}</strong></div></div><div class="prompt-box"><div class="subsection-title"><strong>Prompt</strong><button class="text-button" @click="copyTaskPrompt(selectedTask)"><Clipboard :size="14" />复制</button></div><pre>{{ selectedTask.prompt }}</pre></div><div class="response-box"><label for="task-response">粘贴 LLM 返回结果</label><textarea id="task-response" :value="taskResponse(selectedTask)" placeholder="在网页端执行 Prompt 后，将完整响应粘贴到这里" @input="setTaskDraft(selectedTask!.id, ($event.target as HTMLTextAreaElement).value)" /><div class="response-actions"><button class="button primary-button" @click="applyTask(selectedTask)"><Check :size="15" />校验并应用</button><button v-if="selectedTask.status === 'needs_review'" class="button secondary-button" @click="selectedTaskId = selectedTask.id"><RefreshCw :size="15" />生成修复 Prompt</button></div><div v-if="selectedTask.validationErrors" class="validation-errors"><strong>校验问题</strong><span v-for="(error, index) in JSON.parse(selectedTask.validationErrors)" :key="index">{{ error }}</span></div></div></template><div v-else class="empty-detail"><ListChecks :size="30" /><strong>选择一个任务</strong><span>查看 Prompt、原始响应和本地校验结果。</span></div></div></div></section>
 
-        <section v-else-if="activeView === 'settings'" class="view-panel settings-view"><div class="page-toolbar"><div><span class="eyebrow">LOCAL CONFIGURATION</span><h2>设置</h2></div><button class="button secondary-button" @click="exportConfig"><Download :size="15" />导出配置文件</button></div><div class="settings-grid"><section class="surface-section settings-section"><div class="section-heading"><div><span class="eyebrow">LLM MODE</span><h3>选择任务模式</h3></div><Sparkles :size="18" /></div><p class="section-description">选择任务模式后才会启动 LLM 整理；原始数据始终先保存到本地。</p><div class="mode-cards"><button class="mode-card" :class="{ selected: store.config.llm.mode === 'api' }" @click="updateMode('api')"><div class="mode-icon blue"><Send :size="18" /></div><div><strong>API 模式</strong><span>通过 OpenAI 兼容端点直接执行任务</span></div><Check v-if="store.config.llm.mode === 'api'" :size="17" /></button><button class="mode-card" :class="{ selected: store.config.llm.mode === 'prompt_paste' }" @click="updateMode('prompt_paste')"><div class="mode-icon amber"><Clipboard :size="18" /></div><div><strong>Prompt 粘贴模式</strong><span>复制 Prompt 到网页端，再粘贴回复</span></div><Check v-if="store.config.llm.mode === 'prompt_paste'" :size="17" /></button></div></section><section class="surface-section settings-section"><div class="section-heading"><div><span class="eyebrow">PROVIDER</span><h3>模型连接</h3></div><Database :size="18" /></div><p class="section-description">配置 OpenAI 兼容端点。API Key 会按你的选择明文写入本机配置文件，能读取该文件的系统用户同样能看到；它只在明确启动 API 任务时发送。</p><div class="provider-list"><div v-for="provider in store.config.llm.providers" :key="provider.id" class="provider-row" :class="{ active: provider.id === store.config.llm.defaultProvider }"><label class="inline-toggle"><input type="radio" name="default-provider" :checked="provider.id === store.config.llm.defaultProvider" @change="setDefaultProvider(provider.id)" />默认</label><div class="row-main"><strong>{{ provider.name }}</strong><span>{{ provider.model || '未填写模型' }} · {{ provider.baseUrl || '未填写地址' }}</span></div><button class="icon-button" title="删除连接" :aria-label="`删除连接 ${provider.name}`" @click="removeProvider(provider.id)"><Trash2 :size="14" /></button></div><p v-if="!store.config.llm.providers.length" class="empty-inline">还没有保存的连接，在下方填写并保存。</p></div><div class="form-grid"><label>名称<input v-model="providerDraft.name" placeholder="例如 DeepSeek" /></label><label class="span-two">Base URL<input v-model="providerDraft.baseUrl" placeholder="https://api.deepseek.com/v1" /></label><label>模型<input v-model="providerDraft.model" placeholder="deepseek-chat" /></label><label>API Key<input v-model="providerDraft.apiKey" type="text" placeholder="sk-…" /></label></div><div class="settings-actions"><button class="button primary-button" @click="saveProvider"><Check :size="15" />保存连接</button><span class="form-hint">API 并发数默认为 2，可在配置文件中调整为 1～4。</span></div></section><section class="surface-section settings-section"><div class="section-heading"><div><span class="eyebrow">STORAGE</span><h3>本地数据</h3></div><Database :size="18" /></div><p class="section-description">业务数据与配置分开保存；备份和导出永远不包含 API Key。</p><div class="storage-grid"><div><span>业务数据库</span><strong class="storage-path">{{ storageInfo?.databasePath ?? 'nexus.db · 应用数据目录' }}</strong></div><div><span>配置文件</span><strong class="storage-path">{{ storageInfo?.configPath ?? 'config.yaml · 应用数据目录' }}</strong></div><div><span>图谱版本</span><strong>{{ store.graphRevision }}</strong></div></div><div class="settings-actions"><button class="button secondary-button" @click="createDatabaseBackup"><Database :size="15" />创建数据库备份</button><button class="button secondary-button" @click="store.clearAllData(); notify('知识库已清空')"><Trash2 :size="15" />清空知识库</button></div></section><section class="surface-section settings-section"><div class="section-heading"><div><span class="eyebrow">MOTION & ACCESSIBILITY</span><h3>界面偏好</h3></div><PanelRight :size="18" /></div><label class="toggle-row"><span><strong>减少动态效果</strong><small>遵循 prefers-reduced-motion，缩短图谱和面板动画</small></span><input :checked="store.config.ui.reducedMotion" type="checkbox" @change="store.updateConfig({ ui: { ...store.config.ui, reducedMotion: ($event.target as HTMLInputElement).checked } })" /></label></section></div></section>
+        <section v-else-if="activeView === 'settings'" class="view-panel settings-view"><div class="page-toolbar"><div><span class="eyebrow">LOCAL CONFIGURATION</span><h2>设置</h2></div><button class="button secondary-button" @click="exportConfig"><Download :size="15" />导出配置文件</button></div><div class="settings-grid"><section class="surface-section settings-section"><div class="section-heading"><div><span class="eyebrow">LLM MODE</span><h3>选择任务模式</h3></div><Sparkles :size="18" /></div><p class="section-description">选择任务模式后才会启动 LLM 整理；原始数据始终先保存到本地。</p><div class="mode-cards"><button class="mode-card" :class="{ selected: store.config.llm.mode === 'api' }" @click="updateMode('api')"><div class="mode-icon blue"><Send :size="18" /></div><div><strong>API 模式</strong><span>通过 OpenAI 兼容端点直接执行任务</span></div><Check v-if="store.config.llm.mode === 'api'" :size="17" /></button><button class="mode-card" :class="{ selected: store.config.llm.mode === 'prompt_paste' }" @click="updateMode('prompt_paste')"><div class="mode-icon amber"><Clipboard :size="18" /></div><div><strong>Prompt 粘贴模式</strong><span>复制 Prompt 到网页端，再粘贴回复</span></div><Check v-if="store.config.llm.mode === 'prompt_paste'" :size="17" /></button></div></section><section class="surface-section settings-section"><div class="section-heading"><div><span class="eyebrow">PROVIDER</span><h3>模型连接</h3></div><Database :size="18" /></div><p class="section-description">配置 OpenAI 兼容端点。API Key 会按你的选择明文写入本机配置文件，能读取该文件的系统用户同样能看到；它只在明确启动 API 任务时发送。</p><div class="provider-list"><div v-for="provider in store.config.llm.providers" :key="provider.id" class="provider-row" :class="{ active: provider.id === store.config.llm.defaultProvider }"><label class="inline-toggle"><input type="radio" name="default-provider" :checked="provider.id === store.config.llm.defaultProvider" @change="setDefaultProvider(provider.id)" />默认</label><div class="row-main"><strong>{{ provider.name }}</strong><span>{{ provider.model || '未填写模型' }} · {{ provider.baseUrl || '未填写地址' }}</span></div><button class="icon-button" title="删除连接" :aria-label="`删除连接 ${provider.name}`" @click="removeProvider(provider.id)"><Trash2 :size="14" /></button></div><p v-if="!store.config.llm.providers.length" class="empty-inline">还没有保存的连接，在下方填写并保存。</p></div><div class="form-grid"><label>名称<input v-model="providerDraft.name" placeholder="例如 DeepSeek" /></label><label class="span-two">Base URL<input v-model="providerDraft.baseUrl" placeholder="https://api.deepseek.com/v1" /></label><label>模型<input v-model="providerDraft.model" placeholder="deepseek-chat" /></label><label>API Key<input v-model="providerDraft.apiKey" type="text" placeholder="sk-…" /></label></div><div class="settings-actions"><button class="button primary-button" @click="saveProvider"><Check :size="15" />保存连接</button><span class="form-hint">API 并发数默认为 2，可在配置文件中调整为 1～4。</span></div></section><section class="surface-section settings-section"><div class="section-heading"><div><span class="eyebrow">STORAGE</span><h3>本地数据</h3></div><Database :size="18" /></div><p class="section-description">业务数据与配置分开保存；备份和导出永远不包含 API Key。</p><div class="storage-grid"><div><span>业务数据库</span><strong class="storage-path">{{ storageInfo?.databasePath ?? 'nexus.db · 应用数据目录' }}</strong></div><div><span>配置文件</span><strong class="storage-path">{{ storageInfo?.configPath ?? 'config.yaml · 应用数据目录' }}</strong></div><div><span>图谱版本</span><strong>{{ store.graphRevision }}</strong></div></div><div class="settings-actions"><button class="button secondary-button" @click="createDatabaseBackup"><Database :size="15" />创建数据库备份</button><button class="button secondary-button" @click="store.clearAllData(); notify('知识库已清空')"><Trash2 :size="15" />清空知识库</button></div><div class="path-editor"><label>自定义数据库位置<small>留空使用应用数据目录；切换前会自动备份当前数据库。</small><input v-model="databasePathDraft" placeholder="/home/you/nexus/nexus.db" /></label><button class="button secondary-button" @click="applyDatabasePath"><Check :size="15" />应用路径</button></div></section><section class="surface-section settings-section"><div class="section-heading"><div><span class="eyebrow">MOTION & ACCESSIBILITY</span><h3>界面偏好</h3></div><PanelRight :size="18" /></div><label class="toggle-row"><span><strong>减少动态效果</strong><small>遵循 prefers-reduced-motion，缩短图谱和面板动画</small></span><input :checked="store.config.ui.reducedMotion" type="checkbox" @change="store.updateConfig({ ui: { ...store.config.ui, reducedMotion: ($event.target as HTMLInputElement).checked } })" /></label></section></div></section>
         <section v-if="activeView === 'settings'" class="surface-section phrase-section"><div class="section-heading"><div><span class="eyebrow">QUICK PHRASES</span><h3>快捷短语</h3></div><MessageSquare :size="18" /></div><p class="section-description">使用 <code>$(topic)</code> 和 <code>$(context)</code> 插入当前主题与上下文。</p><div class="phrase-list"><div v-for="phrase in store.quickPhrases" :key="phrase.id" class="phrase-row"><span>{{ phrase.template }}</span><div v-if="!phrase.isBuiltin" class="phrase-actions"><button class="icon-button" title="编辑快捷短语" :aria-label="`编辑 ${phrase.template}`" @click="beginEditPhrase(phrase.id, phrase.template)"><Settings2 :size="14" /></button><button class="icon-button" title="删除快捷短语" :aria-label="`删除 ${phrase.template}`" @click="removePhrase(phrase.id)"><Trash2 :size="14" /></button></div><span v-else class="soft-tag">内置</span></div></div><div class="phrase-editor"><input v-model="customPhraseDraft" placeholder="例如：请比较 $(topic) 与 $(context)" @keyup.enter="editingPhraseId ? savePhraseEdit() : addCustomPhrase()" /><button class="button secondary-button" @click="editingPhraseId ? savePhraseEdit() : addCustomPhrase()"><Check :size="14" />{{ editingPhraseId ? '保存' : '添加' }}</button><button v-if="editingPhraseId" class="text-button" @click="editingPhraseId = null; customPhraseDraft = ''">取消</button></div></section>
       </section>
-      <section v-if="activeView === 'sessions' && selectedSession" class="surface-section session-tree-overview"><div class="section-heading"><div><span class="eyebrow">EXPLORATION TREE</span><h3>{{ selectedSession.title }} 的探索树</h3></div><History :size="18" /></div><NavTree :nodes="store.navNodes.filter((node) => node.sessionId === selectedSession?.id && !node.parentId)" :node-units="store.navNodeUnits" :units="store.units" :selected-node-id="selectedNavNodeId" @select-node="openNavNode" /></section>
+      <section v-if="activeView === 'sessions' && selectedSession" class="surface-section session-tree-overview"><div class="section-heading"><div><span class="eyebrow">EXPLORATION TREE</span><h3>{{ selectedSession.title }} 的探索树</h3></div><div class="tree-heading-actions"><button v-if="rootNavNode" class="button secondary-button" @click="openNodeComposer(rootNavNode)"><MessageSquare :size="14" />从起点继续追问</button><History :size="18" /></div></div><NavTree :nodes="store.navNodes.filter((node) => node.sessionId === selectedSession?.id && !node.parentId)" :node-units="store.navNodeUnits" :units="store.units" :selected-node-id="selectedNavNodeId" @select-node="openNavNode" @ask="openNodeComposer" /></section>
     </main>
 
     <button v-if="!maintenancePanelOpen && ((activeView === 'concepts' && selectedConcept) || (activeView === 'sessions' && selectedSession) || store.selectedUnits.length || maintenanceSuggestions.length || selectedTask?.type === 'maintenance' || (activeView === 'settings' && store.operationLogs.length))" class="maintenance-launcher button secondary-button" aria-label="打开知识维护" title="打开知识维护" @click="openMaintenancePanel"><Sparkles :size="15" />知识维护</button>
@@ -952,7 +1006,7 @@ onMounted(async () => {
 
     <div v-if="composerOpen" class="modal-backdrop" role="presentation" @click.self="composerOpen = false">
       <section class="composer-modal" role="dialog" aria-modal="true" aria-labelledby="composer-title">
-        <div class="modal-header"><div><span class="eyebrow">NEW CONVERSATION</span><h2 id="composer-title">发起新对话</h2></div><button class="icon-button" aria-label="关闭新对话" title="关闭" @click="composerOpen = false"><X :size="17" /></button></div>
+        <div class="modal-header"><div><span class="eyebrow">{{ composerFollowUp ? 'FOLLOW-UP' : 'NEW CONVERSATION' }}</span><h2 id="composer-title">{{ composerFollowUp ? `继续追问：${composerFollowUp.label}` : '发起新对话' }}</h2></div><button class="icon-button" aria-label="关闭新对话" title="关闭" @click="composerOpen = false"><X :size="17" /></button></div>
         <div class="composer-fields">
           <label>围绕知识主题<select v-model="composerTopicId"><option :value="null">不指定主题</option><option v-for="concept in store.activeConcepts" :key="concept.id" :value="concept.id">{{ concept.name }}</option></select></label>
           <label>快捷短语<select v-model="composerPhraseId" @change="applyComposerPhrase"><option value="">选择一个快捷短语</option><option v-for="phrase in store.quickPhrases" :key="phrase.id" :value="phrase.id">{{ phrase.template }}</option></select></label>
@@ -960,7 +1014,7 @@ onMounted(async () => {
           <label class="toggle-row"><span><strong>附带完整原文</strong><small>关闭时只发送标题、摘要和知识主题</small></span><input v-model="composerIncludeFull" type="checkbox" /></label>
         </div>
         <div class="composer-context"><div class="subsection-title"><strong>上下文来源</strong><span>{{ composerSourceUnitIds.length }} 个知识单元</span></div><div v-if="composerSourceUnitIds.length" class="composer-context-list"><span v-for="unitId in composerSourceUnitIds" :key="unitId" class="soft-tag">{{ store.units.find((unit) => unit.id === unitId)?.title || '待命名知识单元' }}</span></div><p v-else class="muted">未选择上下文，将只使用问题和知识主题。</p><div class="context-budget" :class="{ over: composerTokenEstimate > store.config.llm.tokenBudget }"><span>预计输入</span><strong>{{ composerTokenEstimate.toLocaleString() }} tokens</strong><small>预算 {{ store.config.llm.tokenBudget.toLocaleString() }} tokens{{ composerTokenEstimate > store.config.llm.tokenBudget ? ' · 请减少上下文' : '' }}</small></div></div>
-        <div class="modal-actions"><button class="button secondary-button" @click="composerOpen = false">取消</button><button class="button primary-button" @click="submitComposer"><MessageSquare :size="15" />创建并进入任务中心</button></div>
+        <div class="modal-actions"><button class="button secondary-button" @click="composerOpen = false">取消</button><button class="button primary-button" @click="submitComposer"><MessageSquare :size="15" />{{ composerFollowUp ? '创建追问' : '创建并进入任务中心' }}</button></div>
       </section>
     </div>
 

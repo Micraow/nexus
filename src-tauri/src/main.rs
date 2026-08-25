@@ -25,6 +25,26 @@ fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(data_dir(app)?.join("nexus.db"))
 }
 
+/// Resolve the active database location, honouring an optional user-configured
+/// override from `storage.database_path`. Relative overrides live inside the
+/// app data directory; absolute paths are used verbatim.
+fn resolve_database_path(app: &AppHandle, custom_path: Option<String>) -> Result<PathBuf, String> {
+    let configured = match custom_path {
+        Some(value) => value,
+        None => return database_path(app),
+    };
+    let trimmed = configured.trim().to_string();
+    if trimmed.is_empty() {
+        return database_path(app);
+    }
+    let candidate = PathBuf::from(&trimmed);
+    if candidate.is_absolute() {
+        Ok(candidate)
+    } else {
+        Ok(data_dir(app)?.join(candidate))
+    }
+}
+
 fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(data_dir(app)?.join("config.yaml"))
 }
@@ -51,18 +71,19 @@ fn timestamp_suffix() -> String {
 }
 
 #[tauri::command]
-fn storage_info(app: AppHandle) -> Result<StorageInfo, String> {
+fn storage_info(app: AppHandle, custom_path: Option<String>) -> Result<StorageInfo, String> {
     let data = data_dir(&app)?;
+    let database = resolve_database_path(&app, custom_path)?;
     Ok(StorageInfo {
         data_dir: data.to_string_lossy().into_owned(),
-        database_path: data.join("nexus.db").to_string_lossy().into_owned(),
+        database_path: database.to_string_lossy().into_owned(),
         config_path: data.join("config.yaml").to_string_lossy().into_owned(),
     })
 }
 
 #[tauri::command]
-fn read_database(app: AppHandle) -> Result<Option<String>, String> {
-    let path = database_path(&app)?;
+fn read_database(app: AppHandle, custom_path: Option<String>) -> Result<Option<String>, String> {
+    let path = resolve_database_path(&app, custom_path)?;
     if !path.exists() {
         return Ok(None);
     }
@@ -71,29 +92,33 @@ fn read_database(app: AppHandle) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-fn write_database(app: AppHandle, encoded: String) -> Result<(), String> {
+fn write_database(app: AppHandle, encoded: String, custom_path: Option<String>) -> Result<(), String> {
     let bytes = STANDARD
         .decode(encoded)
         .map_err(|error| format!("数据库字节流无效：{error}"))?;
-    write_atomic(&database_path(&app)?, &bytes)
+    write_atomic(&resolve_database_path(&app, custom_path)?, &bytes)
 }
 
 #[tauri::command]
-fn backup_database(app: AppHandle) -> Result<Option<String>, String> {
-    let source = database_path(&app)?;
+fn backup_database(app: AppHandle, custom_path: Option<String>) -> Result<Option<String>, String> {
+    let source = resolve_database_path(&app, custom_path)?;
     if !source.exists() {
         return Ok(None);
     }
-    let backup = source.with_file_name(format!("nexus.db.bak-{}", timestamp_suffix()));
+    let file_name = source
+        .file_name()
+        .map(|name| format!("{}.bak-{}", name.to_string_lossy(), timestamp_suffix()))
+        .unwrap_or_else(|| format!("nexus.db.bak-{}", timestamp_suffix()));
+    let backup = source.with_file_name(file_name);
     fs::copy(&source, &backup).map_err(|error| format!("备份 nexus.db 失败：{error}"))?;
     Ok(Some(backup.to_string_lossy().into_owned()))
 }
 
 #[tauri::command]
-fn restore_database_backup(app: AppHandle, path: String) -> Result<(), String> {
+fn restore_database_backup(app: AppHandle, path: String, custom_path: Option<String>) -> Result<(), String> {
     let candidate = PathBuf::from(path);
     let data = fs::read(&candidate).map_err(|error| format!("读取数据库备份失败：{error}"))?;
-    write_atomic(&database_path(&app)?, &data)
+    write_atomic(&resolve_database_path(&app, custom_path)?, &data)
 }
 
 #[tauri::command]
