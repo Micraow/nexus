@@ -33,6 +33,8 @@ let liveTransform: d3.ZoomTransform | null = null
 let userMovedViewport = false
 // 首次快照可能是空图，等异步 worker 返回节点后再做一次自动铺满。
 let hasFittedData = false
+// 拓扑展开时复用已经稳定的坐标，避免新增节点让整张图重新爆散。
+const nodePositions = new Map<string, { x: number; y: number }>()
 
 const palette: Record<string, string> = {
   concept: '#2c6e9e',
@@ -79,7 +81,23 @@ function render(): void {
   root.call(zoom.transform, liveTransform ?? d3.zoomIdentity.translate(initialViewport.x, initialViewport.y).scale(initialViewport.scale))
   restoringViewport = false
 
-  const nodes = props.snapshot.nodes.map((node) => ({ ...node })) as (GraphNode & d3.SimulationNodeDatum)[]
+  const hasPreviousLayout = nodePositions.size > 0
+  const nodes = props.snapshot.nodes.map((node, index) => {
+    const position = nodePositions.get(node.id)
+    const copy = { ...node } as GraphNode & d3.SimulationNodeDatum
+    if (position) {
+      copy.x = position.x
+      copy.y = position.y
+    } else if (!copy.fixed || copy.x == null || copy.y == null) {
+      // D3 默认的随机初始位置会在展开时制造明显的闪跳；确定性散点
+      // 只用于新节点，随后交给力导向微调。
+      const angle = index * 2.399963229728653
+      const radius = 26 + (index % 5) * 10
+      copy.x = width / 2 + Math.cos(angle) * radius
+      copy.y = height / 2 + Math.sin(angle) * radius
+    }
+    return copy
+  })
   if (!nodes.length && !userMovedViewport) hasFittedData = false
   const shouldFitInitialView = !userMovedViewport && !hasFittedData && nodes.length > 0
   nodes.forEach((node) => {
@@ -138,7 +156,42 @@ function render(): void {
     })
 
   nodeSelection.classed('is-selected', (node) => props.selectedUnitIds.includes(node.refId))
+  const adjacency = new Map<string, Set<string>>()
+  links.forEach((link) => {
+    const source = typeof link.source === 'string' ? link.source : String(link.source)
+    const target = typeof link.target === 'string' ? link.target : String(link.target)
+    const sourceSet = adjacency.get(source) ?? new Set<string>()
+    const targetSet = adjacency.get(target) ?? new Set<string>()
+    sourceSet.add(target)
+    targetSet.add(source)
+    adjacency.set(source, sourceSet)
+    adjacency.set(target, targetSet)
+  })
+  const clearHighlight = (): void => {
+    nodeSelection.classed('is-hovered is-neighbor is-dimmed', false)
+    linkSelection.classed('is-hovered is-dimmed', false)
+  }
+  const highlightNode = (nodeId: string): void => {
+    const neighbors = adjacency.get(nodeId) ?? new Set<string>()
+    nodeSelection
+      .classed('is-hovered', (node) => node.id === nodeId)
+      .classed('is-neighbor', (node) => neighbors.has(node.id))
+      .classed('is-dimmed', (node) => node.id !== nodeId && !neighbors.has(node.id))
+    linkSelection
+      .classed('is-hovered', (link) => {
+        const source = typeof link.source === 'string' ? link.source : (link.source as unknown as GraphNode).id
+        const target = typeof link.target === 'string' ? link.target : (link.target as unknown as GraphNode).id
+        return source === nodeId || target === nodeId
+      })
+      .classed('is-dimmed', (link) => {
+        const source = typeof link.source === 'string' ? link.source : (link.source as unknown as GraphNode).id
+        const target = typeof link.target === 'string' ? link.target : (link.target as unknown as GraphNode).id
+        return source !== nodeId && target !== nodeId
+      })
+  }
   nodeSelection
+    .on('mouseenter', (_event, node) => highlightNode(node.id))
+    .on('mouseleave', clearHighlight)
     .on('click', (event, node) => {
       event.stopPropagation()
       if (node.type === 'concept') emit('select-concept', node.refId)
@@ -155,7 +208,8 @@ function render(): void {
   const drag = d3
     .drag<SVGGElement, GraphNode & d3.SimulationNodeDatum>()
     .on('start', (event, node) => {
-      if (!event.active) simulation?.alphaTarget(0.25).restart()
+      highlightNode(node.id)
+      if (!event.active) simulation?.alphaTarget(0.05).restart()
       node.fx = node.x
       node.fy = node.y
     })
@@ -167,6 +221,7 @@ function render(): void {
       if (!event.active) simulation?.alphaTarget(0)
       node.fx = event.x
       node.fy = event.y
+      clearHighlight()
       emit('layout-change', { nodeType: node.type, refId: node.refId, x: event.x, y: event.y, fixed: true })
     })
   nodeSelection.call(drag)
@@ -178,7 +233,11 @@ function render(): void {
     .force('charge', d3.forceManyBody<GraphNode & d3.SimulationNodeDatum>().strength((node) => (node as GraphNode).type === 'concept' ? -330 : -125))
     .force('center', d3.forceCenter(width / 2, height / 2))
     .force('collide', d3.forceCollide<GraphNode & d3.SimulationNodeDatum>().radius((node) => (node as GraphNode).type === 'concept' ? 50 : 28))
+    .velocityDecay(0.72)
     .on('tick', () => {
+      nodes.forEach((node) => {
+        if (node.x != null && node.y != null) nodePositions.set(node.id, { x: node.x, y: node.y })
+      })
       linkSelection
         .attr('x1', (edge) => (edge.source as unknown as GraphNode).x ?? 0)
         .attr('y1', (edge) => (edge.source as unknown as GraphNode).y ?? 0)
@@ -187,6 +246,8 @@ function render(): void {
       nodeSelection.attr('transform', (node) => `translate(${node.x ?? width / 2},${node.y ?? height / 2})`)
     })
   if (props.reducedMotion) simulation.alphaDecay(0.4)
+  else if (hasPreviousLayout) simulation.alpha(0.18)
+  else simulation.alpha(0.55)
 
   // 首次挂载且用户未操作时，等力向布局稳定后只适配一次画布，避免每个 tick 触发 zoom 重排。
   if (shouldFitInitialView) {
@@ -276,8 +337,13 @@ onMounted(() => {
 watch(() => {
   const nodes = props.snapshot.nodes.map((node) => `${node.id}:${node.label}:${node.subtitle ?? ''}`).join('|')
   const edges = props.snapshot.edges.map((edge) => `${edge.id}:${edge.source}:${edge.target}:${edge.type}:${edge.status ?? ''}`).join('|')
-  return `${props.snapshot.revision}|${nodes}|${edges}|${props.selectedUnitIds.join(',')}`
+  return `${props.snapshot.revision}|${nodes}|${edges}`
 }, render)
+
+watch(() => props.selectedUnitIds.slice(), (selectedIds) => {
+  if (!svg.value) return
+  d3.select(svg.value).selectAll<SVGGElement, GraphNode>('.graph-node').classed('is-selected', (node) => selectedIds.includes(node.refId))
+})
 
 onBeforeUnmount(() => {
   simulation?.stop()
