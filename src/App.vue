@@ -106,9 +106,11 @@ const welcomePhrases = [
   '你想先追踪哪一条知识线？',
   '今天想把什么想明白？',
 ]
-const welcomeText = ref(welcomePhrases[0])
+const welcomeText = ref('')
 let welcomeTimer: number | null = null
 let welcomeRun = 0
+let welcomePhraseQueue: number[] = []
+let lastWelcomePhraseIndex = -1
 const providerDraft = ref({ id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', apiKey: '' })
 const graphLayoutNonce = ref(0)
 const selectedNavNodeId = ref<string | null>(null)
@@ -293,6 +295,7 @@ function notify(message: string): void {
 }
 
 function setView(view: ViewName): void {
+  if (view === 'overview' && activeView.value === 'overview') startWelcomeTypewriter()
   activeView.value = view
   if (view === 'graph') nextTick(() => window.dispatchEvent(new Event('resize')))
 }
@@ -970,11 +973,29 @@ function setFontSize(value: number): void {
   store.updateConfig({ ui: { ...store.config.ui, fontSize } })
 }
 
+function nextWelcomePhrase(): string {
+  if (!welcomePhrases.length) return ''
+  if (!welcomePhraseQueue.length) {
+    welcomePhraseQueue = welcomePhrases.map((_, index) => index)
+    for (let index = welcomePhraseQueue.length - 1; index > 0; index -= 1) {
+      const swapIndex = Math.floor(Math.random() * (index + 1))
+      ;[welcomePhraseQueue[index], welcomePhraseQueue[swapIndex]] = [welcomePhraseQueue[swapIndex], welcomePhraseQueue[index]]
+    }
+    if (welcomePhraseQueue.length > 1 && welcomePhraseQueue[0] === lastWelcomePhraseIndex) {
+      const swapIndex = 1 + Math.floor(Math.random() * (welcomePhraseQueue.length - 1))
+      ;[welcomePhraseQueue[0], welcomePhraseQueue[swapIndex]] = [welcomePhraseQueue[swapIndex], welcomePhraseQueue[0]]
+    }
+  }
+  const phraseIndex = welcomePhraseQueue.shift() ?? 0
+  lastWelcomePhraseIndex = phraseIndex
+  return welcomePhrases[phraseIndex]
+}
+
 function startWelcomeTypewriter(): void {
   if (welcomeTimer != null) window.clearTimeout(welcomeTimer)
   welcomeTimer = null
   const run = ++welcomeRun
-  const phrase = welcomePhrases[Math.floor(Math.random() * welcomePhrases.length)]
+  const phrase = nextWelcomePhrase()
   const reduced = store.config.ui.reducedMotion || window.matchMedia('(prefers-reduced-motion: reduce)').matches
   if (reduced) {
     welcomeText.value = phrase
@@ -1041,8 +1062,8 @@ watch(fullscreenTarget, (target) => {
 })
 
 onMounted(async () => {
-  await store.init()
   startWelcomeTypewriter()
+  await store.init()
   if (!store.selectedSessionId && store.activeSessions[0]) store.setSelectedSession(store.activeSessions[0].id)
   const provider = store.config.llm.providers[0]
   if (provider) providerDraft.value = { ...provider }
