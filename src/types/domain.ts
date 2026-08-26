@@ -82,6 +82,8 @@ export interface Concept {
   id: string
   name: string
   normalizedName: string
+  /** Short navigational synopsis shown in catalogues and disclosure indexes. */
+  summary?: string
   notes: string
   status: ConceptStatus
   mergedIntoId?: string | null

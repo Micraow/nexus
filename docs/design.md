@@ -211,6 +211,7 @@ LLMTask、QuickPhrase、ManualGraphEdge、GraphLayout 独立记录
 | id | TEXT PK | |
 | name | TEXT UNIQUE | 归一化后的主名称 |
 | normalized_name | TEXT UNIQUE | 用于本地匹配的规范形式 |
+| summary | TEXT | ≤120 个中文字符的导航摘要，可为空 |
 | notes | TEXT | 用户笔记，允许 Markdown |
 | status | TEXT | `active` / `archived` / `merged` |
 | merged_into_id | TEXT FK → Concept NULL | 合并追溯目标 |
@@ -555,7 +556,7 @@ LLM 只返回建议变更：合并、别名、父子关系、相关关系、重�
 
 自动关系：
 
-- Concept-Concept 共现边：共同关联的 KnowledgeUnit 数量越多，边越粗；
+- Concept-Concept 共现边：同一 Session 内共同出现的次数越多，边越粗；同一 Session 对同一 Concept 对最多贡献一次；
 - Concept-KnowledgeUnit 关联边：表示该单元涉及该 Concept；
 - ConceptRelation hierarchy：父子关系，带方向；
 - ConceptRelation related：相关关系；
@@ -570,7 +571,7 @@ LLM 只返回建议变更：合并、别名、父子关系、相关关系、重�
 - 收起祖先时递归清理该祖先的后代展开状态，后代回到折叠投影，但不改变事实关系；
 - `expandedConceptDepth` 只用于需要确定性批量预展开的调用方，`0` 表示根节点，不能替代无限层级模型。
 
-折叠层级下仍保留数据密度：隐藏 Concept 通过 hierarchy 向上投影到最近的可见祖先。一个 KnowledgeUnit 对每一对可见代表 Concept 只贡献一次共现权重；多个隐藏叶节点落在同一对代表节点时合并为同一条边并累加不同单元数，不能因同一单元关联多个叶节点而重复计数。KnowledgeUnit 节点在全局开关打开或其祖先被明确展开时出现，Message 节点按消息开关出现；这些局部披露不改变 Concept 的层级可见性。
+折叠层级下仍保留数据密度：隐藏 Concept 通过 hierarchy 向上投影到最近的可见祖先。每个 Session 汇总其直接、消息级和 KnowledgeUnit 级归属；同一 Session 对每一对可见代表 Concept 只贡献一次共现权重，多个单元、消息或隐藏叶节点落在同一对代表节点时不会重复计数，不同 Session 才会累加。KnowledgeUnit 节点在全局开关打开或其祖先被明确展开时出现，Message 节点按消息开关出现；这些局部披露不改变 Concept 的层级可见性。
 
 `related` 是独立的无向边：可以在可见节点之间绘制，也可以随筛选隐藏，但从不触发祖先路径、子节点展开、根节点计算或 hierarchy 布局约束。
 

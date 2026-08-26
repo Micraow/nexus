@@ -66,7 +66,7 @@ describe('database schema migration', () => {
     const store = new SqliteStore()
     await store.init()
 
-    expect(store.getMeta('schema_version')).toBe('4')
+    expect(store.getMeta('schema_version')).toBe('5')
     expect(store.query<{ message_id: string; concept_id: string }>('SELECT message_id, concept_id FROM message_concepts ORDER BY concept_id')).toEqual([
       { message_id: 'm1', concept_id: 'c1' },
       { message_id: 'm1', concept_id: 'c2' },

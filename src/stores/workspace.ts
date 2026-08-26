@@ -126,6 +126,7 @@ function conceptFromRow(row: Row): Concept {
     id: text(row.id),
     name: text(row.name),
     normalizedName: text(row.normalized_name),
+    summary: text(row.summary),
     notes: text(row.notes),
     status: text(row.status) as Concept['status'],
     mergedIntoId: row.merged_into_id == null ? null : text(row.merged_into_id),
@@ -610,7 +611,28 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (!activeIds.has(link.conceptId) || !units.value.some((unit) => unit.id === link.unitId)) return
       conceptUnits.set(link.conceptId, [...(conceptUnits.get(link.conceptId) ?? []), link.unitId])
     })
+    const conceptSessions = new Map<string, string[]>()
+    sessionConcepts.value.forEach((link) => {
+      if (!activeIds.has(link.conceptId) || !activeSessionIds.value.has(link.sessionId)) return
+      conceptSessions.set(link.conceptId, [...(conceptSessions.get(link.conceptId) ?? []), link.sessionId])
+    })
+    const conceptMessages = new Map<string, string[]>()
+    messageConcepts.value.forEach((link) => {
+      if (!activeIds.has(link.conceptId) || !messages.value.some((message) => message.id === link.messageId)) return
+      conceptMessages.set(link.conceptId, [...(conceptMessages.get(link.conceptId) ?? []), link.messageId])
+    })
+    // Keep legacy metadata memberships visible even when an imported database
+    // predates the v4 migration or contains an assignment not yet projected.
+    messages.value.forEach((message) => {
+      const declared = message.metadata?.concept_ids
+      if (!Array.isArray(declared)) return
+      declared.filter((id): id is string => typeof id === 'string' && activeIds.has(id.trim())).forEach((conceptId) => {
+        const current = conceptMessages.get(conceptId.trim()) ?? []
+        if (!current.includes(message.id)) conceptMessages.set(conceptId.trim(), [...current, message.id])
+      })
+    })
     const conceptSummary = (concept: Concept): string => {
+      if (concept.summary?.trim()) return concept.summary.trim().replace(/\s+/g, ' ').slice(0, 240)
       if (concept.notes.trim()) return concept.notes.trim().replace(/\s+/g, ' ').slice(0, 240)
       const summaries = (conceptUnits.get(concept.id) ?? [])
         .map((id) => units.value.find((unit) => unit.id === id)?.summary?.trim())
@@ -619,6 +641,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
     const conceptRef = (concept: Concept) => ({ refID: concept.id, title: `知识主题：${concept.name}`, summary: conceptSummary(concept) })
     const unitRef = (unit: KnowledgeUnit) => ({ refID: unit.id, title: `知识单元：${unit.title || '未命名知识单元'}`, summary: (unit.summary || '').replace(/\s+/g, ' ').slice(0, 240) })
+    const sessionRef = (session: Session) => ({ refID: session.id, title: `会话：${session.title || '未命名会话'}`, summary: (session.knowledgeJudgment || session.title || '').replace(/\s+/g, ' ').slice(0, 240) })
     const messageRef = (message: Message) => ({
       refID: message.id,
       title: `消息：${message.role} #${message.orderInSession + 1}`,
@@ -632,10 +655,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     // its selected units/messages. An unscoped task (origin extraction) gets
     // all roots, but never all descendants up front.
     const relevantConceptIds = new Set<string>()
-    selectedUnitIds.forEach((unitId) => unitConcepts.value.filter((link) => link.unitId === unitId).forEach((link) => relevantConceptIds.add(link.conceptId)))
+    selectedUnitIds.forEach((unitId) => {
+      unitConcepts.value.filter((link) => link.unitId === unitId).forEach((link) => relevantConceptIds.add(link.conceptId))
+      const unit = units.value.find((item) => item.id === unitId)
+      if (unit) sessionConcepts.value.filter((link) => link.sessionId === unit.sessionId).forEach((link) => relevantConceptIds.add(link.conceptId))
+    })
     selectedMessageIds.forEach((messageId) => {
       const message = messages.value.find((item) => item.id === messageId)
       if (message?.unitId) unitConcepts.value.filter((link) => link.unitId === message.unitId).forEach((link) => relevantConceptIds.add(link.conceptId))
+      if (message) sessionConcepts.value.filter((link) => link.sessionId === message.sessionId).forEach((link) => relevantConceptIds.add(link.conceptId))
       messageConcepts.value.filter((link) => link.messageId === messageId).forEach((link) => relevantConceptIds.add(link.conceptId))
       const declared = message?.metadata?.concept_ids
       if (Array.isArray(declared)) declared.filter((id): id is string => typeof id === 'string').forEach((id) => { if (activeIds.has(id)) relevantConceptIds.add(id) })
@@ -669,8 +697,26 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         .map((id) => units.value.find((unit) => unit.id === id))
         .filter(Boolean)
         .map((unit) => unitRef(unit as KnowledgeUnit))
+      const sessionRefs = (conceptSessions.get(concept.id) ?? [])
+        .map((id) => activeSessions.value.find((session) => session.id === id))
+        .filter(Boolean)
+        .map((session) => sessionRef(session as Session))
+      const messageRefs = (conceptMessages.get(concept.id) ?? [])
+        .map((id) => messages.value.find((message) => message.id === id))
+        .filter(Boolean)
+        .map((message) => messageRef(message as Message))
       const seen = new Set<string>()
-      return { refID: concept.id, children: [...childRefs, ...unitRefs].filter((reference) => !seen.has(reference.refID) && (seen.add(reference.refID), true)) }
+      return { refID: concept.id, children: [...childRefs, ...sessionRefs, ...unitRefs, ...messageRefs].filter((reference) => !seen.has(reference.refID) && (seen.add(reference.refID), true)) }
+    }
+    const sessionExpansion = (session: Session, revealContent = Boolean(options.includeFullContent)) => {
+      const children = [
+        ...units.value.filter((unit) => unit.sessionId === session.id).map(unitRef),
+        ...messages.value.filter((message) => message.sessionId === session.id && !message.unitId).map(messageRef),
+      ]
+      const content = revealContent
+        ? messages.value.filter((message) => message.sessionId === session.id).sort((left, right) => left.orderInSession - right.orderInSession).map((message) => `${message.role}: ${message.content}`).join('\n')
+        : undefined
+      return { refID: session.id, children, ...(content ? { content } : {}) }
     }
     const expandedIds = [...new Set(options.expandedRefIds ?? [])]
     const expansionMap = new Map<string, NonNullable<DisclosureContext['expansions']>[number]>()
@@ -691,6 +737,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (concept) expansionMap.set(refID, conceptExpansion(concept))
       const unit = units.value.find((item) => item.id === refID)
       if (unit) expansionMap.set(refID, unitExpansion(unit, true))
+      const session = activeSessions.value.find((item) => item.id === refID)
+      if (session) expansionMap.set(refID, sessionExpansion(session, true))
       const message = messages.value.find((item) => item.id === refID)
       if (message) expansionMap.set(refID, { refID, content: message.content })
     })
@@ -767,7 +815,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       resetStatements.forEach((statement) => db.run(statement))
       const records = parsed as any
       records.sessions.forEach((item: Session) => db.run('INSERT INTO sessions(id, source, platform, model, external_session_id, title, created_at, updated_at, message_count, unit_count, knowledge_kind, knowledge_confidence, knowledge_judgment, knowledge_retain_in_graph, revision, local_only, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.source, item.platform, item.model ?? null, item.externalSessionId ?? null, item.title, item.createdAt, item.updatedAt, item.messageCount, item.unitCount, item.knowledgeKind ?? 'unknown', item.knowledgeConfidence ?? null, item.knowledgeJudgment ?? null, item.knowledgeRetainInGraph ? 1 : 0, item.revision, item.localOnly ? 1 : 0, item.deletedAt ?? null]))
-      records.concepts.forEach((item: Concept) => db.run('INSERT INTO concepts(id, name, normalized_name, notes, status, merged_into_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.name, item.normalizedName, item.notes, item.status, item.mergedIntoId ?? null, item.createdAt, item.updatedAt, item.deletedAt ?? null]))
+      records.concepts.forEach((item: Concept) => db.run('INSERT INTO concepts(id, name, normalized_name, summary, notes, status, merged_into_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.name, item.normalizedName, item.summary ?? '', item.notes ?? '', item.status, item.mergedIntoId ?? null, item.createdAt, item.updatedAt, item.deletedAt ?? null]))
       records.units.forEach((item: KnowledgeUnit) => db.run('INSERT INTO knowledge_units(id, session_id, title, summary, order_in_session, status, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.sessionId, item.title ?? null, item.summary ?? null, item.orderInSession, item.status, item.revision, item.createdAt, item.updatedAt]))
       records.messages.forEach((item: Message) => db.run('INSERT INTO messages(id, session_id, unit_id, role, content, order_in_session, timestamp, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.sessionId, item.unitId ?? null, item.role, item.content, item.orderInSession, item.timestamp ?? null, item.metadata ? JSON.stringify(item.metadata) : null]))
       records.aliases.forEach((item: ConceptAlias) => db.run('INSERT INTO concept_aliases(id, concept_id, alias, normalized_alias, source, created_at) VALUES (?, ?, ?, ?, ?, ?)', [item.id, item.conceptId, item.alias, item.normalizedAlias, item.source, item.createdAt]))
@@ -916,13 +964,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     })
   }
 
-  /**
-   * Update the user-editable fields of a Concept. Concepts intentionally keep
-   * one free-form `notes` field; KnowledgeUnit owns title/summary metadata.
-   * Name changes are normalized and recorded so they can be undone together
-   * with other graph maintenance operations.
-   */
-  function updateConcept(conceptId: string, updates: { name?: string; notes?: string }): void {
+  /** Update the user-editable Concept title, summary and long-form notes. */
+  function updateConcept(conceptId: string, updates: { name?: string; summary?: string; notes?: string }): void {
     const current = db.query<Row>('SELECT * FROM concepts WHERE id = ?', [conceptId])[0]
     if (!current) throw new Error('知识主题不存在')
     const nextName = updates.name === undefined ? text(current.name) : updates.name.trim()
@@ -932,13 +975,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const duplicate = db.query<Row>('SELECT id FROM concepts WHERE normalized_name = ? AND id <> ?', [normalizedName, conceptId])[0]
     const aliasOwner = db.query<Row>('SELECT concept_id FROM concept_aliases WHERE normalized_alias = ?', [normalizedName])[0]
     if (duplicate || (aliasOwner && text(aliasOwner.concept_id) !== conceptId)) throw new Error('已有同名知识主题或别名，请换一个名称')
+    const nextSummary = updates.summary === undefined ? text(current.summary) : updates.summary.trim()
     const nextNotes = updates.notes === undefined ? text(current.notes) : updates.notes
-    if (nextName === text(current.name) && nextNotes === text(current.notes)) return
+    if (nextSummary.length > 120) throw new Error('知识主题摘要不能超过 120 个字符')
+    if (nextName === text(current.name) && nextSummary === text(current.summary) && nextNotes === text(current.notes)) return
 
     const before = captureConceptOperationSnapshot()
     mutate(() => {
       db.run('DELETE FROM concept_aliases WHERE concept_id = ? AND normalized_alias = ?', [conceptId, normalizedName])
-      db.run('UPDATE concepts SET name = ?, normalized_name = ?, notes = ?, updated_at = ? WHERE id = ?', [nextName, normalizedName, nextNotes, isoNow(), conceptId])
+      db.run('UPDATE concepts SET name = ?, normalized_name = ?, summary = ?, notes = ?, updated_at = ? WHERE id = ?', [nextName, normalizedName, nextSummary, nextNotes, isoNow(), conceptId])
       recordOperation('编辑知识主题', before, captureConceptOperationSnapshot())
     })
   }
@@ -978,26 +1023,26 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
     const id = createId('concept')
     const now = isoNow()
-    db.run('INSERT INTO concepts(id, name, normalized_name, notes, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [id, name.trim(), normalized, '', 'active', now, now])
+    db.run('INSERT INTO concepts(id, name, normalized_name, summary, notes, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [id, name.trim(), normalized, '', '', 'active', now, now])
     void source
     return id
   }
 
   /** Create (or reactivate) a manually maintained Concept and return its id. */
-  function createConcept(name: string, notes = ''): string {
+  function createConcept(name: string, notes = '', summary = ''): string {
     const trimmed = name.trim()
     const normalized = normalizeText(trimmed)
     if (!normalized) throw new Error('知识主题名称不能为空')
     if (trimmed.length > 120) throw new Error('知识主题名称不能超过 120 个字符')
 
-    const existing = db.query<Row>('SELECT id, status, notes FROM concepts WHERE normalized_name = ?', [normalized])[0]
+    const existing = db.query<Row>('SELECT id, status, summary, notes FROM concepts WHERE normalized_name = ?', [normalized])[0]
     if (existing && text(existing.status) === 'active') return text(existing.id)
 
     const before = captureConceptOperationSnapshot()
     let conceptId = ''
     mutate(() => {
       conceptId = ensureConcept(trimmed)
-      if (notes.trim()) db.run('UPDATE concepts SET notes = ?, updated_at = ? WHERE id = ?', [notes, isoNow(), conceptId])
+      if (notes.trim() || summary.trim()) db.run('UPDATE concepts SET summary = ?, notes = ?, updated_at = ? WHERE id = ?', [summary.trim(), notes, isoNow(), conceptId])
       recordOperation('创建知识主题', before, captureConceptOperationSnapshot())
     })
     return conceptId
@@ -1093,7 +1138,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     db.run('DELETE FROM manual_graph_edges')
     db.run('DELETE FROM graph_layout')
     db.run('DELETE FROM concepts')
-    snapshot.concepts.forEach((row) => db.run('INSERT INTO concepts(id, name, normalized_name, notes, status, merged_into_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [text(row.id), text(row.name), text(row.normalized_name), text(row.notes), text(row.status), row.merged_into_id ?? null, text(row.created_at), text(row.updated_at), row.deleted_at ?? null]))
+    snapshot.concepts.forEach((row) => db.run('INSERT INTO concepts(id, name, normalized_name, summary, notes, status, merged_into_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [text(row.id), text(row.name), text(row.normalized_name), text(row.summary), text(row.notes), text(row.status), row.merged_into_id ?? null, text(row.created_at), text(row.updated_at), row.deleted_at ?? null]))
     snapshot.aliases.forEach((row) => db.run('INSERT INTO concept_aliases(id, concept_id, alias, normalized_alias, source, created_at) VALUES (?, ?, ?, ?, ?, ?)', [text(row.id), text(row.concept_id), text(row.alias), text(row.normalized_alias), text(row.source), text(row.created_at)]))
     snapshot.unit_concepts.forEach((row) => db.run('INSERT INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [text(row.unit_id), text(row.concept_id), text(row.source), text(row.created_at)]))
     snapshot.session_concepts?.forEach((row) => db.run('INSERT INTO session_concepts(session_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [text(row.session_id), text(row.concept_id), text(row.source), text(row.created_at)]))
@@ -1297,8 +1342,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     db.run('INSERT OR IGNORE INTO graph_layout(node_type, ref_id, x, y, fixed, layout_version) SELECT node_type, ?, x, y, fixed, layout_version FROM graph_layout WHERE node_type = ? AND ref_id = ?', [targetId, 'concept', sourceId])
     db.run('DELETE FROM graph_layout WHERE node_type = ? AND ref_id = ?', ['concept', sourceId])
 
+    const mergedSummary = [text(target.summary), text(source.summary)].filter(Boolean).join('；').slice(0, 120)
     const mergedNotes = [text(target.notes), text(source.notes) ? `来自 ${sourceName} 的笔记：${text(source.notes)}` : ''].filter(Boolean).join('\n\n')
-    db.run('UPDATE concepts SET notes = ?, updated_at = ? WHERE id = ?', [mergedNotes, now, targetId])
+    db.run('UPDATE concepts SET summary = ?, notes = ?, updated_at = ? WHERE id = ?', [mergedSummary, mergedNotes, now, targetId])
     db.run('UPDATE concepts SET status = ?, merged_into_id = ?, deleted_at = ?, updated_at = ? WHERE id = ?', ['merged', targetId, now, now, sourceId])
   }
 
@@ -1421,7 +1467,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const conceptIds = new Set(conceptScope.map((concept) => concept.id))
     const unitIds = new Set(unitScope.map((unit) => unit.id))
     const prompt = buildMaintenancePrompt({
-      concepts: conceptScope.map((concept) => ({ id: concept.id, name: concept.name, aliases: aliases.value.filter((alias) => alias.conceptId === concept.id).map((alias) => alias.alias), notes: concept.notes })),
+      concepts: conceptScope.map((concept) => ({ id: concept.id, name: concept.name, aliases: aliases.value.filter((alias) => alias.conceptId === concept.id).map((alias) => alias.alias), summary: concept.summary ?? '', notes: concept.notes })),
       relations: relations.value.filter((relation) => conceptIds.has(relation.parentConceptId) || conceptIds.has(relation.childConceptId)).map((relation) => ({ sourceId: relation.parentConceptId, targetId: relation.childConceptId, type: relation.relationType, status: relation.status })),
       units: unitScope.map((unit) => ({ id: unit.id, title: unit.title ?? '', summary: unit.summary ?? '', session: sessions.value.find((session) => session.id === unit.sessionId)?.title ?? '', conceptIds: unitConcepts.value.filter((link) => link.unitId === unit.id).map((link) => link.conceptId) })),
       includeMessages: input.includeFullContent ? unitScope.map((unit) => `## ${unit.id}\n${unitMessages(unit.id).map((message) => `${message.role}: ${message.content}`).join('\n')}`).join('\n\n') : undefined,
@@ -1744,12 +1790,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (!Array.isArray(rawConcepts)) errors.push('concepts 必须是数组')
       else if (rawConcepts.length === 0 && declaredConceptIds.length === 0 && membershipConceptIds.length === 0) errors.push('concepts 或 concept_ids 至少需要一项')
       const candidates = Array.isArray(rawConcepts) ? rawConcepts.map((candidate) => {
-        if (typeof candidate === 'string') return { name: candidate, aliases: [] as string[] }
-        if (!candidate || typeof candidate !== 'object') return { name: '', aliases: [] as string[] }
+        if (typeof candidate === 'string') return { name: candidate, summary: '', aliases: [] as string[] }
+        if (!candidate || typeof candidate !== 'object') return { name: '', summary: '', aliases: [] as string[] }
         const item = candidate as Record<string, unknown>
-        return { name: typeof item.name === 'string' ? item.name : '', aliases: Array.isArray(item.aliases) ? item.aliases.filter((alias): alias is string => typeof alias === 'string') : [] }
+        return { name: typeof item.name === 'string' ? item.name : '', summary: typeof item.summary === 'string' ? item.summary.trim() : '', aliases: Array.isArray(item.aliases) ? item.aliases.filter((alias): alias is string => typeof alias === 'string') : [] }
       }) : []
-      candidates.forEach((candidate) => { if (!normalizeText(candidate.name)) errors.push('Concept 名称不能为空') })
+      candidates.forEach((candidate) => {
+        if (!normalizeText(candidate.name)) errors.push('Concept 名称不能为空')
+        if (candidate.summary.length > 120) errors.push('Concept 摘要不能超过 120 个字符')
+      })
       if (errors.length) {
         markTask(taskId, 'needs_review', responseText, errors)
         return { ok: false, errors }
@@ -1768,6 +1817,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           const conceptId = ensureConcept(candidate.name, 'llm')
           conceptIds.push(conceptId)
           conceptIdsByName.set(normalizeText(candidate.name), conceptId)
+          if (candidate.summary) db.run("UPDATE concepts SET summary = CASE WHEN summary = '' THEN ? ELSE summary END, updated_at = ? WHERE id = ?", [candidate.summary, now, conceptId])
           candidate.aliases.forEach((alias) => {
             const normalizedAlias = normalizeText(alias)
             if (!normalizedAlias || normalizedAlias === normalizeText(candidate.name)) return
@@ -1844,13 +1894,16 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           conceptIds: Array.isArray(value.concept_ids) ? value.concept_ids.filter((id): id is string => typeof id === 'string').map((id) => id.trim()) : [],
           conceptIdsRaw: value.concept_ids,
           conceptIdsProvided: Object.prototype.hasOwnProperty.call(value, 'concept_ids'),
-          concepts: concepts.map((concept) => typeof concept === 'string' ? { name: concept, aliases: [] as string[] } : concept && typeof concept === 'object' ? { name: typeof (concept as Record<string, unknown>).name === 'string' ? String((concept as Record<string, unknown>).name) : '', aliases: Array.isArray((concept as Record<string, unknown>).aliases) ? ((concept as Record<string, unknown>).aliases as unknown[]).filter((alias): alias is string => typeof alias === 'string') : [] } : { name: '', aliases: [] as string[] }),
+          concepts: concepts.map((concept) => typeof concept === 'string' ? { name: concept, summary: '', aliases: [] as string[] } : concept && typeof concept === 'object' ? { name: typeof (concept as Record<string, unknown>).name === 'string' ? String((concept as Record<string, unknown>).name) : '', summary: typeof (concept as Record<string, unknown>).summary === 'string' ? String((concept as Record<string, unknown>).summary).trim() : '', aliases: Array.isArray((concept as Record<string, unknown>).aliases) ? ((concept as Record<string, unknown>).aliases as unknown[]).filter((alias): alias is string => typeof alias === 'string') : [] } : { name: '', summary: '', aliases: [] as string[] }),
         }
       }) : []
       normalizedUnits.forEach((unit) => {
         if (!unit.title) errors.push('对话知识单元标题不能为空')
         if (validateUnitText(unit.title, unit.summary).length) errors.push('对话知识单元标题或摘要超出长度限制')
-        unit.concepts.forEach((concept) => { if (!normalizeText(concept.name)) errors.push('对话返回的知识主题名称不能为空') })
+        unit.concepts.forEach((concept) => {
+          if (!normalizeText(concept.name)) errors.push('对话返回的知识主题名称不能为空')
+          if (concept.summary.length > 120) errors.push('对话返回的知识主题摘要不能超过 120 个字符')
+        })
         if (unit.conceptIdsProvided) {
           errors.push(...validateConceptIdList(unit.conceptIdsRaw, promptConceptIds(task)).map((issue) => `${issue.path}: ${issue.message}`))
         }
@@ -1907,6 +1960,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           item.concepts.forEach((candidate) => {
             const conceptId = ensureConcept(candidate.name, 'llm')
             db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [unitId, conceptId, 'llm', now])
+            if (candidate.summary) db.run("UPDATE concepts SET summary = CASE WHEN summary = '' THEN ? ELSE summary END, updated_at = ? WHERE id = ?", [candidate.summary, now, conceptId])
             candidate.aliases.forEach((alias) => {
               const normalizedAlias = normalizeText(alias)
               if (normalizedAlias && normalizedAlias !== normalizeText(candidate.name)) db.run('INSERT OR IGNORE INTO concept_aliases(id, concept_id, alias, normalized_alias, source, created_at) VALUES (?, ?, ?, ?, ?, ?)', [createId('alias'), conceptId, alias.trim(), normalizedAlias, 'llm', now])

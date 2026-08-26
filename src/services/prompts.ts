@@ -305,7 +305,7 @@ ${disclosureText}
 
 输出中的 memberships 是可选的细粒度归属声明；同一目标可以列出多个 Concept，必须使用 concept_ids 数组。只能引用 DISCLOSURE_INDEX 中已经出现的 Concept refID；新提取的 Concept 由 concepts 数组定义，应用会按本 KnowledgeUnit 的范围建立多对多关联。如果全部复用现有 Concept，concepts 可以返回空数组，但 concept_ids 不能同时为空。
 
-只返回 JSON：{"concepts":[{"name":"...","aliases":[]}],"concept_ids":["已列出的 Concept refID"],"memberships":[{"target_type":"unit|message|session","target_id":"原始 ID","concept_ids":["Concept refID", "另一个 Concept refID"]}],"relations":[{"source":"Concept 名称","target":"Concept 名称","type":"hierarchy|related"}],"disclosure_requests":[]}`)
+只返回 JSON：{"concepts":[{"name":"...","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"concept_ids":["已列出的 Concept refID"],"memberships":[{"target_type":"unit|message|session","target_id":"原始 ID","concept_ids":["Concept refID", "另一个 Concept refID"]}],"relations":[{"source":"Concept 名称","target":"Concept 名称","type":"hierarchy|related"}],"disclosure_requests":[]}`)
 }
 
 /** Session-wide Concept extraction uses the same contract as unit extraction. */
@@ -327,7 +327,7 @@ ${disclosureText}
 
 输出中的 memberships 是可选的细粒度归属声明；同一个 Session 或 Message 可以同时归属于多个 Concept，必须使用 concept_ids 数组。只能引用 DISCLOSURE_INDEX 中已经出现的 Concept refID；新提取的 Concept 由 concepts 数组定义，并默认关联到本 Session 中相关的所有 KnowledgeUnit。如果全部复用现有 Concept，concepts 可以返回空数组，但 concept_ids 不能同时为空。
 
-只返回 JSON：{"concepts":[{"name":"...","aliases":[]}],"concept_ids":["已列出的 Concept refID"],"memberships":[{"target_type":"session|message|unit","target_id":"原始 ID","concept_ids":["Concept refID", "另一个 Concept refID"]}],"relations":[{"source":"Concept 名称","target":"Concept 名称","type":"hierarchy|related"}],"disclosure_requests":[]}`)
+只返回 JSON：{"concepts":[{"name":"...","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"concept_ids":["已列出的 Concept refID"],"memberships":[{"target_type":"session|message|unit","target_id":"原始 ID","concept_ids":["Concept refID", "另一个 Concept refID"]}],"relations":[{"source":"Concept 名称","target":"Concept 名称","type":"hierarchy|related"}],"disclosure_requests":[]}`)
 }
 
 export function buildRepairPrompt(originalResponse: string, errors: string[], disclosure?: DisclosureContext): string {
@@ -364,7 +364,7 @@ ${input.context || '（没有额外上下文）'}
 ${disclosureText}
 
 请只返回 JSON，格式如下：
-{"answer":"完整回答（可包含 Markdown）","units":[{"title":"本次回答的知识单元标题","summary":"不超过 120 个中文字符的摘要","concept_ids":["已有 Concept refID"],"concepts":[{"name":"新 Concept 名称","aliases":[]}]}],"memberships":[{"target_type":"session|message|unit","target_id":"原始 ID","concept_ids":["Concept refID", "另一个 Concept refID"]}],"disclosure_requests":[]}
+{"answer":"完整回答（可包含 Markdown）","units":[{"title":"本次回答的知识单元标题","summary":"不超过 120 个中文字符的摘要","concept_ids":["已有 Concept refID"],"concepts":[{"name":"新 Concept 名称","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}]}],"memberships":[{"target_type":"session|message|unit","target_id":"原始 ID","concept_ids":["Concept refID", "另一个 Concept refID"]}],"disclosure_requests":[]}
 
 如果回答不适合拆成多个知识单元，units 返回一个元素。不要返回解释文字。`)
 }
@@ -374,7 +374,7 @@ export function renderQuickPhrase(template: string, topic: string, context: stri
 }
 
 export function buildMaintenancePrompt(input: {
-  concepts: Array<{ id: string; name: string; aliases: string[]; notes: string }>
+  concepts: Array<{ id: string; name: string; aliases: string[]; summary?: string; notes: string }>
   relations: Array<{ sourceId: string; targetId: string; type: string; status: string }>
   units: Array<{ id: string; title: string; summary: string; session: string; conceptIds: string[] }>
   includeMessages?: string

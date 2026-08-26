@@ -12,7 +12,7 @@ describe('derived graph', () => {
       ],
       units: [
         { id: 'u1', sessionId: 's', title: 'U1', summary: '', orderInSession: 0, status: 'ready', revision: 1, createdAt: now, updatedAt: now },
-        { id: 'u2', sessionId: 's', title: 'U2', summary: '', orderInSession: 1, status: 'ready', revision: 1, createdAt: now, updatedAt: now },
+        { id: 'u2', sessionId: 's2', title: 'U2', summary: '', orderInSession: 1, status: 'ready', revision: 1, createdAt: now, updatedAt: now },
       ],
       messages: [],
       unitConcepts: [
@@ -241,10 +241,11 @@ describe('derived graph', () => {
     ]
     const collapsed = buildGraph({ concepts, units, messages: [], unitConcepts, relations, revision: 1 })
     expect(collapsed.edges.find((edge) => edge.type === 'co_occurrence')?.id).toContain('concept:a|concept:b')
-    expect(collapsed.edges.find((edge) => edge.type === 'co_occurrence')?.weight).toBe(2)
+    expect(collapsed.edges.find((edge) => edge.type === 'co_occurrence')?.weight).toBe(1)
     const expanded = buildGraph({ concepts, units, messages: [], unitConcepts, relations, revision: 1, expandedConceptIds: ['a'] })
-    expect(expanded.edges.some((edge) => edge.source === 'concept:a1' && edge.target === 'concept:b')).toBe(true)
-    expect(expanded.edges.some((edge) => edge.source === 'concept:a2' && edge.target === 'concept:b')).toBe(true)
+    const hasPair = (left: string, right: string) => expanded.edges.some((edge) => edge.type === 'co_occurrence' && new Set([edge.source, edge.target]).has(left) && new Set([edge.source, edge.target]).has(right))
+    expect(hasPair('concept:a1', 'concept:b')).toBe(true)
+    expect(hasPair('concept:a2', 'concept:b')).toBe(true)
   })
 
   it('supports a global expansion depth without treating related edges as hierarchy', () => {

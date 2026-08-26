@@ -130,6 +130,7 @@
 | `id` | TEXT | 是 | 主键 |
 | `name` | TEXT | 是 | 展示名称，全局唯一 |
 | `normalized_name` | TEXT | 是 | 归一化名称，全局唯一 |
+| `summary` | TEXT | 否 | ≤120 个中文字符，用于目录和渐进披露导航 |
 | `notes` | TEXT | 是 | 默认空字符串，可编辑 Markdown |
 | `status` | TEXT | 是 | `active`、`archived`、`merged` |
 | `merged_into_id` | TEXT | 否 | 合并追溯目标 |
@@ -144,7 +145,7 @@
 - `archived` Concept 不参与默认图谱和搜索，但不能从历史导出中丢失；
 - 删除 Concept 只解除 UnitConcept 和 ConceptRelation，不删除 Session、Message 或 KnowledgeUnit；
 - Concept 的 hierarchy 深度不设业务上限，允许多父节点；`depth`、根节点和祖先路径均由 ConceptRelation 派生，不写回 Concept；
-- 合并是可撤销事务：关联、别名、关系和笔记变更必须有操作记录。
+- 合并是可撤销事务：关联、别名、关系、摘要和笔记变更必须有操作记录。
 
 ### 3.5 ConceptAlias
 
@@ -357,7 +358,7 @@ Concept 提取结果必须包含 `concepts` 数组；全部复用目录中已有
 
 ### 6.2 边
 
-- 每个 KnowledgeUnit 先把其 UnitConcept 集合中的隐藏 Concept 投影到最近可见代表节点，再对代表集合去重；任意一对可见代表 Concept 对该 KnowledgeUnit 最多贡献 `1` 个共现权重。多个不同 KnowledgeUnit 投影到同一对节点时累加，不能因同一单元关联多个后代或多条路径而重复计数；
+- 每个 Session 汇总其直接、消息级和 KnowledgeUnit 级 Concept 归属，再把隐藏 Concept 投影到最近可见代表节点并去重；任意一对可见代表 Concept 对该 Session 最多贡献 `1` 个共现权重。多个 KnowledgeUnit 或 Message 不会在同一 Session 内重复计数；多个 Session 投影到同一对节点时累加；
 - Concept 与 KnowledgeUnit 之间生成关联边，端点使用同一套代表投影；
 - `hierarchy` 只在父、子两端都可见时输出有向边。隐藏叶节点不能产生指向不可见节点的假边；
 - `related` 始终按无向边处理。若端点折叠，可分别投影到最近可见代表并合并重复边；同一节点的自环丢弃。related 边不参与层级展开、根节点、深度或父子布局；

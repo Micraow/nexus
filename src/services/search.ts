@@ -20,7 +20,7 @@ export interface RankedSearchResult {
 }
 
 export interface SearchMatches {
-  concepts: Array<{ item: Concept; field: Extract<SearchField, 'name' | 'alias'>; relevance: number }>
+  concepts: Array<{ item: Concept; field: Extract<SearchField, 'name' | 'alias' | 'summary'>; relevance: number }>
   units: Array<{ item: KnowledgeUnit; field: Extract<SearchField, 'title' | 'summary'>; relevance: number }>
   messages: Array<{ item: Message; field: 'content'; relevance: number }>
 }
@@ -94,7 +94,7 @@ export function buildSearchDocuments(input: SearchInput): SearchDocument[] {
       id: `concept:${concept.id}`,
       kind: 'concept' as const,
       refId: concept.id,
-      fields: { name: concept.name, alias: (aliasesByConcept.get(concept.id) ?? []).join('\n') },
+      fields: { name: concept.name, summary: concept.summary ?? '', alias: (aliasesByConcept.get(concept.id) ?? []).join('\n') },
       updatedAt: concept.updatedAt,
     })),
     ...input.units.map((unit) => ({
@@ -143,7 +143,7 @@ export function searchKnowledge(query: string, input: SearchInput, ftsRanks: Rea
     if (!document) return
     if (result.kind === 'concept') {
       const item = conceptsById.get(result.refId)
-      if (item && (result.field === 'name' || result.field === 'alias')) output.concepts.push({ item, field: result.field, relevance: result.relevance })
+      if (item && (result.field === 'name' || result.field === 'alias' || result.field === 'summary')) output.concepts.push({ item, field: result.field, relevance: result.relevance })
     } else if (result.kind === 'unit') {
       const item = unitsById.get(result.refId)
       if (item && (result.field === 'title' || result.field === 'summary')) output.units.push({ item, field: result.field, relevance: result.relevance })

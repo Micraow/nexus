@@ -363,6 +363,25 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
     })
   })
 
+  // Co-occurrence is a Session-level fact: a pair contributes once when both
+  // Concepts occur anywhere in the same conversation. This keeps long
+  // sessions with many KnowledgeUnits from artificially inflating weights.
+  const conceptsBySession = new Map<string, Set<string>>()
+  const addSessionConcepts = (sessionId: string, conceptIds: Iterable<string>): void => {
+    const set = conceptsBySession.get(sessionId) ?? new Set<string>()
+    for (const conceptId of conceptIds) if (conceptById.has(conceptId)) set.add(conceptId)
+    if (set.size) conceptsBySession.set(sessionId, set)
+  }
+  conceptsByUnit.forEach((conceptIds, unitId) => {
+    const unit = unitById.get(unitId)
+    if (unit) addSessionConcepts(unit.sessionId, conceptIds)
+  })
+  conceptsByMessage.forEach((conceptIds, messageId) => {
+    const message = input.messages.find((item) => item.id === messageId)
+    if (message) addSessionConcepts(message.sessionId, conceptIds)
+  })
+  ;(input.sessionConcepts ?? []).forEach((link) => addSessionConcepts(link.sessionId, [link.conceptId]))
+
   // Map each hidden descendant to its nearest visible ancestor.  This lets a
   // collapsed root retain an accurate aggregate unit count and co-occurrence
   // weight without exposing every leaf in the initial projection.
@@ -428,9 +447,12 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
       ensureUnitNode(unitId, conceptIds)
     }
 
-    // A unit contributes at most one count to each visible Concept pair.
-    // Endpoints are projected to the nearest visible ancestors, so several
-    // leaves below one root do not accidentally over-count the same unit.
+  }
+
+  // Project each Session's Concept set to visible ancestors and add one edge
+  // per pair. The edge weight therefore equals the number of Sessions in
+  // which the pair co-occurs, independent of unit/message multiplicity.
+  conceptsBySession.forEach((conceptIds) => {
     const projectedIds = new Set<string>()
     conceptIds.forEach((conceptId) => representativesFor(conceptId).forEach((representativeId) => projectedIds.add(representativeId)))
     const ids = [...projectedIds]
@@ -439,7 +461,7 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
         ensureEdge(conceptNode(ids[left]), conceptNode(ids[right]), 'co_occurrence')
       }
     }
-  }
+  })
 
   if (input.showMessages || input.showRetainedSessions || explicitExpandedIds.size) {
     const sessionsById = new Map((input.sessions ?? []).map((session) => [session.id, session]))
