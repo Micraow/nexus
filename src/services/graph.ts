@@ -40,6 +40,22 @@ function relationIsVisible(relation: ConceptRelation, showProposed: boolean): bo
 }
 
 /**
+ * Message-level Concept memberships are kept in metadata when a Message has
+ * not yet been assigned to a KnowledgeUnit.  Accept both the parsed object
+ * used by the store and a JSON string so callers constructing GraphInput
+ * directly get the same projection.
+ */
+function messageConceptIds(message: Message): string[] {
+  const metadata = typeof message.metadata === 'string'
+    ? (() => {
+        try { return JSON.parse(message.metadata as unknown as string) as Record<string, unknown> } catch { return null }
+      })()
+    : message.metadata
+  const ids = metadata && Array.isArray(metadata.concept_ids) ? metadata.concept_ids : []
+  return [...new Set(ids.filter((id): id is string => typeof id === 'string' && id.trim().length > 0).map((id) => id.trim()))]
+}
+
+/**
  * Build a hierarchy index from active concepts.  `related` edges are
  * deliberately excluded: they are undirected context links and must never
  * make a Concept look like a child (or hide it from the root projection).
@@ -287,6 +303,22 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
     conceptsByUnit.set(link.unitId, set)
   })
 
+  // Project metadata memberships onto a unit when one exists; otherwise keep
+  // them at Message level so unassigned messages remain discoverable in the
+  // graph and in Concept details before segmentation has run.
+  const conceptsByMessage = new Map<string, Set<string>>()
+  input.messages.forEach((message) => {
+    const ids = messageConceptIds(message).filter((id) => conceptById.has(id))
+    if (!ids.length) return
+    if (message.unitId && unitById.has(message.unitId)) {
+      const set = conceptsByUnit.get(message.unitId) ?? new Set<string>()
+      ids.forEach((id) => set.add(id))
+      conceptsByUnit.set(message.unitId, set)
+      return
+    }
+    conceptsByMessage.set(message.id, new Set(ids))
+  })
+
   // Map each hidden descendant to its nearest visible ancestor.  This lets a
   // collapsed root retain an accurate aggregate unit count and co-occurrence
   // weight without exposing every leaf in the initial projection.
@@ -380,6 +412,7 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
         && (session.knowledgeKind === 'unknown' || session.knowledgeRetainInGraph),
       )
       return input.showMessages || retained || (message.unitId != null && expandedUnitIds.has(message.unitId))
+        || [...(conceptsByMessage.get(message.id) ?? [])].some((conceptId) => hasExplicitExpandedAncestor(conceptId))
     })
     visibleMessages.forEach((message) => {
       const messageNodeId = `message:${message.id}`
@@ -395,6 +428,9 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
       nodes.push(messageNode)
       nodeById.set(messageNodeId, messageNode)
       if (message.unitId && visibleUnitIds.has(message.unitId)) ensureEdge(`unit:${message.unitId}`, messageNodeId, 'association')
+      ;(conceptsByMessage.get(message.id) ?? new Set<string>()).forEach((conceptId) => {
+        representativesFor(conceptId).forEach((representativeId) => ensureEdge(conceptNode(representativeId), messageNodeId, 'association'))
+      })
     })
     const messagesBySession = new Map<string, GraphNode[]>()
     visibleMessages.forEach((message) => {

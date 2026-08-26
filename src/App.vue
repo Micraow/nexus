@@ -51,6 +51,7 @@ import { saveTextFile } from '@/services/files'
 import type { SaveFileRequest } from '@/services/files'
 import { renderMarkdown } from '@/services/markdown'
 import { copyToClipboard } from '@/services/clipboard'
+import { parseMetadata } from '@/utils/metadata'
 import { invokeTauri, isTauriRuntime } from '@/services/tauri'
 import { useWorkspaceStore } from '@/stores/workspace'
 import type { AppConfig, Concept, GraphNodeType, KnowledgeUnit, LLMTask, MaintenanceSuggestion, Message, NavTreeNode, Session, TaskType } from '@/types/domain'
@@ -303,7 +304,13 @@ const selectedConceptUnits = computed(() => {
 })
 const selectedConceptMessages = computed(() => {
   const unitIds = new Set(selectedConceptUnits.value.map((unit) => unit.id))
-  return store.messages.filter((message) => message.unitId && unitIds.has(message.unitId)).sort((left, right) => left.orderInSession - right.orderInSession)
+  const conceptId = selectedConcept.value?.id
+  return store.messages.filter((message) => {
+    if (message.unitId && unitIds.has(message.unitId)) return true
+    if (!conceptId) return false
+    const declared = parseMetadata(message.metadata).concept_ids
+    return Array.isArray(declared) && declared.some((id) => id === conceptId)
+  }).sort((left, right) => left.orderInSession - right.orderInSession)
 })
 const otherConceptOf = (relation: { parentConceptId: string; childConceptId: string }, conceptId: string): string => (relation.childConceptId === conceptId ? relation.parentConceptId : relation.childConceptId)
 const selectedConceptParents = computed(() => selectedConcept.value ? store.relations.filter((relation) => relation.childConceptId === selectedConcept.value?.id && relation.relationType === 'hierarchy').sort((left, right) => linkedUnitCount(otherConceptOf(right, selectedConcept.value!.id)) - linkedUnitCount(otherConceptOf(left, selectedConcept.value!.id))) : [])

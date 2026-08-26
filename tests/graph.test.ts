@@ -135,6 +135,27 @@ describe('derived graph', () => {
     expect(snapshot.nodes.some((node) => node.id === 'message:m1')).toBe(true)
   })
 
+  it('projects multi-concept memberships from unassigned message metadata', () => {
+    const concepts = [
+      { id: 'c1', name: '主题一', normalizedName: '主题一', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+      { id: 'c2', name: '主题二', normalizedName: '主题二', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+    ]
+    const snapshot = buildGraph({
+      concepts,
+      units: [],
+      messages: [{
+        id: 'm1', sessionId: 's', unitId: null, role: 'user', content: '尚未分段的消息', orderInSession: 0,
+        metadata: { concept_ids: ['c1', 'c2'] },
+      }],
+      unitConcepts: [],
+      relations: [],
+      revision: 1,
+      expandedConceptIds: ['c1'],
+    })
+    expect(snapshot.nodes.some((node) => node.id === 'message:m1')).toBe(true)
+    expect(snapshot.edges.filter((edge) => edge.type === 'association' && edge.target === 'message:m1').map((edge) => edge.source).sort()).toEqual(['concept:c1', 'concept:c2'])
+  })
+
   it('shows only hierarchy roots by default and keeps related edges out of the hierarchy', () => {
     const concepts = [
       { id: 'root', name: '根', normalizedName: '根', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
