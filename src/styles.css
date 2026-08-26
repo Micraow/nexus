@@ -419,6 +419,9 @@ textarea { resize: vertical; }
 .md-body pre code.hljs .hljs-number, .md-body pre code.hljs .hljs-literal, .md-body pre code.hljs .hljs-symbol { color: #f2b880; }
 .md-body pre code.hljs .hljs-comment, .md-body pre code.hljs .hljs-quote { color: #8da2b5; font-style: italic; }
 .message-detail-content.md-body { margin-top: 0; padding: 12px; background: var(--surface-soft); border-radius: 6px; font-size: calc(13px * var(--app-font-scale)); }
+.message-context-actions { display: flex; gap: 7px; margin: 12px 0; }
+.message-context-actions .button { min-height: 32px; }
+.message-context-item { border-color: color-mix(in srgb, var(--primary) 38%, var(--line)); }
 
 .load-more-button { justify-self: start; min-height: 36px; margin-top: 10px; color: var(--primary-strong); }
 
@@ -443,6 +446,7 @@ textarea { resize: vertical; }
 .fullscreen-message-header { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; color: var(--muted); font-size: calc(12px * var(--app-font-scale)); }
 .fullscreen-message-header strong { color: var(--text); font-size: calc(13px * var(--app-font-scale)); }
 .fullscreen-message-header time { color: var(--faint); }
+.message-context-button { min-height: 27px; margin-left: auto; padding: 0 8px; font-size: calc(10px * var(--app-font-scale)); }
 .fullscreen-message .md-body { font-size: calc(16px * var(--app-font-scale)); line-height: 1.78; }
 .fullscreen-message .md-body h1 { font-size: calc(25px * var(--app-font-scale)); }.fullscreen-message .md-body h2 { font-size: calc(21px * var(--app-font-scale)); }.fullscreen-message .md-body h3 { font-size: calc(18px * var(--app-font-scale)); }.fullscreen-message .md-body h4, .fullscreen-message .md-body h5, .fullscreen-message .md-body h6 { font-size: calc(16px * var(--app-font-scale)); }
 .fullscreen-message.user { padding: 18px 22px; background: var(--primary-soft); border-radius: 10px 10px 3px 10px; }
