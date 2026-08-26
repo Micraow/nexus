@@ -600,3 +600,5 @@ body.fullscreen-active { overflow: hidden; }
   .relation-candidate-empty { align-items: flex-start; flex-direction: column; }
   .concept-editor-actions { flex-wrap: wrap; }
 }
+.relation-copy { min-width: 0; flex: 1 1 150px; display: grid; gap: 1px; }
+.relation-summary-text { overflow: hidden; color: var(--muted); font-size: calc(10px * var(--app-font-scale)); line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }

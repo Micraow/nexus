@@ -339,6 +339,10 @@ const conceptSearchCandidates = (query: string, excludedIds: Set<string>): Conce
     .filter((concept) => !excludedIds.has(concept.id) && concept.name.toLocaleUpperCase().includes(needle))
     .slice(0, 8)
 }
+const conceptSummary = (conceptId: string): string => {
+  const concept = store.concepts.find((item) => item.id === conceptId)
+  return concept?.summary?.trim() || concept?.notes?.trim().replace(/\s+/g, ' ').slice(0, 120) || '暂无摘要'
+}
 const conceptChildCandidates = computed(() => {
   const selectedId = selectedConcept.value?.id
   if (!selectedId) return []
@@ -1670,7 +1674,7 @@ onBeforeUnmount(() => {
         <section class="drawer-section concept-relations-section">
           <div class="subsection-title"><strong>父主题</strong><span>{{ selectedConceptParents.length }} 个，可多选</span></div>
           <div class="concept-relation-list">
-            <div v-for="relation in selectedConceptParents" :key="relation.id" class="concept-relation-row"><button class="relation-link" @click="openConcept(otherConceptOf(relation, selectedConcept!.id))">{{ conceptName(otherConceptOf(relation, selectedConcept!.id)) }}</button><span class="status-label" :class="relation.status === 'confirmed' ? 'label-success' : relation.status === 'proposed' ? 'label-warning' : 'label-neutral'">{{ relationStatusLabel(relation.status) }}</span><button class="icon-button relation-remove" title="移除父主题关系" aria-label="移除父主题关系" @click="deleteConceptRelation(relation.id)"><Trash2 :size="13" /></button></div>
+<div v-for="relation in selectedConceptParents" :key="relation.id" class="concept-relation-row"><div class="relation-copy"><button class="relation-link" @click="openConcept(otherConceptOf(relation, selectedConcept!.id))">{{ conceptName(otherConceptOf(relation, selectedConcept!.id)) }}</button><small class="relation-summary-text">{{ conceptSummary(otherConceptOf(relation, selectedConcept!.id)) }}</small></div><span class="status-label" :class="relation.status === 'confirmed' ? 'label-success' : relation.status === 'proposed' ? 'label-warning' : 'label-neutral'">{{ relationStatusLabel(relation.status) }}</span><button class="icon-button relation-remove" title="移除父主题关系" aria-label="移除父主题关系" @click="deleteConceptRelation(relation.id)"><Trash2 :size="13" /></button></div>
             <div v-if="!selectedConceptParents.length" class="empty-inline">暂无父主题；当前主题是层级根节点。</div>
           </div>
           <label class="field-label relation-search-label" for="concept-parent-search">添加父主题</label><div class="relation-search"><Search :size="14" /><input id="concept-parent-search" v-model="conceptParentQuery" placeholder="输入名称实时查找" autocomplete="off" /></div>
@@ -1679,7 +1683,7 @@ onBeforeUnmount(() => {
         <section class="drawer-section concept-relations-section">
           <div class="subsection-title"><strong>子主题</strong><span>{{ selectedConceptChildren.length }} 个，可多选</span></div>
           <div class="concept-relation-list">
-            <div v-for="relation in selectedConceptChildren" :key="relation.id" class="concept-relation-row"><button class="relation-link" @click="openConcept(otherConceptOf(relation, selectedConcept!.id))">{{ conceptName(otherConceptOf(relation, selectedConcept!.id)) }}</button><span class="status-label" :class="relation.status === 'confirmed' ? 'label-success' : relation.status === 'proposed' ? 'label-warning' : 'label-neutral'">{{ relationStatusLabel(relation.status) }}</span><button class="text-button relation-promote" title="提升到当前主题的上一级" @click="promoteSelectedChild(relation.id)"><ArrowUp :size="13" />提升</button><button class="icon-button relation-remove" title="移除子主题关系" aria-label="移除子主题关系" @click="deleteConceptRelation(relation.id)"><Trash2 :size="13" /></button></div>
+<div v-for="relation in selectedConceptChildren" :key="relation.id" class="concept-relation-row"><div class="relation-copy"><button class="relation-link" @click="openConcept(otherConceptOf(relation, selectedConcept!.id))">{{ conceptName(otherConceptOf(relation, selectedConcept!.id)) }}</button><small class="relation-summary-text">{{ conceptSummary(otherConceptOf(relation, selectedConcept!.id)) }}</small></div><span class="status-label" :class="relation.status === 'confirmed' ? 'label-success' : relation.status === 'proposed' ? 'label-warning' : 'label-neutral'">{{ relationStatusLabel(relation.status) }}</span><button class="text-button relation-promote" title="提升到当前主题的上一级" @click="promoteSelectedChild(relation.id)"><ArrowUp :size="13" />提升</button><button class="icon-button relation-remove" title="移除子主题关系" aria-label="移除子主题关系" @click="deleteConceptRelation(relation.id)"><Trash2 :size="13" /></button></div>
             <div v-if="!selectedConceptChildren.length" class="empty-inline">暂无子主题。</div>
           </div>
           <label class="field-label relation-search-label" for="concept-child-search">添加子主题</label><div class="relation-search"><Search :size="14" /><input id="concept-child-search" v-model="conceptChildQuery" placeholder="输入名称实时查找" autocomplete="off" @keyup.enter="createAndAddConceptChild" /></div>
