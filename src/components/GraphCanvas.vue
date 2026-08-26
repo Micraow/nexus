@@ -82,6 +82,7 @@ function render(): void {
     return (!event.ctrlKey || event.type === 'wheel') && !event.button
   }).on('zoom', (event) => {
     viewport.attr('transform', event.transform)
+    viewport.classed('show-detail-labels', event.transform.k >= 0.85)
     liveTransform = event.transform
     if (!restoringViewport) {
       if (!fittingProgrammatically) userMovedViewport = true
