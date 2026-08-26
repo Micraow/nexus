@@ -22,6 +22,7 @@ import type {
   GraphSnapshot,
   GraphLayoutEntry,
   GraphViewport,
+  GraphViewOptions,
   ImportPayload,
   ImportReport,
   KnowledgeUnit,
@@ -37,6 +38,8 @@ import type {
   UnitConcept,
 } from '@/types/domain'
 import type { GraphWorkerResponse } from '@/workers/graph.worker'
+
+export type { GraphViewOptions } from '@/types/domain'
 
 type Row = Record<string, unknown>
 
@@ -355,17 +358,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     refreshFromDb()
   }
 
-  interface GraphViewOptions {
-    showUnits?: boolean
-    showMessages?: boolean
-    showProposed?: boolean
-    showRetainedSessions?: boolean
-    expandedConceptIds?: string[]
-  }
-
   function graphCacheKey(options: GraphViewOptions): string {
     const expanded = [...(options.expandedConceptIds ?? [])].sort().join(',')
-    return `${graphRevision.value}:${options.showUnits ? 1 : 0}:${options.showMessages ? 1 : 0}:${options.showProposed ? 1 : 0}:${options.showRetainedSessions ? 1 : 0}:${expanded}`
+    const depth = options.expandedConceptDepth == null || !Number.isFinite(options.expandedConceptDepth)
+      ? ''
+      : String(Math.max(0, Math.floor(options.expandedConceptDepth)))
+    return `${graphRevision.value}:${options.showUnits ? 1 : 0}:${options.showMessages ? 1 : 0}:${options.showProposed ? 1 : 0}:${options.showRetainedSessions ? 1 : 0}:${depth}:${expanded}`
   }
 
   function applyGraphLayout(snapshot: GraphSnapshot): GraphSnapshot {

@@ -204,6 +204,24 @@ export interface ManualGraphEdge {
 export type GraphNodeType = 'concept' | 'unit' | 'message'
 export type GraphEdgeType = 'co_occurrence' | 'association' | 'conversation' | 'hierarchy' | 'related' | 'manual'
 
+/**
+ * Options used to derive a graph projection.
+ *
+ * Concept nodes are progressively disclosed: without an expansion list only
+ * hierarchy roots are returned.  An expanded concept reveals its direct
+ * children; expanding a child reveals the next level.  `expandedConceptDepth`
+ * is an optional convenience for callers that want a deterministic breadth
+ * projection instead of maintaining an id list themselves (0 = roots only).
+ */
+export interface GraphViewOptions {
+  showUnits?: boolean
+  showMessages?: boolean
+  showProposed?: boolean
+  showRetainedSessions?: boolean
+  expandedConceptIds?: string[]
+  expandedConceptDepth?: number
+}
+
 export interface GraphNode {
   id: string
   type: GraphNodeType
@@ -215,6 +233,18 @@ export interface GraphNode {
   x?: number
   y?: number
   fixed?: boolean
+  /** Minimum hierarchy depth from a root (root = 0). */
+  depth?: number
+  /** First hierarchy parent for consumers that only support a single parent. */
+  parentId?: string
+  /** All visible/known hierarchy parents; a Concept may have multiple parents. */
+  parentIds?: string[]
+  /** Root concepts reachable through hierarchy paths. */
+  rootIds?: string[]
+  /** Whether this Concept has at least one active hierarchy child. */
+  hasChildren?: boolean
+  /** Whether this Concept is currently in the expansion set. */
+  expanded?: boolean
 }
 
 export interface GraphEdge {

@@ -4,6 +4,7 @@ import type {
   GraphEdge,
   GraphNode,
   GraphSnapshot,
+  GraphViewOptions,
   KnowledgeUnit,
   ManualGraphEdge,
   Message,
@@ -11,7 +12,8 @@ import type {
   UnitConcept,
 } from '@/types/domain'
 
-export interface GraphInput {
+/** Inputs used by the worker and the synchronous graph fallback. */
+export interface GraphInput extends GraphViewOptions {
   concepts: Concept[]
   units: KnowledgeUnit[]
   messages: Message[]
@@ -20,35 +22,242 @@ export interface GraphInput {
   relations: ConceptRelation[]
   manualEdges?: ManualGraphEdge[]
   revision: number
-  showUnits?: boolean
-  showMessages?: boolean
-  showProposed?: boolean
-  showRetainedSessions?: boolean
-  expandedConceptIds?: string[]
+}
+
+// Keep the service-level import path available for existing consumers.
+export type { GraphViewOptions } from '@/types/domain'
+
+export interface ConceptHierarchyIndex {
+  parentsByChild: Map<string, Set<string>>
+  childrenByParent: Map<string, Set<string>>
+  roots: Set<string>
+  depthByConcept: Map<string, number>
+  rootIdsByConcept: Map<string, string[]>
+}
+
+function relationIsVisible(relation: ConceptRelation, showProposed: boolean): boolean {
+  return relation.status === 'confirmed' || (showProposed && relation.status === 'proposed')
+}
+
+/**
+ * Build a hierarchy index from active concepts.  `related` edges are
+ * deliberately excluded: they are undirected context links and must never
+ * make a Concept look like a child (or hide it from the root projection).
+ */
+function indexHierarchy(concepts: Concept[], relations: ConceptRelation[], showProposed: boolean): ConceptHierarchyIndex {
+  const activeIds = new Set(concepts.map((concept) => concept.id))
+  const parentsByChild = new Map<string, Set<string>>()
+  const childrenByParent = new Map<string, Set<string>>()
+
+  relations.forEach((relation) => {
+    if (relation.relationType !== 'hierarchy' || !relationIsVisible(relation, showProposed)) return
+    if (!activeIds.has(relation.parentConceptId) || !activeIds.has(relation.childConceptId)) return
+    if (relation.parentConceptId === relation.childConceptId) return
+    const parents = parentsByChild.get(relation.childConceptId) ?? new Set<string>()
+    parents.add(relation.parentConceptId)
+    parentsByChild.set(relation.childConceptId, parents)
+    const children = childrenByParent.get(relation.parentConceptId) ?? new Set<string>()
+    children.add(relation.childConceptId)
+    childrenByParent.set(relation.parentConceptId, children)
+  })
+
+  // A valid hierarchy is a DAG.  Imported/legacy data can still contain a
+  // cycle, so use the no-parent set when possible and fall back to all
+  // concepts if a malformed cycle would otherwise produce an empty graph.
+  const roots = new Set(concepts.filter((concept) => !parentsByChild.has(concept.id)).map((concept) => concept.id))
+  if (!roots.size && concepts.length) concepts.forEach((concept) => roots.add(concept.id))
+
+  const depthByConcept = new Map<string, number>()
+  const rootIdsByConcept = new Map<string, Set<string>>()
+  const queue: Array<{ id: string; depth: number; rootId: string }> = []
+  roots.forEach((rootId) => queue.push({ id: rootId, depth: 0, rootId }))
+  for (let queueIndex = 0; queueIndex < queue.length; queueIndex += 1) {
+    const current = queue[queueIndex]
+    const previousDepth = depthByConcept.get(current.id)
+    if (previousDepth == null || current.depth < previousDepth) depthByConcept.set(current.id, current.depth)
+    const rootIds = rootIdsByConcept.get(current.id) ?? new Set<string>()
+    rootIds.add(current.rootId)
+    rootIdsByConcept.set(current.id, rootIds)
+    ;(childrenByParent.get(current.id) ?? new Set<string>()).forEach((childId) => {
+      // Keep traversing alternate DAG paths, but stop a malformed cycle from
+      // continuously enqueueing the same root/path pair.
+      const childRoots = rootIdsByConcept.get(childId)
+      if (childRoots?.has(current.rootId) && (depthByConcept.get(childId) ?? Infinity) <= current.depth + 1) return
+      queue.push({ id: childId, depth: current.depth + 1, rootId: current.rootId })
+    })
+  }
+
+  // Concepts in an isolated cycle were not reached from a root fallback path;
+  // expose them as roots so a damaged import remains inspectable.
+  concepts.forEach((concept) => {
+    if (!depthByConcept.has(concept.id)) {
+      roots.add(concept.id)
+      depthByConcept.set(concept.id, 0)
+      rootIdsByConcept.set(concept.id, new Set([concept.id]))
+    }
+  })
+
+  return {
+    parentsByChild,
+    childrenByParent,
+    roots,
+    depthByConcept,
+    rootIdsByConcept: new Map([...rootIdsByConcept].map(([id, ids]) => [id, [...ids]])),
+  }
+}
+
+function finiteDepth(value: number | undefined): number | null {
+  if (value == null || !Number.isFinite(value)) return null
+  return Math.max(0, Math.floor(value))
+}
+
+/**
+ * Add all hierarchy ancestors required to make an explicitly expanded child
+ * reachable.  The returned set is only a visibility aid; callers should keep
+ * the original set around when deciding which units/messages to reveal.
+ */
+export function normalizeExpandedConceptIds(
+  expandedConceptIds: Iterable<string> | undefined,
+  hierarchy: Pick<ConceptHierarchyIndex, 'parentsByChild'>,
+  activeIds: Set<string>,
+): Set<string> {
+  const expanded = new Set<string>()
+  const explicit = [...(expandedConceptIds ?? [])].filter((id) => activeIds.has(id))
+  explicit.forEach((id) => expanded.add(id))
+  explicit.forEach((id) => {
+    const queue = [id]
+    const visited = new Set<string>()
+    for (let queueIndex = 0; queueIndex < queue.length; queueIndex += 1) {
+      const current = queue[queueIndex]
+      if (visited.has(current)) continue
+      visited.add(current)
+      ;(hierarchy.parentsByChild.get(current) ?? new Set<string>()).forEach((parentId) => {
+        if (!activeIds.has(parentId)) return
+        expanded.add(parentId)
+        queue.push(parentId)
+      })
+    }
+  })
+  return expanded
+}
+
+/**
+ * Resolve the Concept nodes visible in a progressive projection.
+ *
+ * Roots are always visible.  A parent reveals its direct children when it is
+ * expanded; `expandedConceptDepth` provides an optional global depth cap.  An
+ * explicitly expanded descendant implicitly reveals its ancestor path, while
+ * preserving the explicit set for local unit/message disclosure decisions.
+ */
+export function resolveVisibleConceptIds(
+  concepts: Concept[],
+  relations: ConceptRelation[],
+  options: Pick<GraphViewOptions, 'expandedConceptIds' | 'expandedConceptDepth' | 'showProposed'> = {},
+): { visibleIds: Set<string>; expandedIds: Set<string>; explicitExpandedIds: Set<string>; hierarchy: ConceptHierarchyIndex } {
+  const activeConcepts = concepts.filter((concept) => concept.status === 'active')
+  const activeIds = new Set(activeConcepts.map((concept) => concept.id))
+  const hierarchy = indexHierarchy(activeConcepts, relations, Boolean(options.showProposed))
+  const explicitExpandedIds = new Set([...(options.expandedConceptIds ?? [])].filter((id) => activeIds.has(id)))
+  const expandedIds = normalizeExpandedConceptIds(explicitExpandedIds, hierarchy, activeIds)
+  const depthLimit = finiteDepth(options.expandedConceptDepth)
+  const visibleIds = new Set<string>(hierarchy.roots)
+  const queue = [...hierarchy.roots]
+  const visited = new Set<string>()
+  for (let queueIndex = 0; queueIndex < queue.length; queueIndex += 1) {
+    const parentId = queue[queueIndex]
+    if (visited.has(parentId)) continue
+    visited.add(parentId)
+    const parentDepth = hierarchy.depthByConcept.get(parentId) ?? 0
+    const revealChildren = expandedIds.has(parentId) || (depthLimit != null && parentDepth < depthLimit)
+    if (!revealChildren) continue
+    ;(hierarchy.childrenByParent.get(parentId) ?? new Set<string>()).forEach((childId) => {
+      if (!activeIds.has(childId)) return
+      visibleIds.add(childId)
+      queue.push(childId)
+    })
+  }
+  // If a malformed cycle or a non-root expansion escaped the normal traversal,
+  // include its ancestor path and the requested node rather than dropping it.
+  expandedIds.forEach((id) => {
+    if (!activeIds.has(id)) return
+    visibleIds.add(id)
+    let current = id
+    const seen = new Set<string>()
+    while (!seen.has(current)) {
+      seen.add(current)
+      const parentId = [...(hierarchy.parentsByChild.get(current) ?? [])][0]
+      if (!parentId || !activeIds.has(parentId)) break
+      visibleIds.add(parentId)
+      current = parentId
+    }
+  })
+  return { visibleIds, expandedIds, explicitExpandedIds, hierarchy }
+}
+
+/** Return the nearest currently visible ancestor(s) for a Concept. */
+function visibleRepresentatives(
+  conceptId: string,
+  visibleIds: Set<string>,
+  parentsByChild: Map<string, Set<string>>,
+): string[] {
+  if (visibleIds.has(conceptId)) return [conceptId]
+  const queue: Array<{ id: string; distance: number }> = [{ id: conceptId, distance: 0 }]
+  const visited = new Set<string>()
+  let nearest = Infinity
+  const representatives = new Set<string>()
+  for (let queueIndex = 0; queueIndex < queue.length; queueIndex += 1) {
+    const current = queue[queueIndex]
+    if (visited.has(current.id) || current.distance > nearest) continue
+    visited.add(current.id)
+    ;(parentsByChild.get(current.id) ?? new Set<string>()).forEach((parentId) => {
+      const distance = current.distance + 1
+      if (visibleIds.has(parentId)) {
+        if (distance < nearest) {
+          nearest = distance
+          representatives.clear()
+        }
+        if (distance === nearest) representatives.add(parentId)
+      } else if (distance < nearest) {
+        queue.push({ id: parentId, distance })
+      }
+    })
+  }
+  return [...representatives]
 }
 
 export function buildGraph(input: GraphInput): GraphSnapshot {
   const activeConcepts = input.concepts.filter((concept) => concept.status === 'active')
   const conceptById = new Map(activeConcepts.map((concept) => [concept.id, concept]))
   const unitById = new Map(input.units.map((unit) => [unit.id, unit]))
-  const expandedConceptIds = new Set(input.expandedConceptIds ?? [])
-  const conceptsByUnit = new Map<string, Set<string>>()
-  input.unitConcepts.forEach((link) => {
-    if (!conceptById.has(link.conceptId) || !unitById.has(link.unitId)) return
-    const set = conceptsByUnit.get(link.unitId) ?? new Set<string>()
-    set.add(link.conceptId)
-    conceptsByUnit.set(link.unitId, set)
-  })
+  const { visibleIds, expandedIds, explicitExpandedIds, hierarchy } = resolveVisibleConceptIds(activeConcepts, input.relations, input)
+  const visibleConcepts = activeConcepts.filter((concept) => visibleIds.has(concept.id))
+  const visibleRepresentativesCache = new Map<string, string[]>()
+  const representativesFor = (conceptId: string): string[] => {
+    const cached = visibleRepresentativesCache.get(conceptId)
+    if (cached) return cached
+    const representatives = visibleRepresentatives(conceptId, visibleIds, hierarchy.parentsByChild)
+    visibleRepresentativesCache.set(conceptId, representatives)
+    return representatives
+  }
 
-  const nodes: GraphNode[] = activeConcepts.map((concept) => ({
-    id: `concept:${concept.id}`,
-    type: 'concept',
-    refId: concept.id,
-    label: concept.name,
-    subtitle: 'Concept',
-    degree: 0,
-    unitCount: 0,
-  }))
+  const nodes: GraphNode[] = visibleConcepts.map((concept) => {
+    const parentIds = [...(hierarchy.parentsByChild.get(concept.id) ?? [])].filter((id) => conceptById.has(id))
+    return {
+      id: `concept:${concept.id}`,
+      type: 'concept',
+      refId: concept.id,
+      label: concept.name,
+      subtitle: 'Concept',
+      degree: 0,
+      unitCount: 0,
+      depth: hierarchy.depthByConcept.get(concept.id) ?? 0,
+      parentIds,
+      parentId: parentIds[0],
+      rootIds: hierarchy.rootIdsByConcept.get(concept.id) ?? [concept.id],
+      hasChildren: (hierarchy.childrenByParent.get(concept.id)?.size ?? 0) > 0,
+      expanded: expandedIds.has(concept.id),
+    }
+  })
   const nodeById = new Map(nodes.map((node) => [node.id, node]))
   const edges: GraphEdge[] = []
   const edgeMap = new Map<string, GraphEdge>()
@@ -58,6 +267,9 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
     const existing = edgeMap.get(key)
     if (existing) {
       existing.weight += weight
+      // Preserve a confirmed status when a projected duplicate has mixed
+      // statuses; this keeps the edge styling conservative.
+      if (existing.status === 'proposed' && status === 'confirmed') existing.status = status
       return existing
     }
     const edge: GraphEdge = { id: `edge:${key}`, source, target, type, weight, status }
@@ -67,6 +279,29 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
   }
 
   const conceptNode = (id: string) => `concept:${id}`
+  const conceptsByUnit = new Map<string, Set<string>>()
+  input.unitConcepts.forEach((link) => {
+    if (!conceptById.has(link.conceptId) || !unitById.has(link.unitId)) return
+    const set = conceptsByUnit.get(link.unitId) ?? new Set<string>()
+    set.add(link.conceptId)
+    conceptsByUnit.set(link.unitId, set)
+  })
+
+  // Map each hidden descendant to its nearest visible ancestor.  This lets a
+  // collapsed root retain an accurate aggregate unit count and co-occurrence
+  // weight without exposing every leaf in the initial projection.
+  const unitIdsByVisibleConcept = new Map<string, Set<string>>()
+  conceptsByUnit.forEach((conceptIds, unitId) => {
+    conceptIds.forEach((conceptId) => {
+      representativesFor(conceptId).forEach((representativeId) => {
+        const units = unitIdsByVisibleConcept.get(representativeId) ?? new Set<string>()
+        units.add(unitId)
+        unitIdsByVisibleConcept.set(representativeId, units)
+      })
+    })
+  })
+  nodes.forEach((node) => { node.unitCount = unitIdsByVisibleConcept.get(node.refId)?.size ?? 0 })
+
   const visibleUnitIds = new Set<string>()
   const ensureUnitNode = (unitId: string, conceptIds: Set<string>): void => {
     if (visibleUnitIds.has(unitId)) return
@@ -74,52 +309,70 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
     if (!unit) return
     visibleUnitIds.add(unitId)
     const unitNodeId = `unit:${unit.id}`
-    nodes.push({
+    const unitNode: GraphNode = {
       id: unitNodeId,
       type: 'unit',
       refId: unit.id,
       label: unit.title || '待命名知识单元',
       subtitle: unit.summary || '尚未生成摘要',
-      degree: conceptIds.size,
+      degree: 0,
       unitCount: 0,
-    })
-    nodeById.set(unitNodeId, nodes[nodes.length - 1])
-    conceptIds.forEach((conceptId) => ensureEdge(conceptNode(conceptId), unitNodeId, 'association'))
+    }
+    nodes.push(unitNode)
+    nodeById.set(unitNodeId, unitNode)
+    const attached = new Set<string>()
+    conceptIds.forEach((conceptId) => representativesFor(conceptId).forEach((representativeId) => attached.add(representativeId)))
+    attached.forEach((conceptId) => ensureEdge(conceptNode(conceptId), unitNodeId, 'association'))
+  }
+
+  const explicitAncestorCache = new Map<string, boolean>()
+  const hasExplicitExpandedAncestor = (conceptId: string): boolean => {
+    const cached = explicitAncestorCache.get(conceptId)
+    if (cached != null) return cached
+    const queue = [conceptId]
+    const visited = new Set<string>()
+    for (let queueIndex = 0; queueIndex < queue.length; queueIndex += 1) {
+      const current = queue[queueIndex]
+      if (visited.has(current)) continue
+      visited.add(current)
+      if (explicitExpandedIds.has(current)) {
+        explicitAncestorCache.set(conceptId, true)
+        return true
+      }
+      ;(hierarchy.parentsByChild.get(current) ?? new Set<string>()).forEach((parentId) => queue.push(parentId))
+    }
+    explicitAncestorCache.set(conceptId, false)
+    return false
   }
 
   for (const [unitId, conceptIds] of conceptsByUnit) {
-    const ids = [...conceptIds]
-    ids.forEach((conceptId) => {
-      const concept = conceptById.get(conceptId)
-      if (concept) {
-        const node = nodeById.get(conceptNode(concept.id))
-        if (node) node.unitCount += 1
-      }
-    })
-    // A single unit can mention many topics without asserting that every pair
-    // is related. Only repeated co-occurrence is useful as a quiet background
-    // signal; direct semantic relations are stored separately below.
+    // A collapsed root can still expose all of its local units when explicitly
+    // expanded.  Global showUnits keeps the old behavior and shows every unit.
+    if (input.showUnits || [...conceptIds].some((conceptId) => hasExplicitExpandedAncestor(conceptId))) {
+      ensureUnitNode(unitId, conceptIds)
+    }
+
+    // A unit contributes at most one count to each visible Concept pair.
+    // Endpoints are projected to the nearest visible ancestors, so several
+    // leaves below one root do not accidentally over-count the same unit.
+    const projectedIds = new Set<string>()
+    conceptIds.forEach((conceptId) => representativesFor(conceptId).forEach((representativeId) => projectedIds.add(representativeId)))
+    const ids = [...projectedIds]
     for (let left = 0; left < ids.length; left += 1) {
       for (let right = left + 1; right < ids.length; right += 1) {
         ensureEdge(conceptNode(ids[left]), conceptNode(ids[right]), 'co_occurrence')
       }
     }
-    if (input.showUnits || ids.some((conceptId) => expandedConceptIds.has(conceptId))) {
-      ensureUnitNode(unitId, conceptIds)
-    }
   }
 
-  if (input.showMessages || input.showRetainedSessions || expandedConceptIds.size) {
+  if (input.showMessages || input.showRetainedSessions || explicitExpandedIds.size) {
     const sessionsById = new Map((input.sessions ?? []).map((session) => [session.id, session]))
     const expandedUnitIds = new Set<string>()
     conceptsByUnit.forEach((conceptIds, unitId) => {
-      if ([...conceptIds].some((conceptId) => expandedConceptIds.has(conceptId))) expandedUnitIds.add(unitId)
+      if ([...conceptIds].some((conceptId) => hasExplicitExpandedAncestor(conceptId))) expandedUnitIds.add(unitId)
     })
     const visibleMessages = input.messages.filter((message) => {
       const session = sessionsById.get(message.sessionId)
-      // Imported sessions remain `unknown` until triage completes. Treat them
-      // as unarchived here so users can inspect the original conversation
-      // chain before choosing an LLM mode or applying a classification.
       const retained = Boolean(
         input.showRetainedSessions
         && session
@@ -129,18 +382,19 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
       return input.showMessages || retained || (message.unitId != null && expandedUnitIds.has(message.unitId))
     })
     visibleMessages.forEach((message) => {
-        const messageNodeId = `message:${message.id}`
-        nodes.push({
-          id: messageNodeId,
-          type: 'message',
-          refId: message.id,
-          label: message.content.slice(0, 34) || '空消息',
-          subtitle: message.role,
-          degree: 0,
-          unitCount: 0,
-        })
-        nodeById.set(messageNodeId, nodes[nodes.length - 1])
-        if (message.unitId && visibleUnitIds.has(message.unitId)) ensureEdge(`unit:${message.unitId}`, messageNodeId, 'association')
+      const messageNodeId = `message:${message.id}`
+      const messageNode: GraphNode = {
+        id: messageNodeId,
+        type: 'message',
+        refId: message.id,
+        label: message.content.slice(0, 34) || '空消息',
+        subtitle: message.role,
+        degree: 0,
+        unitCount: 0,
+      }
+      nodes.push(messageNode)
+      nodeById.set(messageNodeId, messageNode)
+      if (message.unitId && visibleUnitIds.has(message.unitId)) ensureEdge(`unit:${message.unitId}`, messageNodeId, 'association')
     })
     const messagesBySession = new Map<string, GraphNode[]>()
     visibleMessages.forEach((message) => {
@@ -156,17 +410,28 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
     })
   }
 
+  // Hierarchy edges are only emitted when both endpoints are currently
+  // visible.  In particular, a collapsed child is represented by its visible
+  // ancestor rather than by a misleading parent→hidden-leaf edge.
   input.relations
-    .filter((relation) => relation.status === 'confirmed' || input.showProposed)
+    .filter((relation) => relation.relationType === 'hierarchy' && relationIsVisible(relation, Boolean(input.showProposed)))
     .forEach((relation) => {
-      if (!conceptById.has(relation.parentConceptId) || !conceptById.has(relation.childConceptId)) return
-      ensureEdge(
-        conceptNode(relation.parentConceptId),
-        conceptNode(relation.childConceptId),
-        relation.relationType,
-        1,
-        relation.status,
-      )
+      if (!visibleIds.has(relation.parentConceptId) || !visibleIds.has(relation.childConceptId)) return
+      ensureEdge(conceptNode(relation.parentConceptId), conceptNode(relation.childConceptId), 'hierarchy', 1, relation.status)
+    })
+
+  // Related edges remain undirected and never participate in hierarchy root
+  // detection.  If a related endpoint is collapsed, project it to its nearest
+  // visible ancestor so the root overview still retains that weak signal.
+  input.relations
+    .filter((relation) => relation.relationType === 'related' && relationIsVisible(relation, Boolean(input.showProposed)))
+    .forEach((relation) => {
+      const leftRepresentatives = representativesFor(relation.parentConceptId)
+      const rightRepresentatives = representativesFor(relation.childConceptId)
+      leftRepresentatives.forEach((leftId) => rightRepresentatives.forEach((rightId) => {
+        if (leftId === rightId) return
+        ensureEdge(conceptNode(leftId), conceptNode(rightId), 'related', 1, relation.status)
+      }))
     })
 
   input.manualEdges?.forEach((edge) => {
@@ -176,9 +441,6 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
     ensureEdge(source, target, 'manual', 1)
   })
 
-  // Co-occurrence is factual: concepts assigned to the same knowledge unit
-  // must remain visibly connected even when they only co-occur once. Explicit
-  // semantic relations stay separate through their own edge types.
   const degreeByNode = new Map<string, number>()
   edges.forEach((edge) => {
     degreeByNode.set(edge.source, (degreeByNode.get(edge.source) ?? 0) + 1)
