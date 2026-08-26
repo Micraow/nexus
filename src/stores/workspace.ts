@@ -637,7 +637,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const summaries = (conceptUnits.get(concept.id) ?? [])
         .map((id) => units.value.find((unit) => unit.id === id)?.summary?.trim())
         .filter(Boolean) as string[]
-      return summaries.slice(0, 2).join('；').slice(0, 240) || `关联 ${conceptUnits.get(concept.id)?.length ?? 0} 个知识单元`
+      const sessionSummaries = (conceptSessions.get(concept.id) ?? [])
+        .map((id) => activeSessions.value.find((session) => session.id === id)?.knowledgeJudgment?.trim())
+        .filter(Boolean) as string[]
+      return [...summaries, ...sessionSummaries].slice(0, 2).join('；').slice(0, 240) || `关联 ${conceptUnits.get(concept.id)?.length ?? 0} 个知识单元、${conceptSessions.get(concept.id)?.length ?? 0} 个会话`
     }
     const conceptRef = (concept: Concept) => ({ refID: concept.id, title: `知识主题：${concept.name}`, summary: conceptSummary(concept) })
     const unitRef = (unit: KnowledgeUnit) => ({ refID: unit.id, title: `知识单元：${unit.title || '未命名知识单元'}`, summary: (unit.summary || '').replace(/\s+/g, ' ').slice(0, 240) })

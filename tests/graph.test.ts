@@ -47,6 +47,34 @@ describe('derived graph', () => {
     expect(snapshot.edges.filter((edge) => edge.type === 'co_occurrence')).toHaveLength(1)
   })
 
+  it('counts Concept co-occurrence once per Session across units and direct memberships', () => {
+    const concepts = [
+      { id: 'a', name: 'A', normalizedName: 'A', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+      { id: 'b', name: 'B', normalizedName: 'B', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+    ]
+    const snapshot = buildGraph({
+      concepts,
+      sessions: [
+        { id: 's1', source: 'local', platform: 'local', title: '一', createdAt: now, updatedAt: now, messageCount: 0, unitCount: 2, knowledgeKind: 'knowledge', knowledgeRetainInGraph: true, revision: 1, localOnly: true },
+        { id: 's2', source: 'local', platform: 'local', title: '二', createdAt: now, updatedAt: now, messageCount: 0, unitCount: 0, knowledgeKind: 'knowledge', knowledgeRetainInGraph: true, revision: 1, localOnly: true },
+      ],
+      units: [
+        { id: 'u1', sessionId: 's1', title: 'U1', summary: '', orderInSession: 0, status: 'ready', revision: 1, createdAt: now, updatedAt: now },
+        { id: 'u2', sessionId: 's1', title: 'U2', summary: '', orderInSession: 1, status: 'ready', revision: 1, createdAt: now, updatedAt: now },
+      ],
+      messages: [],
+      unitConcepts: [
+        { unitId: 'u1', conceptId: 'a', source: 'llm', createdAt: now },
+        { unitId: 'u1', conceptId: 'b', source: 'llm', createdAt: now },
+        { unitId: 'u2', conceptId: 'a', source: 'llm', createdAt: now },
+      ],
+      sessionConcepts: [{ sessionId: 's2', conceptId: 'a', source: 'llm', createdAt: now }, { sessionId: 's2', conceptId: 'b', source: 'llm', createdAt: now }],
+      relations: [],
+      revision: 1,
+    })
+    expect(snapshot.edges.find((edge) => edge.type === 'co_occurrence')?.weight).toBe(2)
+  })
+
   it('shows expanded units for one concept without globally enabling units', () => {
     const snapshot = buildGraph({
       concepts: [{ id: 'c1', name: 'A', normalizedName: 'A', notes: '', status: 'active', createdAt: now, updatedAt: now }],
