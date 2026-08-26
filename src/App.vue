@@ -106,11 +106,19 @@ const welcomePhrases = [
   '你想先追踪哪一条知识线？',
   '今天想把什么想明白？',
 ]
+const welcomePhraseStorageKey = 'nexus:last-welcome-phrase-index'
 const welcomeText = ref('')
 let welcomeTimer: number | null = null
 let welcomeRun = 0
 let welcomePhraseQueue: number[] = []
-let lastWelcomePhraseIndex = -1
+let lastWelcomePhraseIndex = (() => {
+  try {
+    const value = Number(window.localStorage.getItem(welcomePhraseStorageKey))
+    return Number.isInteger(value) && value >= 0 && value < welcomePhrases.length ? value : -1
+  } catch {
+    return -1
+  }
+})()
 const providerDraft = ref({ id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', apiKey: '' })
 const graphLayoutNonce = ref(0)
 const selectedNavNodeId = ref<string | null>(null)
@@ -988,6 +996,11 @@ function nextWelcomePhrase(): string {
   }
   const phraseIndex = welcomePhraseQueue.shift() ?? 0
   lastWelcomePhraseIndex = phraseIndex
+  try {
+    window.localStorage.setItem(welcomePhraseStorageKey, String(phraseIndex))
+  } catch {
+    // 某些隐私模式会禁用本地存储，内存轮换仍然可用。
+  }
   return welcomePhrases[phraseIndex]
 }
 
