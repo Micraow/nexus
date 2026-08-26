@@ -52,7 +52,7 @@ import { renderMarkdown } from '@/services/markdown'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import { invokeTauri, isTauriRuntime } from '@/services/tauri'
 import { useWorkspaceStore } from '@/stores/workspace'
-import type { AppConfig, Concept, GraphNodeType, KnowledgeUnit, LLMTask, MaintenanceSuggestion, Message, NavTreeNode, Session } from '@/types/domain'
+import type { AppConfig, Concept, GraphNodeType, KnowledgeUnit, LLMTask, MaintenanceSuggestion, Message, NavTreeNode, Session, TaskType } from '@/types/domain'
 
 type ViewName = 'overview' | 'graph' | 'sessions' | 'concepts' | 'tasks' | 'settings'
 
@@ -72,6 +72,8 @@ const selectedConceptId = ref<string | null>(null)
 const selectedUnitId = ref<string | null>(null)
 const selectedMessageId = ref<string | null>(null)
 const selectedTaskId = ref<string | null>(null)
+const promptTaskId = ref<string | null>(null)
+const taskFeedback = ref<{ tone: 'error' | 'info'; text: string } | null>(null)
 const graphShowUnits = ref(false)
 const graphShowMessages = ref(false)
 const graphShowProposed = ref(false)
@@ -98,6 +100,7 @@ const composerIncludeFull = ref(false)
 const composerSourceUnitIds = ref<string[]>([])
 const composerSourceMessageIds = ref<string[]>([])
 const composerFollowUp = ref<{ sessionId: string; nodeId: string; label: string } | null>(null)
+const activeConversationSessionId = ref<string | null>(null)
 const customPhraseDraft = ref('')
 const editingPhraseId = ref<string | null>(null)
 const welcomePhrases = [
@@ -132,6 +135,9 @@ const databasePathDraft = ref('')
 const visibleSessionCount = ref(40)
 const visibleConceptCount = ref(60)
 const visibleCompletedTaskCount = ref(30)
+const taskTypeFilter = ref<TaskType | 'all'>('all')
+const taskStatusFilter = ref<'all' | 'active' | 'review' | 'completed'>('all')
+const taskSort = ref<'created_desc' | 'created_asc' | 'status'>('created_desc')
 let viewportSaveTimer: number | null = null
 
 const fontStacks: Record<string, string> = {
@@ -211,6 +217,33 @@ const selectedConcept = computed(() => store.concepts.find((concept) => concept.
 const selectedUnit = computed(() => store.units.find((unit) => unit.id === selectedUnitId.value) ?? null)
 const selectedMessage = computed(() => store.messages.find((message) => message.id === selectedMessageId.value) ?? null)
 const selectedTask = computed(() => store.tasks.find((task) => task.id === selectedTaskId.value) ?? null)
+const promptTask = computed(() => promptTaskId.value ? store.tasks.find((task) => task.id === promptTaskId.value) ?? null : null)
+const activeConversationSession = computed(() => activeConversationSessionId.value ? store.sessions.find((session) => session.id === activeConversationSessionId.value) ?? null : null)
+const activeConversationMessages = computed(() => activeConversationSessionId.value
+  ? store.messages.filter((message) => message.sessionId === activeConversationSessionId.value).sort((left, right) => left.orderInSession - right.orderInSession)
+  : [])
+const activeConversationNodes = computed(() => activeConversationSessionId.value
+  ? store.navNodes.filter((node) => node.sessionId === activeConversationSessionId.value)
+  : [])
+const activeConversationRoot = computed(() => activeConversationNodes.value.find((node) => !node.parentId) ?? null)
+const conversationNavTrail = computed(() => {
+  const selected = activeConversationNodes.value.find((node) => node.id === selectedNavNodeId.value) ?? activeConversationRoot.value
+  if (!selected) return [] as NavTreeNode[]
+  const byId = new Map(activeConversationNodes.value.map((node) => [node.id, node]))
+  const trail: NavTreeNode[] = []
+  let current: NavTreeNode | undefined = selected
+  while (current) {
+    trail.unshift(current)
+    current = current.parentId ? byId.get(current.parentId) : undefined
+  }
+  return trail
+})
+const activeConversationTask = computed(() => {
+  if (!activeConversationSessionId.value) return null
+  return store.tasks
+    .filter((task) => task.type === 'conversation' && task.inputRevision.startsWith(`${activeConversationSessionId.value}:`))
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0] ?? null
+})
 const fullscreenSession = computed(() => {
   const target = fullscreenTarget.value
   return target?.kind === 'session' ? store.sessions.find((session) => session.id === target.sessionId) ?? null : null
@@ -264,10 +297,38 @@ const selectedConceptRelated = computed(() => selectedConcept.value ? store.rela
 const sessionUnits = computed(() => selectedSession.value ? store.units.filter((unit) => unit.sessionId === selectedSession.value?.id).sort((a, b) => a.orderInSession - b.orderInSession) : [])
 const rootNavNode = computed(() => selectedSession.value ? store.navNodes.find((node) => node.sessionId === selectedSession.value?.id && !node.parentId) ?? null : null)
 const sessionMessages = computed(() => selectedSession.value ? store.messages.filter((message) => message.sessionId === selectedSession.value?.id).sort((a, b) => a.orderInSession - b.orderInSession) : [])
+const taskTypeOptions: Array<{ value: TaskType; label: string }> = [
+  { value: 'session_triage', label: '会话分类' },
+  { value: 'segmentation', label: '对话分段' },
+  { value: 'concept_extraction', label: '知识主题提取' },
+  { value: 'unit_metadata', label: '标题与摘要生成' },
+  { value: 'title', label: '标题生成（旧任务）' },
+  { value: 'summary', label: '摘要生成（旧任务）' },
+  { value: 'origin_concepts', label: '起始知识主题' },
+  { value: 'conversation', label: '对话' },
+  { value: 'maintenance', label: '维护建议' },
+]
+const visibleTasks = computed(() => {
+  const filtered = store.tasks.filter((task) => {
+    if (taskTypeFilter.value !== 'all' && task.type !== taskTypeFilter.value) return false
+    if (taskStatusFilter.value === 'active' && !['pending', 'running'].includes(task.status)) return false
+    if (taskStatusFilter.value === 'review' && task.status !== 'needs_review') return false
+    if (taskStatusFilter.value === 'completed' && !['success', 'failed', 'stale', 'cancelled'].includes(task.status)) return false
+    return true
+  })
+  return [...filtered].sort((left, right) => {
+    if (taskSort.value === 'status') {
+      const rank: Record<string, number> = { running: 0, pending: 1, needs_review: 2, failed: 3, stale: 4, cancelled: 5, success: 6 }
+      return (rank[left.status] ?? 9) - (rank[right.status] ?? 9) || right.createdAt.localeCompare(left.createdAt)
+    }
+    const order = right.createdAt.localeCompare(left.createdAt)
+    return taskSort.value === 'created_desc' ? order : -order
+  })
+})
 const taskGroups = computed(() => ({
-  active: store.tasks.filter((task) => ['pending', 'running'].includes(task.status)),
-  review: store.tasks.filter((task) => task.status === 'needs_review'),
-  completed: store.tasks.filter((task) => ['success', 'failed', 'stale', 'cancelled'].includes(task.status)),
+  active: visibleTasks.value.filter((task) => ['pending', 'running'].includes(task.status)),
+  review: visibleTasks.value.filter((task) => task.status === 'needs_review'),
+  completed: visibleTasks.value.filter((task) => ['success', 'failed', 'stale', 'cancelled'].includes(task.status)),
 }))
 const queueEstimate = computed(() => {
   const pending = store.tasks.filter((task) => task.mode === 'api' && task.status === 'pending')
@@ -561,6 +622,8 @@ function openComposer(input: { topicId?: string | null; sourceUnitIds?: string[]
 
 /** Bring the current context selection to the persistent new-chat surface. */
 function openContextComposer(): void {
+  activeConversationSessionId.value = null
+  selectedNavNodeId.value = null
   composerFollowUp.value = null
   composerTopicId.value = selectedConceptId.value
   composerSourceUnitIds.value = [...store.selectedContextIds]
@@ -603,8 +666,17 @@ function submitComposer(): void {
       })
       composerOpen.value = false
       selectedTaskId.value = taskId
-      setView('tasks')
-      notify('追问已创建，回答将挂到当前探索分支')
+      activeConversationSessionId.value = composerFollowUp.value.sessionId
+      selectedNavNodeId.value = composerFollowUp.value.nodeId
+      setView('overview')
+      const task = store.tasks.find((item) => item.id === taskId)
+      if (task?.mode === 'api') {
+        notify('正在请求 API，回答会回到当前对话')
+        void executeApiTask(task)
+      } else {
+        promptTaskId.value = taskId
+        notify('请在右侧浮层中复制 Prompt，并粘贴返回结果')
+      }
     } catch (error) {
       notify(error instanceof Error ? error.message : '追问创建失败')
     }
@@ -623,11 +695,96 @@ function submitComposer(): void {
     store.clearContext()
     composerOpen.value = false
     if (task) selectedTaskId.value = task.id
-    setView('tasks')
-    notify('新对话已创建，等待执行')
+    activeConversationSessionId.value = targetSessionId
+    selectedNavNodeId.value = store.navNodes.find((node) => node.sessionId === targetSessionId && !node.parentId)?.id ?? null
+    setView('overview')
+    if (task?.mode === 'api') {
+      notify('正在请求 API，回答会回到当前对话')
+      void executeApiTask(task)
+    } else if (task) {
+      promptTaskId.value = task.id
+      notify('请在右侧浮层中复制 Prompt，并粘贴返回结果')
+    }
   } catch (error) {
     notify(error instanceof Error ? error.message : '新对话创建失败')
   }
+}
+
+function openConversationSession(sessionId: string): void {
+  const session = store.sessions.find((item) => item.id === sessionId)
+  if (!session || session.source !== 'in_app') return
+  activeConversationSessionId.value = sessionId
+  store.setSelectedSession(sessionId)
+  const nodes = store.navNodes.filter((node) => node.sessionId === sessionId).sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+  selectedNavNodeId.value = nodes[0]?.id ?? null
+  selectedConceptId.value = null
+  selectedUnitId.value = null
+  selectedMessageId.value = null
+  setView('overview')
+}
+
+function leaveConversationSession(): void {
+  activeConversationSessionId.value = null
+  selectedNavNodeId.value = null
+  composerQuestion.value = ''
+  setView('overview')
+}
+
+function startConversationFollowUp(): void {
+  const session = activeConversationSession.value
+  if (!session) return
+  const node = activeConversationNodes.value.find((item) => item.id === selectedNavNodeId.value)
+    ?? activeConversationNodes.value.slice().sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]
+  if (!node) return notify('当前会话还没有可继续的探索节点')
+  composerFollowUp.value = { sessionId: session.id, nodeId: node.id, label: node.label }
+  composerTopicId.value = node.triggerConceptId ?? null
+  composerSourceUnitIds.value = [...store.selectedContextIds]
+  composerSourceMessageIds.value = [...store.selectedContextMessageIds]
+  composerIncludeFull.value = contextIncludeFull.value
+  submitComposer()
+}
+
+function goConversationBack(): void {
+  const current = activeConversationNodes.value.find((node) => node.id === selectedNavNodeId.value)
+  if (current?.parentId) {
+    selectedNavNodeId.value = current.parentId
+    return
+  }
+  leaveConversationSession()
+}
+
+function openPromptTask(task: LLMTask): void {
+  promptTaskId.value = task.id
+  const targetSessionId = task.inputRevision.split(':')[0]
+  if (task.type === 'conversation' && store.sessions.some((session) => session.id === targetSessionId)) {
+    activeConversationSessionId.value = targetSessionId
+    store.setSelectedSession(targetSessionId)
+  }
+}
+
+function closePromptTask(): void {
+  promptTaskId.value = null
+}
+
+function applyPromptTask(): void {
+  const task = promptTask.value
+  if (!task) return
+  const beforeStatus = task.status
+  applyTask(task)
+  const updated = store.tasks.find((item) => item.id === task.id)
+  if (updated?.status === 'success' && beforeStatus !== 'success') {
+    promptTaskId.value = null
+    if (task.type === 'conversation') {
+      activeConversationSessionId.value = task.inputRevision.split(':')[0]
+      store.setSelectedSession(activeConversationSessionId.value)
+    }
+  }
+}
+
+function openTaskConversation(task: LLMTask): void {
+  if (task.type !== 'conversation') return
+  const sessionId = task.inputRevision.split(':')[0]
+  openConversationSession(sessionId)
 }
 
 function openNodeComposer(node: NavTreeNode): void {
@@ -801,6 +958,16 @@ function taskTypeLabel(type: LLMTask['type']): string {
   return ({ session_triage: '会话分类', segmentation: '对话分段', concept_extraction: '知识主题提取', unit_metadata: '标题与摘要生成', title: '标题生成（旧任务）', summary: '摘要生成（旧任务）', origin_concepts: '起始知识主题', conversation: '对话', maintenance: '维护建议' } as Record<string, string>)[type]
 }
 
+function taskValidationErrors(task: LLMTask): string[] {
+  if (!task.validationErrors) return task.errorMessage ? [task.errorMessage] : []
+  try {
+    const value: unknown = JSON.parse(task.validationErrors)
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [task.validationErrors]
+  } catch {
+    return [task.validationErrors]
+  }
+}
+
 function taskResponse(task: LLMTask): string {
   return taskDrafts.value[task.id] ?? task.response ?? ''
 }
@@ -811,18 +978,23 @@ function setTaskDraft(taskId: string, value: string): void {
 
 function applyTask(task: LLMTask): void {
   const response = taskResponse(task)
-  if (!response.trim()) return notify('请先粘贴 LLM 返回结果')
+  if (!response.trim()) {
+    taskFeedback.value = { tone: 'error', text: '没有检测到回复，请粘贴网页端返回的完整 JSON 后重试。' }
+    return
+  }
   const result = store.applyTaskResult(task.id, response)
   if (result.ok) {
+    taskFeedback.value = null
     notify(task.type === 'segmentation' ? '分段结果已校验并写入知识库' : task.type === 'maintenance' ? '维护建议已校验，请逐条确认应用' : '结构化结果已校验并写入知识库')
     if (task.type !== 'maintenance') selectedTaskId.value = null
-  } else notify(result.errors[0] ?? '校验失败，请修正后重试')
+  } else taskFeedback.value = { tone: 'error', text: result.errors.join('；') || '校验失败，请按提示修正后重试。' }
 }
 
 async function executeApiTask(task: LLMTask): Promise<void> {
+  taskFeedback.value = null
   const result = await store.executeTask(task.id)
   if (result.ok) notify('API 任务已完成')
-  else notify(result.error ?? 'API 任务失败')
+  else taskFeedback.value = { tone: 'error', text: result.error ?? 'API 任务失败，请检查连接配置后重试。' }
 }
 
 function startTaskQueue(): void {
@@ -842,6 +1014,7 @@ function resumeTaskQueue(): void {
 
 function retryTask(task: LLMTask): void {
   store.retryTask(task.id)
+  taskFeedback.value = null
   notify('任务已重新排队')
 }
 
@@ -1175,18 +1348,45 @@ onBeforeUnmount(() => {
           <button v-if="store.queueRunning && !store.queuePaused" class="button secondary-button" @click="pauseTaskQueue"><Pause :size="14" />暂停</button>
           <button v-if="store.queueRunning && store.queuePaused" class="button secondary-button" @click="resumeTaskQueue"><Play :size="14" />继续</button>
         </div>
+        <div v-if="activeView === 'tasks'" class="task-filter-toolbar" aria-label="任务筛选与排序">
+          <label><span>类型</span><select v-model="taskTypeFilter" aria-label="按任务类型筛选"><option value="all">全部类型</option><option v-for="option in taskTypeOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
+          <label><span>状态</span><select v-model="taskStatusFilter" aria-label="按任务状态筛选"><option value="all">全部状态</option><option value="active">待处理与运行中</option><option value="review">需要检查</option><option value="completed">已完成与失败</option></select></label>
+          <label><span>排序</span><select v-model="taskSort" aria-label="任务排序方式"><option value="created_desc">最新创建</option><option value="created_asc">最早创建</option><option value="status">按处理状态</option></select></label>
+          <span class="task-filter-count">显示 {{ visibleTasks.length }} / {{ store.tasks.length }}</span>
+        </div>
         <div v-if="activeView === 'tasks' && selectedTask" class="task-command-bar">
           <span>{{ selectedTask.scopeLabel || taskTypeLabel(selectedTask.type) }}</span>
           <button v-if="selectedTask.mode === 'api' && ['pending', 'failed', 'needs_review'].includes(selectedTask.status)" class="button primary-button" @click="selectedTask.status === 'pending' ? executeApiTask(selectedTask) : retryTask(selectedTask)"><Send :size="14" />{{ selectedTask.status === 'pending' ? '执行任务' : '重试任务' }}</button>
           <button v-if="['failed', 'needs_review', 'stale', 'cancelled'].includes(selectedTask.status)" class="button secondary-button" @click="retryTask(selectedTask)"><RefreshCw :size="14" />重新排队</button>
           <button v-if="['pending', 'running'].includes(selectedTask.status)" class="button secondary-button" @click="cancelTask(selectedTask)"><X :size="14" />取消</button>
+          <button v-if="selectedTask.mode === 'prompt_paste' && selectedTask.status !== 'success'" class="button secondary-button" @click="openPromptTask(selectedTask)"><Clipboard :size="14" />右侧 Prompt 浮层</button>
+          <button v-if="selectedTask.type === 'conversation'" class="button secondary-button" @click="openTaskConversation(selectedTask)"><MessageSquare :size="14" />回到对话</button>
         </div>
         <div v-if="store.configWarning" class="feedback-banner feedback-warning"><CircleHelp :size="16" /><span>{{ store.configWarning }}</span><button class="icon-button" aria-label="关闭配置提示" @click="store.configWarning = null"><X :size="15" /></button></div>
+        <div v-if="taskFeedback" class="feedback-banner feedback-error" role="alert"><CircleHelp :size="16" /><span>{{ taskFeedback.text }}</span><button class="icon-button" aria-label="关闭任务错误提示" @click="taskFeedback = null"><X :size="15" /></button></div>
         <div v-if="importFeedback" class="feedback-banner" :class="`feedback-${importFeedback.tone}`"><Check v-if="importFeedback.tone === 'success'" :size="16" /><CircleHelp v-else :size="16" /><span>{{ importFeedback.text }}</span><div v-if="pendingImportRaw" class="feedback-actions"><button class="text-button" @click="resolveChangedImport('replace')">更新变化会话</button><button class="text-button" @click="resolveChangedImport('new')">作为新会话</button><button class="text-button" @click="resolveChangedImport('skip')">跳过</button></div><button class="icon-button" aria-label="关闭提示" @click="importFeedback = null; pendingImportRaw = null"><X :size="15" /></button></div>
+        <div v-if="activeView === 'tasks' && store.tasks.length && !visibleTasks.length" class="feedback-banner feedback-info"><CircleHelp :size="16" /><span>当前筛选没有匹配任务。</span><button class="text-button" @click="taskTypeFilter = 'all'; taskStatusFilter = 'all'">清除筛选</button></div>
+        <div v-if="activeView === 'tasks' && store.tasks.length && !visibleTasks.length" class="feedback-banner feedback-info"><CircleHelp :size="16" /><span>当前筛选没有匹配任务。</span><button class="text-button" @click="taskTypeFilter = 'all'; taskStatusFilter = 'all'">清除筛选</button></div>
 
         <section v-if="activeView === 'overview'" class="view-panel overview-view">
           <section class="new-chat-panel surface-section">
-            <div class="chat-home">
+            <div v-if="activeConversationSession" class="chat-conversation-workspace">
+              <header class="conversation-workspace-header">
+                <div class="conversation-heading"><button class="icon-button" aria-label="返回上一级探索" title="返回上一级探索" @click="goConversationBack"><ArrowLeft :size="17" /></button><div><span class="eyebrow">ACTIVE CONVERSATION</span><h2>{{ activeConversationSession.title }}</h2><span>{{ activeConversationMessages.length }} 条消息 · {{ activeConversationTask?.status === 'running' ? '正在思考…' : activeConversationTask?.status === 'pending' ? '等待处理' : '本地会话' }}</span></div></div>
+                <div class="conversation-header-actions"><button class="button secondary-button" @click="openFullscreenSession(activeConversationSession.id)"><Maximize2 :size="15" />全屏</button><button class="icon-button" aria-label="结束当前对话" title="回到新对话首页" @click="leaveConversationSession"><MessageSquarePlus :size="17" /></button></div>
+              </header>
+              <nav v-if="conversationNavTrail.length" class="conversation-breadcrumbs" aria-label="探索路径"><button v-for="node in conversationNavTrail" :key="node.id" class="breadcrumb-node" :class="{ current: node.id === selectedNavNodeId }" @click="selectedNavNodeId = node.id">{{ node.label }}</button></nav>
+              <div class="conversation-layout">
+                <aside class="conversation-minimap" aria-label="探索树小地图"><div class="minimap-heading"><GitBranch :size="14" /><span>探索树</span></div><NavTree :nodes="activeConversationNodes.filter((node) => !node.parentId)" :node-units="store.navNodeUnits" :units="store.units" :selected-node-id="selectedNavNodeId" @select-node="(node) => selectedNavNodeId = node.id" @ask="(node) => { selectedNavNodeId = node.id; composerFollowUp = { sessionId: node.sessionId, nodeId: node.id, label: node.label }; composerTopicId = node.triggerConceptId ?? null; composerQuestion = ''; }" /></aside>
+                <div class="conversation-scroll" role="log" aria-live="polite">
+                  <article v-for="message in activeConversationMessages" :key="message.id" class="conversation-message" :class="message.role"><div class="conversation-message-meta"><strong>{{ message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : '系统' }}</strong><span>消息 #{{ message.orderInSession + 1 }}</span><button class="icon-button" aria-label="全屏查看消息" title="全屏查看消息" @click="openFullscreenMessage(message.id)"><Maximize2 :size="14" /></button></div><div class="md-body" v-html="renderedMessageContent(message.content)" @click="handleRenderedClick" @keydown.enter.prevent="handleRenderedClick" /></article>
+                  <div v-if="activeConversationTask?.status === 'running'" class="conversation-thinking"><LoaderCircle class="spin" :size="16" />AI 正在处理这次提问…</div>
+                  <div v-if="!activeConversationMessages.length" class="empty-state compact"><MessageSquare :size="26" /><strong>等待第一条回答</strong><span>回答完成后会显示在这里。</span></div>
+                  <div class="conversation-composer"><textarea v-model="composerQuestion" rows="3" aria-label="继续当前对话" placeholder="继续追问…" @keydown.ctrl.enter.prevent="startConversationFollowUp" @keydown.meta.enter.prevent="startConversationFollowUp" /><div class="conversation-composer-footer"><span>{{ store.config.llm.mode === 'api' ? 'API 会直接执行' : 'Prompt 会在右侧浮层中处理' }}</span><button class="send-button" aria-label="发送追问" :disabled="!composerQuestion.trim() || activeConversationTask?.status === 'running'" @click="startConversationFollowUp"><Send :size="17" /></button></div></div>
+                </div>
+              </div>
+            </div>
+            <div v-else class="chat-home">
               <div class="chat-welcome"><div class="chat-welcome-mark"><img :src="nexusLogo" alt="" /></div><h2 aria-live="polite">{{ welcomeText }}<span class="chat-welcome-caret" aria-hidden="true" /></h2><p>从一个问题开始，或把已有知识带进新的对话。</p></div>
               <div class="chat-composer" :class="{ focused: composerQuestion.length }">
                 <textarea v-model="composerQuestion" rows="4" placeholder="输入消息…" aria-label="新对话问题" @keydown.ctrl.enter.prevent="submitComposer" @keydown.meta.enter.prevent="submitComposer"></textarea>
@@ -1202,8 +1402,8 @@ onBeforeUnmount(() => {
               <div class="chat-status-line"><span>{{ store.config.llm.mode === 'api' ? 'API 模式' : store.config.llm.mode === 'prompt_paste' ? 'Prompt 粘贴模式' : '选择模式后即可发送' }}</span><button v-if="!store.config.llm.mode" class="text-button" @click="setView('settings')">去设置</button><span class="chat-local-note">内容默认只保存在本机</span></div>
             </div>
           </section>
-          <div class="overview-support-grid">
-            <section class="surface-section support-card"><div class="section-heading"><div><span class="eyebrow">RECENT SESSIONS</span><h3>最近会话</h3></div><button class="text-button" @click="setView('sessions')">查看全部 <ArrowRight :size="14" /></button></div><div class="recent-list"><button v-for="session in store.activeSessions.slice(0, 4)" :key="session.id" class="recent-row" @click="selectSession(session.id)"><div class="session-avatar"><History :size="15" /></div><div class="row-main"><strong>{{ session.title }}</strong><span>{{ session.platform }} · {{ session.messageCount }} 条消息 · {{ session.unitCount }} 个知识单元</span></div><ChevronRight :size="16" /></button><div v-if="!store.activeSessions.length" class="empty-inline">还没有会话，先提出你的第一个问题。</div></div></section>
+          <div v-if="!activeConversationSession" class="overview-support-grid">
+            <section class="surface-section support-card"><div class="section-heading"><div><span class="eyebrow">RECENT SESSIONS</span><h3>最近会话</h3></div><button class="text-button" @click="setView('sessions')">查看全部 <ArrowRight :size="14" /></button></div><div class="recent-list"><button v-for="session in store.activeSessions.slice(0, 4)" :key="session.id" class="recent-row" @click="session.source === 'in_app' ? openConversationSession(session.id) : selectSession(session.id)"><div class="session-avatar"><History :size="15" /></div><div class="row-main"><strong>{{ session.title }}</strong><span>{{ session.platform }} · {{ session.messageCount }} 条消息 · {{ session.unitCount }} 个知识单元</span></div><ChevronRight :size="16" /></button><div v-if="!store.activeSessions.length" class="empty-inline">还没有会话，先提出你的第一个问题。</div></div></section>
             <section class="surface-section support-card"><div class="section-heading"><div><span class="eyebrow">YOUR LIBRARY</span><h3>知识库状态</h3></div><BookOpen :size="19" /></div><div class="mini-metrics"><div><strong>{{ store.stats.sessions }}</strong><span>会话</span></div><div><strong>{{ store.stats.units }}</strong><span>知识单元</span></div><div><strong>{{ store.stats.concepts }}</strong><span>知识主题</span></div></div><div class="support-actions"><button class="button secondary-button" @click="triggerImport"><Upload :size="15" />导入历史对话</button><button class="button ghost-button" @click="setView('graph')"><Network :size="15" />查看知识图谱</button></div></section>
           </div>
         </section>
@@ -1302,6 +1502,14 @@ onBeforeUnmount(() => {
         </div>
         <div class="composer-context"><div class="subsection-title"><strong>上下文来源</strong><span>{{ composerSourceUnitIds.length }} 个知识单元 · {{ composerSourceMessageIds.length }} 条消息</span></div><div v-if="composerSourceUnitIds.length || composerSourceMessageIds.length" class="composer-context-list"><span v-for="unitId in composerSourceUnitIds" :key="unitId" class="soft-tag">{{ store.units.find((unit) => unit.id === unitId)?.title || '待命名知识单元' }}</span><span v-for="messageId in composerSourceMessageIds" :key="messageId" class="soft-tag">消息 #{{ (store.messages.find((message) => message.id === messageId)?.orderInSession ?? 0) + 1 }}</span></div><p v-else class="muted">未选择上下文，将只使用问题和知识主题。</p><div class="context-budget" :class="{ over: composerTokenEstimate > store.config.llm.tokenBudget }"><span>预计输入</span><strong>{{ composerTokenEstimate.toLocaleString() }} tokens</strong><small>预算 {{ store.config.llm.tokenBudget.toLocaleString() }} tokens{{ composerTokenEstimate > store.config.llm.tokenBudget ? ' · 请减少上下文' : '' }}</small></div></div>
         <div class="modal-actions"><button class="button secondary-button" @click="composerOpen = false">取消</button><button class="button primary-button" @click="submitComposer"><MessageSquare :size="15" />{{ composerFollowUp ? '创建追问' : '创建并进入任务中心' }}</button></div>
+      </section>
+    </div>
+
+    <div v-if="promptTask" class="prompt-workflow-backdrop" role="presentation" @click.self="closePromptTask" @keydown.esc="closePromptTask">
+      <section class="prompt-workflow-panel" role="dialog" aria-modal="true" aria-labelledby="prompt-workflow-title">
+        <header class="prompt-workflow-header"><div><span class="eyebrow">PROMPT HANDOFF</span><h2 id="prompt-workflow-title">把这次提问交给网页端</h2><span>{{ promptTask.scopeLabel || 'Prompt 粘贴任务' }}</span></div><button class="icon-button" aria-label="关闭 Prompt 浮层" title="关闭" @click="closePromptTask"><X :size="18" /></button></header>
+        <div class="prompt-workflow-body"><p class="prompt-workflow-help">复制下面的 Prompt 到已登录的 AI 网页端，完成后把完整回复粘贴回来。关闭窗口不会丢失任务。</p><div class="prompt-workflow-block"><div class="subsection-title"><strong>Prompt</strong><button class="text-button" @click="copyTaskPrompt(promptTask)"><Clipboard :size="14" />复制</button></div><pre>{{ promptTask.prompt }}</pre></div><label class="prompt-workflow-response">网页端返回结果<textarea :value="taskResponse(promptTask)" rows="10" placeholder="粘贴完整 JSON 回复；如果网页端报错，也可以把错误文本粘贴进来" @input="setTaskDraft(promptTask!.id, ($event.target as HTMLTextAreaElement).value)" /></label><div v-if="taskFeedback" class="prompt-workflow-error" role="alert"><CircleHelp :size="15" /><span>{{ taskFeedback.text }}</span></div></div>
+        <footer class="prompt-workflow-footer"><button class="button secondary-button" @click="closePromptTask">稍后处理</button><button class="button primary-button" @click="applyPromptTask"><Check :size="15" />校验并继续对话</button></footer>
       </section>
     </div>
 
