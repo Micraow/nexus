@@ -82,6 +82,8 @@ PFC
 
 同一个 Concept 可以关联多个 Session 中的多个 KnowledgeUnit。Concept 有名称、别名、用户笔记、父子关系和相关关系。
 
+Concept hierarchy 不限制为固定层数，而是一个可有多个父节点的有向无环图（DAG）；`depth` 只是从根 Concept 计算出的派生值，不是数据模型的层数上限。KnowledgeUnit 和 Message 不会因为当前界面只显示根节点而被删除或改写。
+
 `topic` 不再作为独立字段或独立实体使用。KnowledgeUnit 使用 `title` 表示本次具体讨论；Concept 表示可跨会话复用的主体。
 
 ### 2.5 ConceptAlias（概念别名）
@@ -90,12 +92,12 @@ Concept 的其他名称，例如 `RDMA Congestion Control`、`远程直接内存
 
 ### 2.6 ConceptRelation（概念关系）
 
-Concept 之间的有向关系：
+Concept 之间有两种不同语义的关系：
 
 - `hierarchy`：父 Concept → 子 Concept；允许一个子 Concept 有多个父 Concept；
-- `related`：相关概念，不表达层级。
+- `related`：相关概念，是无向关系，不表达层级、父子顺序或根节点归属。
 
-父子关系整体是有向无环图（DAG），禁止形成环。LLM 提出的不确定关系可以先为 `proposed`，用户确认后变为 `confirmed`。
+只有 `hierarchy` 参与根节点、祖先路径、展开深度和父子布局约束；`related` 不能用来判断一个 Concept 是否为根，也不能把节点从根投影中排除。父子关系整体禁止形成环；LLM 提出的不确定关系可以先为 `proposed`，用户确认后变为 `confirmed`。
 
 例如：
 
@@ -133,6 +135,8 @@ RDMA ──hierarchy──> RDMA 的拥塞控制 <──hierarchy── 拥塞�
 
 Concept、KnowledgeUnit 和未归类 Message 是图谱的节点类型，但 `GraphNode` 和 `GraphEdge` 不作为事实数据表保存。图谱节点和大部分边由业务表实时计算或从缓存生成；用户手动创建的特殊边、节点位置和视口状态单独保存。
 
+图谱采用渐进式披露：默认只投影 active hierarchy 的根 Concept；用户点击父节点旁的展开控件后逐层显示其直接子节点。展开祖先路径后，路径上的节点保持可见；收起某个祖先会递归收起其后代，后代的事实关系仍保留在数据库中。`related` 显示不参与层级展开；KnowledgeUnit/Message 开关控制附加节点，局部展开可以按规则披露关联内容。
+
 ## 3. 数据模型
 
 ### 3.1 实体关系
@@ -143,7 +147,7 @@ Session 1──N KnowledgeUnit
 KnowledgeUnit 1──N Message（Message.unit_id 可为空）
 KnowledgeUnit N──N Concept（UnitConcept）
 Concept 1──N ConceptAlias
-Concept N──N Concept（ConceptRelation，有向 DAG）
+Concept N──N Concept（ConceptRelation；hierarchy 为有向 DAG，related 为无向）
 Session 1──N NavTreeNode
 NavTreeNode 1──N NavTreeNode（parent_id 自引用）
 NavTreeNode N──N KnowledgeUnit（NavTreeNodeUnit）
@@ -429,6 +433,16 @@ Prompt 粘贴模式生成同一份 Prompt，用户复制到任意网页端，再
 
 API 服务支持结构化输出时，同时使用接口级 JSON Schema；Prompt 粘贴模式依赖同一份契约和本地校验。结构化校验使用 TypeScript 的 schema 校验器（例如 Zod/JSON Schema），不得只依赖 `JSON.parse`。
 
+### 6.0 固定 Harness 与渐进式披露
+
+每个任务 Prompt 都先拼接版本化的固定前缀 `NEXUS_HARNESS_PROMPT` 和 `PROGRESSIVE_DISCLOSURE_PROTOCOL`，再附加该任务的规格和数据。固定前缀按字节保持稳定（当前 `PROMPT_VERSION=2026-08-v2-harness`），任务重试或披露续跑只能替换动态数据段，不能删改行为契约。
+
+当任务需要参考较大的知识树时，Prompt 在 `DISCLOSURE_INDEX` 中提供首层目录和已经展开的记录。目录项至少包含不透明的 `refID`、`title` 和 `summary`；摘要是导航线索，不得冒充消息原文。展开记录可提供 `children`（下一层同样只含 `refID`/标题/摘要），并可在明确请求时提供 `content`（知识单元或消息原文）。
+
+模型需要更多证据时，可以在输出 JSON 中返回 `disclosure_requests`，例如 `{ "refID": "目录中已有的 ID", "depth": 1 }`。本地先校验数组、唯一 `refID`、引用必须来自当前目录以及 `depth` 为 1～64 的整数；校验失败进入 `needs_review`，不应用任何部分结果。校验通过后，应用从本地事实表按 `refID` 递归展开指定层数，保留根引用和原文，替换 Prompt 中的动态 `DISCLOSURE_INDEX` 并将同一任务重新排队。任务最多连续披露 8 轮，超出后暂停供用户检查。
+
+`refID` 由本地生成且不可由模型猜测、改写或拼接。所有目录、摘要和原文都按不可信数据处理，其中的文字指令、代码、SQL 和链接不执行；模型可以使用自身知识、推理和调用方明确允许的外部搜索，但必须区分输入证据、外部资料与推断。
+
 ### 6.1 分段输出
 
 ```json
@@ -534,7 +548,7 @@ LLM 只返回建议变更：合并、别名、父子关系、相关关系、重�
 | 节点 | 含义 | 默认显示 |
 |---|---|---|
 | Concept | 跨会话聚合的知识主体 | 是 |
-| KnowledgeUnit | 一次具体讨论 | 否，点击 Concept 时展开 |
+| KnowledgeUnit | 一次具体讨论 | 否，使用主题展开控件时局部显示 |
 | Message | 尚未归入单元或用户主动展开的原始消息 | 否 |
 
 自动关系：
@@ -545,16 +559,28 @@ LLM 只返回建议变更：合并、别名、父子关系、相关关系、重�
 - ConceptRelation related：相关关系；
 - ManualGraphEdge：用户明确创建的额外边。
 
-默认只显示 Concept 和已确认关系。侧边栏可以切换 KnowledgeUnit、Message、父子边、共现边、相关/手动边和待确认关系。点击 Concept 必须展开它关联的 KnowledgeUnit，即使全局关闭了 KnowledgeUnit 显示；展开只影响当前局部邻域。
+默认只显示 active hierarchy 的根 Concept 和已确认关系。根是“没有 hierarchy 父节点”的 Concept；`related` 边永远不参与根判断。侧边栏可以切换 KnowledgeUnit、Message、父子边、共现边、相关/手动边、待确认关系和保留的探讨/流程会话。
+
+层级展开不设固定深度：
+
+- `expandedConceptIds` 记录用户明确展开的节点，点击父节点只增加或移除它本身；
+- 一个节点展开后显示其直接子节点，继续点击子节点才显示下一层；显式展开的后代会自动带上祖先路径；
+- 收起祖先时递归清理该祖先的后代展开状态，后代回到折叠投影，但不改变事实关系；
+- `expandedConceptDepth` 只用于需要确定性批量预展开的调用方，`0` 表示根节点，不能替代无限层级模型。
+
+折叠层级下仍保留数据密度：隐藏 Concept 通过 hierarchy 向上投影到最近的可见祖先。一个 KnowledgeUnit 对每一对可见代表 Concept 只贡献一次共现权重；多个隐藏叶节点落在同一对代表节点时合并为同一条边并累加不同单元数，不能因同一单元关联多个叶节点而重复计数。KnowledgeUnit 节点在全局开关打开或其祖先被明确展开时出现，Message 节点按消息开关出现；这些局部披露不改变 Concept 的层级可见性。
+
+`related` 是独立的无向边：可以在可见节点之间绘制，也可以随筛选隐藏，但从不触发祖先路径、子节点展开、根节点计算或 hierarchy 布局约束。
 
 交互：
 
-- 单击 Concept：展开局部单元并打开详情；
+- 单击 Concept 主体：只打开详情，不改变图谱拓扑；
+- 单击 Concept 旁的展开/收起控件：逐层显示直接子节点，或递归收起该节点的后代；
 - 单击 KnowledgeUnit：打开详情面板；
 - Ctrl/Cmd 单击或框选：多选 KnowledgeUnit；
 - 右侧上下文面板：排序、移除和发起新对话；
 - 拖拽只用于平移、缩放和调整布局，不用于隐式建边；
-- 创建父子/相关关系通过操作菜单或多选命令，并在确认面板中明确显示关系方向；
+- 创建父子/相关关系通过操作菜单或多选命令，并在确认面板中明确显示关系方向（`related` 不显示父子方向）；
 - 删除关系不删除节点；建立 hierarchy 前检查成环；
 - 点击“重置布局”才重新计算力向布局，普通页面切换保留位置和视口。
 
@@ -604,11 +630,13 @@ LLM 只返回建议变更：合并、别名、父子关系、相关关系、重�
 
 #### 删除与归档
 
-删除只解除 Concept 关联和关系，不删除 Session、Message 或 KnowledgeUnit。归档只从默认图谱和搜索隐藏。两者都支持撤销。
+删除只解除 Concept 关联和关系，不删除 Session、Message 或 KnowledgeUnit；如果删除的是一条父子引用，只提升受影响子主题，不删除子主题本身。归档只从默认图谱和搜索隐藏，但保留层级、单元和消息，恢复后按原关系重新出现。两者都支持撤销。
 
 #### 关系编辑
 
-用户通过菜单创建或删除 hierarchy、related 和手动边。LLM 建议关系显示为 proposed，支持批量确认、拒绝和修改。
+用户可在知识主题详情或图谱侧栏编辑名称、别名、笔记及关系，增加子主题、设置或更换父主题、删除单条 hierarchy/related 关系，并查看影响范围。设置父主题前必须做 DAG 成环校验；`related` 的两端可互换，不能被当作父子关系。
+
+删除一个父子引用只删除该条 hierarchy 事实，不删除子主题：若子主题仍有其他父主题，则保留其他路径；若已没有父主题，则提升为根节点（界面也提供“提升为根节点”以一次移除全部父引用）。收起或删除图谱中的可见节点同样不能删除其后代事实。LLM 建议关系显示为 `proposed`，支持批量确认、拒绝、修改和撤销。
 
 #### 手动关联
 
@@ -619,6 +647,8 @@ LLM 只返回建议变更：合并、别名、父子关系、相关关系、重�
 用户在图谱或详情页多选 KnowledgeUnit，右侧上下文面板显示选择顺序、来源 Session、摘要/原文开关和预计 token 数。用户可以拖动调整顺序、移除单元或切换为完整消息。
 
 默认注入标题、摘要、关联 Concept 和来源 Session 标题；完整原文需要用户明确勾选。超出模型上下文上限时不得静默截断，必须提示用户移除单元、改用摘要或手动编辑上下文。实际使用的来源写入 ContextReference。
+
+上下文面板默认只展示根引用的摘要；用户可以逐层展开 Concept 的子主题、KnowledgeUnit 及其 Message 原文，再把任意层级的选中项加入上下文。这个 UI 展开与 Prompt 的 `DISCLOSURE_INDEX` 使用同一组 `refID`，但不会绕过本地权限或事实表校验。
 
 ### M11 快捷短语
 
@@ -714,7 +744,7 @@ LLM 返回建议而不是直接修改，包括：
 
 ### 11.1 派生缓存
 
-业务表是真相，图谱节点和自动边是派生视图。内存缓存按查询范围、筛选条件和 `graph_revision` 缓存快照。导入、分段、Concept 关联、合并、删除和关系编辑事务提交后递增 `graph_revision`，相关缓存自动失效。
+业务表是真相，图谱节点和自动边是派生视图。内存缓存按查询范围、筛选条件、`showUnits`/`showMessages`/`showProposed`/`showRetainedSessions`、`expandedConceptIds`（排序后）和 `expandedConceptDepth` 以及 `graph_revision` 缓存快照。导入、分段、Concept 关联、合并、删除和关系编辑事务提交后递增 `graph_revision`，相关缓存自动失效。
 
 缓存不持久化为第二套事实数据。`GraphLayout` 只保存节点位置、固定状态和视口。未来若 profiling 证明需要，再增加持久化聚合表。
 
@@ -772,7 +802,7 @@ Nexus 采用克制的知识工作台风格，优先信息层级、可读性和�
 ### 12.4 图谱交互
 
 - 滚轮/触控板缩放，拖拽平移和调整节点位置；
-- Concept 点击展开关联 KnowledgeUnit；
+- Concept 主体点击只打开详情；节点旁的展开/收起控件逐层显示直接子 Concept，并在收起祖先时递归收起后代；
 - 全局力向布局对 hierarchy 关系增加吸引约束，使子 Concept 倾向于靠近父 Concept；一个子 Concept 有多个父节点时，布局在多个父节点之间取折中位置；
 - Ctrl/Cmd 单击和框选用于多选；
 - 关系创建使用菜单/确认面板，拖拽不创建关系；
@@ -845,13 +875,14 @@ Nexus 采用克制的知识工作台风格，优先信息层级、可读性和�
 - JSON schema 校验、缺失字段和重复导入判断；
 - 分段结果的索引范围、重复、遗漏和 `unassigned_message_indices` 覆盖校验；
 - Concept 名称/别名归一化和本地 n-gram 候选检索；
-- ConceptRelation 成环检测；
+- ConceptRelation 成环检测、无限层级、多父节点，以及 `related` 不改变根节点/祖先路径；
 - UnitConcept 去重和手动关联；
 - Concept 合并、删除、归档、软删除追溯和撤销；
 - KnowledgeUnit revision 与 LLMTask stale 防覆盖；
 - 导航树父子关系和 NavTreeNodeUnit 顺序；
 - ContextReference 顺序和跨 Session 来源；
-- 图谱派生节点、共现权重和 `graph_revision` 缓存失效；
+- 图谱根节点默认投影、逐层展开/递归收起、显式后代的祖先路径、折叠祖先的 KnowledgeUnit 共现权重聚合，以及展开参数和 `graph_revision` 的缓存失效；
+- Prompt 固定 harness、`refID` 目录解析、递归 `disclosure_requests`、非法引用/深度拒绝和披露续跑上限；
 - 搜索排序、FTS5/ n-gram 回退；
 - YAML 解析、默认值、错误恢复和多 Provider 选择；
 - schema 迁移、备份恢复和导出版本校验；

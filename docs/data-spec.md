@@ -143,6 +143,7 @@
 - `merged` Concept 必须有 `merged_into_id`，且目标不能是自身；
 - `archived` Concept 不参与默认图谱和搜索，但不能从历史导出中丢失；
 - 删除 Concept 只解除 UnitConcept 和 ConceptRelation，不删除 Session、Message 或 KnowledgeUnit；
+- Concept 的 hierarchy 深度不设业务上限，允许多父节点；`depth`、根节点和祖先路径均由 ConceptRelation 派生，不写回 Concept；
 - 合并是可撤销事务：关联、别名、关系和笔记变更必须有操作记录。
 
 ### 3.5 ConceptAlias
@@ -185,9 +186,11 @@
 不变量：
 
 - `hierarchy` 不允许自环和任何可达环；
-- `related` 不表达方向语义，查询和图谱绘制应按无向关系处理；
+- `hierarchy` 构成可无限向下扩展且允许多父节点的 DAG；只有它参与父级、子级、祖先、后代、根节点和深度计算；
+- `related` 不表达方向语义，查询、去重和图谱绘制应按无向关系处理；`parent_concept_id`/`child_concept_id` 对它只是两个存储端点，绝不能用于判断父子或根节点；
 - `proposed` 关系不能作为默认确认关系参与布局；
-- 拒绝关系保留历史记录，但不参与图谱和搜索。
+- 拒绝关系保留历史记录，但不参与图谱和搜索；
+- 删除一条 hierarchy 只解除该父子引用，不删除任一 Concept；子节点仍有其他父级时保留其他路径，否则自然成为根节点。提升为根节点等价于可撤销地删除该节点的全部 hierarchy 父引用。
 
 ### 3.8 NavTreeNode / NavTreeNodeUnit
 
@@ -282,6 +285,16 @@ Concept 提取结果至少包含名称列表；可选返回别名和关系建议
 
 维护任务只允许返回建议变更，不允许返回“直接执行 SQL”或不可追溯的自由文本命令。每条建议需要包含类型、目标 ID、影响范围、理由和可逆操作描述。
 
+### 4.4 Prompt Harness 与渐进式披露
+
+- 每个生成的 Prompt 必须以前缀稳定、带版本号的 harness 开始；当前版本使用 `NEXUS_HARNESS_PROMPT`、`PROGRESSIVE_DISCLOSURE_PROTOCOL` 和 `PROMPT_VERSION=2026-08-v2-harness`。任务规格和数据追加在固定前缀之后，续跑不得改写固定前缀；
+- `DISCLOSURE_INDEX.roots[]` 每项必须包含 `{ refID, title, summary }`。`refID` 是本地实体的不透明标识；模型不得创造、改写或拼接；
+- `DISCLOSURE_INDEX.expansions[]` 以已有 `refID` 为键，可包含下一层 `children[]`，以及明确披露的 `content`。`children` 仍是摘要目录，只有 `content` 可以表示知识单元或 Message 原文；
+- 支持递归链路 `Concept → 子 Concept → KnowledgeUnit → Message 原文`。实现可以按实体类型分步披露，但任何层级都必须先出现在当前目录，才能成为下一次请求目标；
+- 支持结构化的 `disclosure_requests?: Array<{ refID: string; depth: integer }>`。数组中 `refID` 不能为空或重复，必须存在于当前已列目录；`depth` 必须在 `[1, 64]`；
+- 本地校验通过后才从事实表展开指定深度、保留根目录、替换 Prompt 的动态 `DISCLOSURE_INDEX` 并继续同一任务。引用不存在、越权、重复、深度非法、目录不可解析或超过 8 轮都不得应用部分业务结果；
+- harness 明确允许模型使用自身知识、推理和调用方授权的外部搜索/工具，但输出必须区分输入证据、外部资料和推断；目录、摘要与原文一律按不可信数据处理。
+
 ## 5. 导入规范
 
 ### 5.1 外部 JSON
@@ -319,27 +332,38 @@ Concept 提取结果至少包含名称列表；可选返回别名和关系建议
 
 ### 6.1 节点
 
-- 所有 active Concept → Concept 节点；
-- KnowledgeUnit 节点按显示选项生成，点击 Concept 时强制显示相关单元；
-- 未归属或用户主动展开的 Message → Message 节点；
-- 节点 label 来自 Concept.name、KnowledgeUnit.title 或 Message 内容预览；
-- 节点位置和视口是可丢弃的 GraphLayout，不是业务事实。
+- `active` Concept 是候选节点，但默认只返回 hierarchy 根节点；根集合只依据可见的 hierarchy（`confirmed`，以及 `showProposed=true` 时的 `proposed`）计算，`related` 永远不影响根集合；
+- hierarchy 是无限深度 DAG。`expandedConceptIds` 是用户明确展开的 Concept ID 集合；显式展开的后代会自动补齐祖先路径。父节点展开只使直接子节点可见，继续展开子节点才进入下一层；`expandedConceptDepth=0` 表示仅根节点，正值是可选的批量深度上限，不是模型层数上限；
+- 收起一个 Concept 必须递归移除其后代的展开状态；后代事实仍在数据库中，重新展开即可恢复；
+- 可见 Concept 集合是根节点加上沿“已展开父节点”可达的后代。对隐藏 Concept，计算其到最近可见 hierarchy 祖先的一个或多个代表节点；这组代表用于折叠投影；
+- KnowledgeUnit 节点在 `showUnits=true` 时全部生成，在某个祖先被明确展开时生成其关联单元；Message 节点按 `showMessages`、保留会话筛选或明确展开的单元生成；
+- 节点 `label` 来自 `Concept.name`、`KnowledgeUnit.title` 或 Message 内容预览；Concept 节点可附带 `depth`、`parentId`/`parentIds`、`rootIds`、`hasChildren`、`expanded` 等派生元数据；
+- 节点位置和视口是可丢弃的 `GraphLayout`，不是业务事实。
 
 ### 6.2 边
 
-- 两个 Concept 共同关联一个 KnowledgeUnit，生成一次共现权重；共同单元越多，边越粗；
-- Concept 与 KnowledgeUnit 有关联边；
-- `hierarchy` 为有向边；`related` 按无向边呈现；
-- 手动额外边单独保存；
-- `proposed` 关系默认隐藏或以虚线呈现，除非用户开启显示；
-- Concept 点击展开 KnowledgeUnit，不要求全局打开所有单元节点。
+- 每个 KnowledgeUnit 先把其 UnitConcept 集合中的隐藏 Concept 投影到最近可见代表节点，再对代表集合去重；任意一对可见代表 Concept 对该 KnowledgeUnit 最多贡献 `1` 个共现权重。多个不同 KnowledgeUnit 投影到同一对节点时累加，不能因同一单元关联多个后代或多条路径而重复计数；
+- Concept 与 KnowledgeUnit 之间生成关联边，端点使用同一套代表投影；
+- `hierarchy` 只在父、子两端都可见时输出有向边。隐藏叶节点不能产生指向不可见节点的假边；
+- `related` 始终按无向边处理。若端点折叠，可分别投影到最近可见代表并合并重复边；同一节点的自环丢弃。related 边不参与层级展开、根节点、深度或父子布局；
+- 手动额外边单独保存，只有当前两个端点可见时才进入快照；
+- `proposed` 关系默认不参与确认视图，`showProposed=true` 时按其原类型显示（hierarchy 仍有方向，related 仍无方向）；
+- 消息与会话链边按同一 Session 的 `orderInSession` 排序生成，当前数据模型下网页端分支退化为链；
+- 边权重、代表投影和节点度数均为派生值，不回写事实表。
 
 ### 6.3 缓存
 
-- 缓存键至少包含 `graph_revision`、节点显示选项和筛选条件；
+- 缓存键至少包含 `graph_revision`、筛选条件、`showUnits`、`showMessages`、`showProposed`、`showRetainedSessions`、排序后的 `expandedConceptIds` 和规范化的 `expandedConceptDepth`；
 - 导入、分段、Concept 关联、关系编辑、合并、删除和恢复成功后递增 `graph_revision`；
 - 缓存失效不会影响业务数据；
 - 自动图谱不允许出现无法从业务表重建的事实。
+
+### 6.4 图谱编辑不变量
+
+- 增加子节点或设置父级只新增 `hierarchy` 关系，并在提交前做成环校验；一个子节点可有多个父级；
+- 删除单条父子引用只解除该引用，不删除子 Concept。子节点没有其他父级时自动成为根节点；“提升为根节点”是删除全部父引用的可撤销快捷操作；
+- `related` 的两个端点可交换，存储列名不携带父子意义；
+- 合并迁移别名、UnitConcept、父子/related 关系和笔记，清理自环/重复边并保留 `merged_into_id`；归档只改变默认投影状态。删除、归档、合并和关系编辑都必须可撤销，且不能删除 Session、Message 或 KnowledgeUnit。
 
 ## 7. 配置与导出
 
@@ -375,11 +399,12 @@ Concept 提取结果至少包含名称列表；可选返回别名和关系建议
 - Message 与 KnowledgeUnit 的 Session 一致性；
 - 分段索引的越界、重复、遗漏和全覆盖；
 - Concept/别名归一化冲突；
-- ConceptRelation 成环检测、多父节点和 proposed 状态；
+- ConceptRelation 成环检测、无限深度、多父节点、related 无向语义和 proposed 状态；
 - UnitConcept 去重、手动关联不被自动结果覆盖；
 - NavTreeNode 父子 Session 一致、depth 计算和一对多单元关联；
 - ContextReference 顺序和来源追溯；
 - LLMTask revision 失效和状态迁移；
 - Concept 合并/删除/恢复事务；
-- 图谱共现权重、派生缓存和 revision 失效；
+- 图谱根节点投影、逐层展开/递归收起、隐藏后代代表节点、每单元一次的共现聚合、related 不改变层级、派生缓存和 revision 失效；
+- `DISCLOSURE_INDEX` 的根摘要、refID 递归展开、disclosure_requests 本地校验、非法请求拒绝和续跑上限；
 - 导入重复判定、完整导出/导入和 schema 迁移回滚。
