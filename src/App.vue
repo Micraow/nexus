@@ -270,6 +270,7 @@ function openConcept(conceptId: string): void {
 }
 
 function openUnit(unitId: string, additive = false): void {
+  selectedConceptId.value = null
   selectedUnitId.value = unitId
   selectedMessageId.value = null
   if (!additive) store.reorderContext([unitId])
@@ -281,8 +282,11 @@ function addBoxSelectedUnit(unitId: string): void {
   store.selectContext(unitId, true)
 }
 
-function openMessage(messageId: string): void {  selectedMessageId.value = messageId
-  selectedUnitId.value = store.messages.find((message) => message.id === messageId)?.unitId ?? null
+function openMessage(messageId: string): void {
+  // 消息详情是独立入口；不要让上一次打开的主题/单元抢占抽屉内容。
+  selectedConceptId.value = null
+  selectedUnitId.value = null
+  selectedMessageId.value = messageId
   isDetailOpen.value = true
 }
 
@@ -303,6 +307,7 @@ function selectSession(sessionId: string): void {
   activeView.value = 'sessions'
   selectedUnitId.value = null
   selectedConceptId.value = null
+  selectedMessageId.value = null
 }
 
 function editUnit(unit: KnowledgeUnit): void {

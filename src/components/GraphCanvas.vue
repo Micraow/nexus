@@ -62,7 +62,8 @@ function render(): void {
   // Shift+拖动留给框选，其余交互仍交给 d3.zoom 的默认过滤规则。
   let restoringViewport = true
   let fittingProgrammatically = false
-  const zoom = d3.zoom<SVGSVGElement, unknown>().scaleExtent([0.35, 3.2]).filter((event) => {
+  // 真实会话的节点密度跨度很大，允许从总览缩到局部细节；边界仍保留，避免画布彻底丢失。
+  const zoom = d3.zoom<SVGSVGElement, unknown>().scaleExtent([0.08, 12]).filter((event) => {
     if ((event.type === 'mousedown' || event.type === 'pointerdown') && event.shiftKey) return false
     return (!event.ctrlKey || event.type === 'wheel') && !event.button
   }).on('zoom', (event) => {
