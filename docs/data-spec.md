@@ -421,6 +421,6 @@ Concept 提取结果必须包含 `concepts` 数组；全部复用目录中已有
 - ContextReference 顺序和来源追溯；
 - LLMTask revision 失效和状态迁移；
 - Concept 合并/删除/恢复事务；
-- 图谱根节点投影、逐层展开/递归收起、隐藏后代代表节点、每单元一次的共现聚合、related 不改变层级、派生缓存和 revision 失效；
+- 图谱根节点投影、逐层展开/递归收起、隐藏后代代表节点、每 Session 一次的共现聚合、related 不改变层级、派生缓存和 revision 失效；
 - `DISCLOSURE_INDEX` 的根摘要、refID 递归展开、disclosure_requests 本地校验、非法请求拒绝和续跑上限；
 - 导入重复判定、完整导出/导入和 schema 迁移回滚。

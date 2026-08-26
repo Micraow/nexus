@@ -959,7 +959,7 @@ Nexus 采用克制的知识工作台风格，优先信息层级、可读性和�
 | LLMTask | 一次可追踪、可校验、可重试的 LLM 调用 |
 | proposed | LLM 提出的、尚未由用户确认的关系或维护建议 |
 | stale | 输入版本过期、结果不得覆盖当前数据的任务 |
-| co-occurrence | 两个 Concept 共同关联 KnowledgeUnit 的聚合关系 |
+| co-occurrence | 两个 Concept 在同一 Session 中共同出现的聚合关系 |
 | ManualGraphEdge | 用户明确创建并持久化的图谱额外边 |
 | Prompt 粘贴模式 | 生成 Prompt，用户在网页端执行并粘贴回复 |
 | API 模式 | 通过用户配置的 OpenAI 兼容端点执行任务 |

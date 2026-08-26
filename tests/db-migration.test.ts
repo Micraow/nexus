@@ -67,6 +67,7 @@ describe('database schema migration', () => {
     await store.init()
 
     expect(store.getMeta('schema_version')).toBe('5')
+    expect(store.query<{ summary: string }>('SELECT summary FROM concepts WHERE id = ?', ['c1'])[0]?.summary).toBe('')
     expect(store.query<{ message_id: string; concept_id: string }>('SELECT message_id, concept_id FROM message_concepts ORDER BY concept_id')).toEqual([
       { message_id: 'm1', concept_id: 'c1' },
       { message_id: 'm1', concept_id: 'c2' },
