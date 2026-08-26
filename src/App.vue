@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   Archive,
   ArrowDownToLine,
@@ -99,6 +99,16 @@ const composerSourceUnitIds = ref<string[]>([])
 const composerFollowUp = ref<{ sessionId: string; nodeId: string; label: string } | null>(null)
 const customPhraseDraft = ref('')
 const editingPhraseId = ref<string | null>(null)
+const welcomePhrases = [
+  '有什么可以帮你探索？',
+  '从一个问题，开始一条新线索。',
+  '把好奇心带进来，慢慢理清它。',
+  '你想先追踪哪一条知识线？',
+  '今天想把什么想明白？',
+]
+const welcomeText = ref(welcomePhrases[0])
+let welcomeTimer: number | null = null
+let welcomeRun = 0
 const providerDraft = ref({ id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', apiKey: '' })
 const graphLayoutNonce = ref(0)
 const selectedNavNodeId = ref<string | null>(null)
@@ -905,6 +915,28 @@ function setFontSize(value: number): void {
   store.updateConfig({ ui: { ...store.config.ui, fontSize } })
 }
 
+function startWelcomeTypewriter(): void {
+  if (welcomeTimer != null) window.clearTimeout(welcomeTimer)
+  welcomeTimer = null
+  const run = ++welcomeRun
+  const phrase = welcomePhrases[Math.floor(Math.random() * welcomePhrases.length)]
+  const reduced = store.config.ui.reducedMotion || window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  if (reduced) {
+    welcomeText.value = phrase
+    return
+  }
+  let cursor = 0
+  welcomeText.value = ''
+  const typeNext = (): void => {
+    if (run !== welcomeRun) return
+    cursor += 1
+    welcomeText.value = phrase.slice(0, cursor)
+    if (cursor < phrase.length) welcomeTimer = window.setTimeout(typeNext, 52)
+    else welcomeTimer = null
+  }
+  welcomeTimer = window.setTimeout(typeNext, 180)
+}
+
 function toggleSession(sessionId: string): void {
   expandedSessionIds.value = expandedSessionIds.value.includes(sessionId) ? expandedSessionIds.value.filter((id) => id !== sessionId) : [...expandedSessionIds.value, sessionId]
 }
@@ -938,17 +970,31 @@ watch(() => store.config.ui.fontSize, (fontSize) => {
   document.documentElement.style.setProperty('--app-font-size', `${fontSize || 15}px`)
 }, { immediate: true })
 
+watch(() => store.config.ui.reducedMotion, () => {
+  if (activeView.value === 'overview') startWelcomeTypewriter()
+})
+
+watch(activeView, (view, previousView) => {
+  if (view === 'overview' && previousView !== undefined) startWelcomeTypewriter()
+})
+
 watch(fullscreenTarget, (target) => {
   document.body.classList.toggle('fullscreen-active', Boolean(target))
 })
 
 onMounted(async () => {
   await store.init()
+  startWelcomeTypewriter()
   if (!store.selectedSessionId && store.activeSessions[0]) store.setSelectedSession(store.activeSessions[0].id)
   const provider = store.config.llm.providers[0]
   if (provider) providerDraft.value = { ...provider }
   databasePathDraft.value = store.config.storage.databasePath ?? ''
   void fetchStorageInfo()
+})
+
+onBeforeUnmount(() => {
+  welcomeRun += 1
+  if (welcomeTimer != null) window.clearTimeout(welcomeTimer)
 })
 </script>
 
@@ -1019,7 +1065,7 @@ onMounted(async () => {
         <section v-if="activeView === 'overview'" class="view-panel overview-view">
           <section class="new-chat-panel surface-section">
             <div class="chat-home">
-              <div class="chat-welcome"><div class="chat-welcome-mark"><img :src="nexusLogo" alt="" /></div><h2>有什么可以帮你探索？</h2><p>从一个问题开始，或把已有知识带进新的对话。</p></div>
+              <div class="chat-welcome"><div class="chat-welcome-mark"><img :src="nexusLogo" alt="" /></div><h2 aria-live="polite">{{ welcomeText }}<span class="chat-welcome-caret" aria-hidden="true" /></h2><p>从一个问题开始，或把已有知识带进新的对话。</p></div>
               <div class="chat-composer" :class="{ focused: composerQuestion.length }">
                 <textarea v-model="composerQuestion" rows="4" placeholder="输入消息…" aria-label="新对话问题" @keydown.ctrl.enter.prevent="submitComposer" @keydown.meta.enter.prevent="submitComposer"></textarea>
                 <div class="chat-composer-topbar">
