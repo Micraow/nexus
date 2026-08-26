@@ -5,6 +5,7 @@ import {
   ArrowDownToLine,
   ArrowLeft,
   ArrowRight,
+  ArrowUp,
   BookOpen,
   Check,
   ChevronDown,
@@ -86,6 +87,10 @@ const graphControlsOpen = ref(true)
 const expandedConceptIds = ref<string[]>([])
 const unitDraftTitle = ref('')
 const unitDraftSummary = ref('')
+const conceptDraftName = ref('')
+const conceptDraftNotes = ref('')
+const conceptChildQuery = ref('')
+const conceptParentQuery = ref('')
 const newUnitConcept = ref('')
 const relationParentId = ref('')
 const relationChildId = ref('')
@@ -304,6 +309,25 @@ const otherConceptOf = (relation: { parentConceptId: string; childConceptId: str
 const selectedConceptParents = computed(() => selectedConcept.value ? store.relations.filter((relation) => relation.childConceptId === selectedConcept.value?.id && relation.relationType === 'hierarchy').sort((left, right) => linkedUnitCount(otherConceptOf(right, selectedConcept.value!.id)) - linkedUnitCount(otherConceptOf(left, selectedConcept.value!.id))) : [])
 const selectedConceptChildren = computed(() => selectedConcept.value ? store.relations.filter((relation) => relation.parentConceptId === selectedConcept.value?.id && relation.relationType === 'hierarchy').sort((left, right) => linkedUnitCount(otherConceptOf(right, selectedConcept.value!.id)) - linkedUnitCount(otherConceptOf(left, selectedConcept.value!.id))) : [])
 const selectedConceptRelated = computed(() => selectedConcept.value ? store.relations.filter((relation) => (relation.parentConceptId === selectedConcept.value?.id || relation.childConceptId === selectedConcept.value?.id) && relation.relationType === 'related').sort((left, right) => linkedUnitCount(otherConceptOf(right, selectedConcept.value!.id)) - linkedUnitCount(otherConceptOf(left, selectedConcept.value!.id))) : [])
+const conceptSearchCandidates = (query: string, excludedIds: Set<string>): Concept[] => {
+  const needle = query.trim().toLocaleUpperCase()
+  if (!needle) return []
+  return store.activeConcepts
+    .filter((concept) => !excludedIds.has(concept.id) && concept.name.toLocaleUpperCase().includes(needle))
+    .slice(0, 8)
+}
+const conceptChildCandidates = computed(() => {
+  const selectedId = selectedConcept.value?.id
+  if (!selectedId) return []
+  const excluded = new Set([selectedId, ...selectedConceptChildren.value.map((relation) => otherConceptOf(relation, selectedId))])
+  return conceptSearchCandidates(conceptChildQuery.value, excluded)
+})
+const conceptParentCandidates = computed(() => {
+  const selectedId = selectedConcept.value?.id
+  if (!selectedId) return []
+  const excluded = new Set([selectedId, ...selectedConceptParents.value.map((relation) => otherConceptOf(relation, selectedId))])
+  return conceptSearchCandidates(conceptParentQuery.value, excluded)
+})
 const sessionUnits = computed(() => selectedSession.value ? store.units.filter((unit) => unit.sessionId === selectedSession.value?.id).sort((a, b) => a.orderInSession - b.orderInSession) : [])
 const rootNavNode = computed(() => selectedSession.value ? store.navNodes.find((node) => node.sessionId === selectedSession.value?.id && !node.parentId) ?? null : null)
 const sessionMessages = computed(() => selectedSession.value ? store.messages.filter((message) => message.sessionId === selectedSession.value?.id).sort((a, b) => a.orderInSession - b.orderInSession) : [])
@@ -395,12 +419,27 @@ function saveGraphViewport(viewport: { x: number; y: number; scale: number }): v
 }
 
 function toggleGraphConcept(conceptId: string, expanded: boolean): void {
-  expandedConceptIds.value = store.toggleConceptExpansion(
-    expandedConceptIds.value,
-    conceptId,
-    expanded,
-    graphShowProposed.value,
-  )
+  // Older maintenance worktrees do not yet expose the store's recursive
+  // disclosure helper. Use it when available; the local fallback keeps this
+  // branch type-safe and mirrors the same collapse-descendants behavior.
+  const toggle = (store as unknown as { toggleConceptExpansion?: (ids: string[], id: string, value?: boolean, includeProposed?: boolean) => string[] }).toggleConceptExpansion
+  if (toggle) {
+    expandedConceptIds.value = toggle(expandedConceptIds.value, conceptId, expanded, graphShowProposed.value)
+    return
+  }
+  const next = new Set(expandedConceptIds.value)
+  if (expanded) next.add(conceptId)
+  else {
+    next.delete(conceptId)
+    const queue = [conceptId]
+    while (queue.length) {
+      const parentId = queue.shift() as string
+      store.relations
+        .filter((relation) => relation.relationType === 'hierarchy' && relation.parentConceptId === parentId && (relation.status === 'confirmed' || (graphShowProposed.value && relation.status === 'proposed')))
+        .forEach((relation) => { if (next.delete(relation.childConceptId)) queue.push(relation.childConceptId) })
+    }
+  }
+  expandedConceptIds.value = [...next]
 }
 
 function resetGraphLayout(): void {
@@ -413,6 +452,12 @@ function openConcept(conceptId: string): void {
   selectedConceptId.value = conceptId
   selectedUnitId.value = null
   selectedMessageId.value = null
+  const concept = store.concepts.find((item) => item.id === conceptId)
+  conceptDraftName.value = concept?.name ?? ''
+  conceptDraftNotes.value = concept?.notes ?? ''
+  conceptChildQuery.value = ''
+  conceptParentQuery.value = ''
+  mergeTargetId.value = ''
   isDetailOpen.value = true
   if (activeView.value !== 'graph' && activeView.value !== 'concepts') setView('graph')
 }
@@ -476,6 +521,66 @@ function saveUnit(): void {
     notify('知识单元已保存')
   } catch (error) {
     notify(error instanceof Error ? error.message : '知识单元保存失败')
+  }
+}
+
+function saveConcept(): void {
+  if (!selectedConcept.value) return
+  try {
+    store.updateConcept(selectedConcept.value.id, { name: conceptDraftName.value, notes: conceptDraftNotes.value })
+    notify('知识主题已保存')
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '知识主题保存失败')
+  }
+}
+
+function resetConceptDraft(): void {
+  conceptDraftName.value = selectedConcept.value?.name ?? ''
+  conceptDraftNotes.value = selectedConcept.value?.notes ?? ''
+}
+
+function addConceptChild(childId: string): void {
+  if (!selectedConcept.value) return
+  try {
+    store.createRelation(selectedConcept.value.id, childId, 'hierarchy')
+    conceptChildQuery.value = ''
+    notify('子知识主题已添加')
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '添加子知识主题失败')
+  }
+}
+
+function createAndAddConceptChild(): void {
+  if (!selectedConcept.value || !conceptChildQuery.value.trim()) return
+  try {
+    const childId = store.createConcept(conceptChildQuery.value)
+    if (childId !== selectedConcept.value.id) store.createRelation(selectedConcept.value.id, childId, 'hierarchy')
+    conceptChildQuery.value = ''
+    notify('子知识主题已创建并添加')
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '创建子知识主题失败')
+  }
+}
+
+function addConceptParent(parentId: string): void {
+  if (!selectedConcept.value) return
+  try {
+    store.createRelation(parentId, selectedConcept.value.id, 'hierarchy')
+    conceptParentQuery.value = ''
+    notify('父知识主题已添加')
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '添加父知识主题失败')
+  }
+}
+
+function promoteSelectedChild(relationId: string): void {
+  if (!selectedConcept.value) return
+  if (!window.confirm('将这个子主题提升到当前主题的上一级？原关系会被替换，操作可以撤销。')) return
+  try {
+    store.promoteConceptChild(relationId)
+    notify('子知识主题已提升')
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '提升子知识主题失败')
   }
 }
 
@@ -568,6 +673,10 @@ function conceptName(conceptId?: string): string {
   return conceptId ? store.concepts.find((concept) => concept.id === conceptId)?.name ?? '未知知识主题' : '未指定'
 }
 
+function relationStatusLabel(status: 'proposed' | 'confirmed' | 'rejected'): string {
+  return status === 'confirmed' ? '已确认' : status === 'proposed' ? '待确认' : '已拒绝'
+}
+
 function maintenanceSuggestionSummary(suggestion: MaintenanceSuggestion): string {
   if (suggestion.type === 'merge') return `${conceptName(suggestion.source_concept_id)} → ${conceptName(suggestion.target_concept_id)}`
   if (suggestion.type === 'alias') return `${conceptName(suggestion.concept_id)} · “${suggestion.alias ?? ''}”`
@@ -611,9 +720,14 @@ function undoLatestOperation(): void {
 function archiveSelectedConcept(): void {
   if (!selectedConcept.value) return
   if (!window.confirm(`归档“${selectedConcept.value.name}”？历史内容不会删除。`)) return
-  store.deleteConcept(selectedConcept.value.id)
-  selectedConceptId.value = null
-  notify('知识主题已归档')
+  try {
+    store.deleteConcept(selectedConcept.value.id)
+    selectedConceptId.value = null
+    isDetailOpen.value = false
+    notify('知识主题已归档，可在操作记录中撤销')
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '知识主题归档失败')
+  }
 }
 
 function openComposer(input: { topicId?: string | null; sourceUnitIds?: string[]; sourceMessageIds?: string[]; parentNodeId?: string | null; followUp?: { sessionId: string; nodeId: string; label: string } } = {}): void {
@@ -1257,6 +1371,16 @@ watch(selectedUnitId, (unitId) => {
   }
 })
 
+watch(() => selectedConcept.value?.id, (conceptId) => {
+  const concept = conceptId ? store.concepts.find((item) => item.id === conceptId) : null
+  conceptDraftName.value = concept?.name ?? ''
+  conceptDraftNotes.value = concept?.notes ?? ''
+  if (!concept) {
+    conceptChildQuery.value = ''
+    conceptParentQuery.value = ''
+  }
+}, { immediate: true })
+
 watch(selectedTaskId, (taskId) => {
   const task = taskId ? store.tasks.find((item) => item.id === taskId) : null
   if (task?.type === 'maintenance') maintenancePanelOpen.value = true
@@ -1432,7 +1556,7 @@ onBeforeUnmount(() => {
 
         <section v-else-if="activeView === 'sessions'" class="view-panel sessions-view"><div class="page-toolbar"><div><span class="eyebrow">SESSION ARCHIVE</span><h2>会话与探索树</h2></div><button class="button secondary-button" @click="triggerImport"><Upload :size="15" />导入更多</button></div><div class="session-list surface-section"><div v-for="session in store.activeSessions.slice(0, visibleSessionCount)" :key="session.id" class="session-block"><div class="session-row-wrap"><button class="session-row" @click="toggleSession(session.id); selectSession(session.id)"><div class="session-avatar"><History :size="16" /></div><div class="row-main"><strong>{{ session.title }}</strong><span>{{ session.platform }} · {{ session.messageCount }} 条消息 · {{ session.unitCount }} 个知识单元</span></div><span v-if="session.localOnly" class="soft-tag">仅本地</span><ChevronDown v-if="expandedSessionIds.includes(session.id)" :size="17" /><ChevronRight v-else :size="17" /></button><button class="icon-button session-fullscreen-button" aria-label="全屏查看会话" title="全屏查看会话" @click.stop="openFullscreenSession(session.id)"><Maximize2 :size="16" /></button></div><div v-if="expandedSessionIds.includes(session.id)" class="session-expanded"><div class="session-meta-line"><span>创建于 {{ new Date(session.createdAt).toLocaleDateString('zh-CN') }}</span><label class="inline-toggle"><input type="checkbox" :checked="session.localOnly" @change="store.toggleSessionLocalOnly(session.id, ($event.target as HTMLInputElement).checked)" />仅本地（禁止 API 任务）</label><button class="text-button" @click.stop="exportSession(session)"><Download :size="14" />导出会话</button></div><div class="unit-timeline"><button v-for="unit in store.units.filter((item) => item.sessionId === session.id)" :key="unit.id" class="timeline-unit" :class="{ selected: selectedUnitId === unit.id }" @click="openUnit(unit.id)"><span class="timeline-dot" /><div><strong>{{ unit.title || '待命名知识单元' }}</strong><span>{{ unit.summary || '等待摘要生成' }}</span><small>{{ store.unitConceptNames(unit.id).join(' · ') || '未关联知识主题' }}</small></div></button><div v-if="!store.units.some((unit) => unit.sessionId === session.id)" class="empty-inline">这个会话还没有完成整理分段。</div></div></div></div><div v-if="!store.activeSessions.length" class="empty-state session-empty-state"><History :size="30" /><strong>还没有会话</strong><span>导入历史对话后，所有会话和探索树会显示在这里。</span><button class="button secondary-button" @click="triggerImport"><Upload :size="15" />导入历史对话</button></div></div><button v-if="store.activeSessions.length > visibleSessionCount" class="text-button load-more-button" @click="visibleSessionCount += 40">加载更多会话（还有 {{ store.activeSessions.length - visibleSessionCount }} 个）</button></section>
 
-        <section v-else-if="activeView === 'concepts'" class="view-panel concepts-view"><div class="page-toolbar"><div><span class="eyebrow">KNOWLEDGE TOPICS</span><h2>知识主题目录</h2></div><button class="button secondary-button" @click="setView('graph')"><Network :size="15" />在图谱中查看</button></div><div class="concepts-layout"><div class="concept-list surface-section"><div class="list-toolbar"><span>{{ store.activeConcepts.length }} 个知识主题</span><div class="compact-search"><Search :size="14" /><input v-model="graphSearch" placeholder="过滤知识主题" /></div></div><button v-for="concept in filteredConcepts.slice(0, visibleConceptCount)" :key="concept.id" class="concept-list-row" :class="{ selected: selectedConceptId === concept.id }" @click="openConcept(concept.id)"><span class="concept-swatch" /><div><strong>{{ concept.name }}</strong><span>{{ store.units.filter((unit) => store.unitConcepts.some((link) => link.unitId === unit.id && link.conceptId === concept.id)).length }} 个知识单元</span></div><ChevronRight :size="15" /></button><button v-if="filteredConcepts.length > visibleConceptCount" class="text-button load-more-button" @click="visibleConceptCount += 60">加载更多知识主题（还有 {{ filteredConcepts.length - visibleConceptCount }} 个）</button></div><div class="concept-detail surface-section"><template v-if="selectedConcept"><div class="detail-header"><div><span class="eyebrow">KNOWLEDGE TOPIC</span><h3>{{ selectedConcept.name }}</h3></div><button class="icon-button" title="归档知识主题" aria-label="归档知识主题" @click="archiveSelectedConcept"><Archive :size="16" /></button></div><div class="alias-row"><span>别名</span><span v-for="alias in store.aliases.filter((item) => item.conceptId === selectedConcept?.id)" :key="alias.id" class="soft-tag">{{ alias.alias }}</span><span v-if="!store.aliases.some((item) => item.conceptId === selectedConcept?.id)" class="muted">暂无别名</span></div><div class="note-box"><label>用户笔记</label><textarea :value="selectedConcept.notes" placeholder="记录这个知识主题的长期理解" @change="(event) => { const value = (event.target as HTMLTextAreaElement).value; store.updateConceptNotes?.(selectedConcept!.id, value) }" /></div><div class="relation-summary"><div><span>父主题</span><strong>{{ selectedConceptParents.length }}</strong></div><div><span>子主题</span><strong>{{ selectedConceptChildren.length }}</strong></div><div><span>关联单元</span><strong>{{ selectedConceptUnits.length }}</strong></div></div><div class="detail-subsection"><div class="subsection-title"><strong>关联知识单元</strong><span class="sort-inline"><select v-model="conceptUnitSort" aria-label="知识单元排序方式"><option value="updated">最近更新</option><option value="created">创建时间</option><option value="title">名称</option></select><span>{{ selectedConceptUnits.length }}</span></span></div><button v-for="unit in selectedConceptUnits" :key="unit.id" class="mini-unit-row" @click="openUnit(unit.id)"><BookOpen :size="14" /><span>{{ unit.title || '待命名知识单元' }}</span><ChevronRight :size="14" /></button><div v-if="!selectedConceptUnits.length" class="empty-inline">还没有关联单元</div></div><div class="detail-subsection"><div class="subsection-title"><strong>维护关系</strong><span>手动确认</span></div><div class="relation-form"><select v-model="relationParentId" :aria-label="relationType === 'hierarchy' ? '父知识主题' : '相关关系一端'"><option value="">{{ relationType === 'hierarchy' ? '选择父知识主题' : '选择相关关系一端' }}</option><option v-for="concept in store.activeConcepts" :key="concept.id" :value="concept.id">{{ concept.name }}</option></select><select v-model="relationChildId" :aria-label="relationType === 'hierarchy' ? '子知识主题' : '相关关系另一端'"><option value="">{{ relationType === 'hierarchy' ? '选择子知识主题' : '选择相关关系另一端' }}</option><option v-for="concept in store.activeConcepts" :key="concept.id" :value="concept.id">{{ concept.name }}</option></select><select v-model="relationType" aria-label="关系类型"><option value="hierarchy">父子</option><option value="related">相关</option></select><button class="button secondary-button" @click="createRelationFromForm"><Link2 :size="14" />建立</button></div></div><div class="detail-subsection"><div class="subsection-title"><strong>合并到</strong><span>可撤销事务</span></div><div class="merge-form"><select v-model="mergeTargetId" aria-label="合并目标"><option value="">选择目标知识主题</option><option v-for="concept in store.activeConcepts.filter((item) => item.id !== selectedConcept?.id)" :key="concept.id" :value="concept.id">{{ concept.name }}</option></select><button class="button danger-button" @click="mergeSelectedConcept"><GitBranch :size="14" />合并</button></div></div></template><div v-else class="empty-detail"><Layers3 :size="30" /><strong>选择一个知识主题</strong><span>查看它关联的知识单元、层级关系和笔记。</span></div></div></div></section>
+        <section v-else-if="activeView === 'concepts'" class="view-panel concepts-view"><div class="page-toolbar"><div><span class="eyebrow">KNOWLEDGE TOPICS</span><h2>知识主题目录</h2></div><button class="button secondary-button" @click="setView('graph')"><Network :size="15" />在图谱中查看</button></div><div class="concepts-layout"><div class="concept-list surface-section"><div class="list-toolbar"><span>{{ store.activeConcepts.length }} 个知识主题</span><div class="compact-search"><Search :size="14" /><input v-model="graphSearch" placeholder="过滤知识主题" /></div></div><button v-for="concept in filteredConcepts.slice(0, visibleConceptCount)" :key="concept.id" class="concept-list-row" :class="{ selected: selectedConceptId === concept.id }" @click="openConcept(concept.id)"><span class="concept-swatch" /><div><strong>{{ concept.name }}</strong><span>{{ store.units.filter((unit) => store.unitConcepts.some((link) => link.unitId === unit.id && link.conceptId === concept.id)).length }} 个知识单元</span></div><ChevronRight :size="15" /></button><button v-if="filteredConcepts.length > visibleConceptCount" class="text-button load-more-button" @click="visibleConceptCount += 60">加载更多知识主题（还有 {{ filteredConcepts.length - visibleConceptCount }} 个）</button></div><div class="concept-detail surface-section"><template v-if="selectedConcept"><div class="detail-header"><div><span class="eyebrow">KNOWLEDGE TOPIC</span><h3>{{ selectedConcept.name }}</h3></div><button class="icon-button" title="归档知识主题" aria-label="归档知识主题" @click="archiveSelectedConcept"><Archive :size="16" /></button></div><div class="alias-row"><span>别名</span><span v-for="alias in store.aliases.filter((item) => item.conceptId === selectedConcept?.id)" :key="alias.id" class="soft-tag">{{ alias.alias }}</span><span v-if="!store.aliases.some((item) => item.conceptId === selectedConcept?.id)" class="muted">暂无别名</span></div><section class="concept-page-editor" aria-labelledby="concept-page-editor-title"><div class="subsection-title"><strong id="concept-page-editor-title">主题信息</strong><span>本地可编辑</span></div><label class="field-label" for="concept-page-name">名称 <small>唯一标识</small></label><input id="concept-page-name" v-model="conceptDraftName" class="drawer-input" maxlength="120" autocomplete="off" /><label class="field-label" for="concept-page-notes">主题说明 / 笔记 <small>Concept.notes</small></label><textarea id="concept-page-notes" v-model="conceptDraftNotes" class="drawer-textarea" placeholder="记录这个主题的长期理解、边界和待核实问题"></textarea><p class="field-hint">知识单元的标题和摘要在单元详情中编辑。</p><div class="concept-editor-actions"><button class="button primary-button" @click="saveConcept"><Check :size="14" />保存主题</button><button class="button ghost-button" @click="resetConceptDraft">撤销修改</button></div></section><div class="relation-summary"><div><span>父主题</span><strong>{{ selectedConceptParents.length }}</strong></div><div><span>子主题</span><strong>{{ selectedConceptChildren.length }}</strong></div><div><span>关联单元</span><strong>{{ selectedConceptUnits.length }}</strong></div></div><div class="detail-subsection"><div class="subsection-title"><strong>关联知识单元</strong><span class="sort-inline"><select v-model="conceptUnitSort" aria-label="知识单元排序方式"><option value="updated">最近更新</option><option value="created">创建时间</option><option value="title">名称</option></select><span>{{ selectedConceptUnits.length }}</span></span></div><button v-for="unit in selectedConceptUnits" :key="unit.id" class="mini-unit-row" @click="openUnit(unit.id)"><BookOpen :size="14" /><span>{{ unit.title || '待命名知识单元' }}</span><ChevronRight :size="14" /></button><div v-if="!selectedConceptUnits.length" class="empty-inline">还没有关联单元</div></div><div class="detail-subsection"><div class="subsection-title"><strong>维护关系</strong><span>手动确认</span></div><div class="relation-form"><select v-model="relationParentId" :aria-label="relationType === 'hierarchy' ? '父知识主题' : '相关关系一端'"><option value="">{{ relationType === 'hierarchy' ? '选择父知识主题' : '选择相关关系一端' }}</option><option v-for="concept in store.activeConcepts" :key="concept.id" :value="concept.id">{{ concept.name }}</option></select><select v-model="relationChildId" :aria-label="relationType === 'hierarchy' ? '子知识主题' : '相关关系另一端'"><option value="">{{ relationType === 'hierarchy' ? '选择子知识主题' : '选择相关关系另一端' }}</option><option v-for="concept in store.activeConcepts" :key="concept.id" :value="concept.id">{{ concept.name }}</option></select><select v-model="relationType" aria-label="关系类型"><option value="hierarchy">父子</option><option value="related">相关</option></select><button class="button secondary-button" @click="createRelationFromForm"><Link2 :size="14" />建立</button></div></div><div class="detail-subsection"><div class="subsection-title"><strong>合并到</strong><span>可撤销事务</span></div><div class="merge-form"><select v-model="mergeTargetId" aria-label="合并目标"><option value="">选择目标知识主题</option><option v-for="concept in store.activeConcepts.filter((item) => item.id !== selectedConcept?.id)" :key="concept.id" :value="concept.id">{{ concept.name }}</option></select><button class="button danger-button" @click="mergeSelectedConcept"><GitBranch :size="14" />合并</button></div></div></template><div v-else class="empty-detail"><Layers3 :size="30" /><strong>选择一个知识主题</strong><span>查看它关联的知识单元、层级关系和笔记。</span></div></div></div></section>
 
         <section v-else-if="activeView === 'tasks'" class="view-panel tasks-view"><div class="page-toolbar"><div><span class="eyebrow">LLM TASK QUEUE</span><h2>任务中心</h2></div><div class="task-toolbar-meta"><span class="soft-tag" :class="store.config.llm.mode ? 'tag-active' : 'tag-warning'">{{ store.config.llm.mode ? (store.config.llm.mode === 'api' ? 'API 模式' : 'Prompt 粘贴') : '未选择模式' }}</span><span>{{ store.tasks.length }} 个任务</span></div></div><div v-if="!store.config.llm.mode" class="mode-callout"><Sparkles :size="19" /><div><strong>先选择 LLM 模式</strong><span>原始数据可以继续浏览；选择 API 或 Prompt 粘贴后才能启动整理任务。</span></div><button class="button primary-button" @click="setView('settings')"><Settings2 :size="15" />去设置</button></div><div class="task-layout"><div class="task-list surface-section"><div class="task-list-heading"><div><strong>任务队列</strong><span>正常结果自动落图，异常结果需要检查</span></div><button class="icon-button" title="刷新任务" aria-label="刷新任务" @click="store.refreshFromDb"><RefreshCw :size="16" /></button></div><div v-for="group in [taskGroups.active, taskGroups.review, taskGroups.completed]" :key="group[0]?.status || 'empty'" class="task-group"><button v-for="task in taskGroupSlice(group)" :key="task.id" class="task-row" :class="{ selected: selectedTaskId === task.id }" @click="selectedTaskId = task.id"><div class="task-state" :class="`state-${taskTone(task.status)}`"><LoaderCircle v-if="task.status === 'running'" class="spin" :size="15" /><Check v-else-if="task.status === 'success'" :size="15" /><CircleHelp v-else :size="15" /></div><div class="row-main"><strong>{{ taskTypeLabel(task.type) }}</strong><span>{{ task.scopeLabel || new Date(task.createdAt).toLocaleString('zh-CN') }} · {{ new Date(task.createdAt).toLocaleString('zh-CN') }}</span></div><span class="status-label" :class="`label-${taskTone(task.status)}`">{{ taskStatusLabel(task.status) }}</span><ChevronRight :size="15" /></button></div><div v-if="!store.tasks.length" class="empty-state compact"><ListChecks :size="28" /><strong>还没有任务</strong><span>导入 JSON 后，整理任务会出现在这里。</span></div><button v-if="taskGroups.completed.length > visibleCompletedTaskCount" class="text-button load-more-button" @click="visibleCompletedTaskCount += 30">加载更多历史任务（还有 {{ taskGroups.completed.length - visibleCompletedTaskCount }} 个）</button></div><div class="task-detail surface-section"><template v-if="selectedTask"><div class="detail-header"><div><span class="eyebrow">TASK DETAIL</span><h3>{{ taskTypeLabel(selectedTask.type) }}</h3><span class="detail-subtitle">{{ selectedTask.scopeLabel }}</span></div><span class="status-label" :class="`label-${taskTone(selectedTask.status)}`">{{ taskStatusLabel(selectedTask.status) }}</span></div><div class="task-meta-grid"><div><span>模式</span><strong>{{ selectedTask.mode === 'api' ? 'API' : 'Prompt 粘贴' }}</strong></div><div><span>Prompt 版本</span><strong>{{ selectedTask.promptVersion }}</strong></div><div><span>重试次数</span><strong>{{ selectedTask.retryCount }}</strong></div></div><div class="prompt-box"><div class="subsection-title"><strong>Prompt</strong><button class="text-button" @click="copyTaskPrompt(selectedTask)"><Clipboard :size="14" />复制</button></div><pre>{{ selectedTask.prompt }}</pre></div><div class="response-box"><label for="task-response">粘贴 LLM 返回结果</label><textarea id="task-response" :value="taskResponse(selectedTask)" placeholder="在网页端执行 Prompt 后，将完整响应粘贴到这里" @input="setTaskDraft(selectedTask!.id, ($event.target as HTMLTextAreaElement).value)" /><div class="response-actions"><button class="button primary-button" @click="applyTask(selectedTask)"><Check :size="15" />校验并应用</button><button v-if="selectedTask.status === 'needs_review'" class="button secondary-button" @click="selectedTaskId = selectedTask.id"><RefreshCw :size="15" />生成修复 Prompt</button></div><div v-if="selectedTask.validationErrors" class="validation-errors"><strong>校验问题</strong><span v-for="(error, index) in JSON.parse(selectedTask.validationErrors)" :key="index">{{ error }}</span></div></div></template><div v-else class="empty-detail"><ListChecks :size="30" /><strong>选择一个任务</strong><span>查看 Prompt、原始响应和本地校验结果。</span></div></div></div></section>
 
@@ -1485,7 +1609,41 @@ onBeforeUnmount(() => {
     <aside v-if="isDetailOpen && (selectedConcept || selectedUnit || selectedMessage)" class="detail-drawer" :class="{ open: isDetailOpen }">
       <div class="drawer-header"><div><span class="eyebrow">DETAIL</span><h3>{{ selectedConcept?.name || selectedUnit?.title || '消息详情' }}</h3></div><div class="drawer-header-actions"><button v-if="selectedMessage" class="icon-button" aria-label="全屏查看消息" title="全屏查看消息" @click="openFullscreenMessage(selectedMessage.id)"><Maximize2 :size="17" /></button><button v-else-if="selectedUnit" class="icon-button" aria-label="全屏查看所属会话" title="全屏查看所属会话" @click="openFullscreenSession(selectedUnit.sessionId)"><Maximize2 :size="17" /></button><button class="icon-button" aria-label="关闭详情" title="关闭详情" @click="isDetailOpen = false"><X :size="17" /></button></div></div>
       <div v-if="selectedUnit" class="drawer-content"><div class="drawer-tags"><span class="soft-tag">知识单元</span><span class="soft-tag">{{ sessionForUnit(selectedUnit)?.title }}</span></div><label class="field-label" for="unit-title">标题 <small>≤30 字</small></label><input id="unit-title" v-model="unitDraftTitle" class="drawer-input" maxlength="30" /><label class="field-label" for="unit-summary">摘要 <small>≤120 字</small></label><textarea id="unit-summary" v-model="unitDraftSummary" class="drawer-textarea" maxlength="120" /><button class="button primary-button full-button" @click="saveUnit"><Check :size="15" />保存单元</button><div class="drawer-section"><div class="subsection-title"><strong>关联知识主题</strong><span>{{ store.unitConceptNames(selectedUnit.id).length }}</span></div><div class="chip-list"><button v-for="conceptId in store.unitConcepts.filter((link) => link.unitId === selectedUnit?.id).map((link) => link.conceptId)" :key="conceptId" class="concept-chip" @click="openConcept(conceptId)">{{ store.concepts.find((concept) => concept.id === conceptId)?.name }}<X :size="12" @click.stop="removeConceptFromUnit(selectedUnit!.id, conceptId)" /></button><span v-if="!store.unitConceptNames(selectedUnit.id).length" class="muted">暂无关联</span></div><div class="add-inline"><input v-model="newUnitConcept" placeholder="添加知识主题" @keyup.enter="addConceptToSelectedUnit" /><button class="icon-button" aria-label="添加知识主题" title="添加知识主题" @click="addConceptToSelectedUnit"><Plus :size="15" /></button></div></div><div class="drawer-section"><div class="subsection-title"><strong>包含消息</strong><span>{{ store.unitMessages(selectedUnit.id).length }}</span></div><div class="message-stack"><article v-for="message in store.unitMessages(selectedUnit.id)" :key="message.id" class="message-card" :class="message.role"><span>{{ message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : '系统' }}</span><div class="md-body" v-html="renderedMessageContent(message.content)" @click="handleRenderedClick" @keydown.enter.prevent="handleRenderedClick" /></article></div></div><button class="text-button" @click="selectedUnitId = null; setView('sessions')"><ArrowRight :size="14" />打开所属会话</button></div>
-      <div v-else-if="selectedConcept" class="drawer-content"><div class="drawer-tags"><span class="soft-tag">知识主题</span><span class="soft-tag">{{ selectedConceptUnits.length }} 个知识单元</span><span class="soft-tag">{{ selectedConceptMessages.length }} 条消息</span></div><div class="drawer-actions"><button class="button danger-button" @click="archiveSelectedConcept"><Archive :size="14" />归档主题</button><select v-model="mergeTargetId" aria-label="合并到另一个知识主题"><option value="">选择合并目标</option><option v-for="concept in store.activeConcepts.filter((item) => item.id !== selectedConcept?.id)" :key="concept.id" :value="concept.id">{{ concept.name }}</option></select><button class="button secondary-button" :disabled="!mergeTargetId" @click="mergeSelectedConcept"><GitBranch :size="14" />合并</button></div><div class="drawer-section"><div class="subsection-title"><strong>层级关系</strong></div><div class="relation-list"><span v-for="relation in [...selectedConceptParents, ...selectedConceptChildren]" :key="relation.id" class="relation-pill"><GitBranch :size="13" />{{ store.concepts.find((concept) => concept.id === (relation.childConceptId === selectedConcept!.id ? relation.parentConceptId : relation.childConceptId))?.name }}</span><span v-if="!selectedConceptParents.length && !selectedConceptChildren.length" class="muted">暂无已确认层级</span></div></div><div class="drawer-section"><div class="subsection-title"><strong>相关主题</strong><span>{{ selectedConceptRelated.length }}</span></div><div class="relation-list"><button v-for="relation in selectedConceptRelated" :key="relation.id" class="relation-pill relation-button" @click="openConcept(otherConceptOf(relation, selectedConcept!.id))"><Link2 :size="13" />{{ conceptName(otherConceptOf(relation, selectedConcept!.id)) }}</button><span v-if="!selectedConceptRelated.length" class="muted">暂无相关主题</span></div></div><div class="drawer-section"><div class="subsection-title"><strong>关联知识单元</strong></div><button v-for="unit in selectedConceptUnits.slice(0, 8)" :key="unit.id" class="mini-unit-row" @click="openUnit(unit.id)"><BookOpen :size="14" /><span>{{ unit.title || '待命名知识单元' }}</span><ChevronRight :size="14" /></button></div><div class="drawer-section"><div class="subsection-title"><strong>包含消息</strong><span>{{ selectedConceptMessages.length }}</span></div><button v-for="message in selectedConceptMessages.slice(0, 12)" :key="message.id" class="mini-unit-row" @click="openMessage(message.id)"><MessageSquare :size="14" /><span>{{ message.content.slice(0, 54) || '空消息' }}</span><ChevronRight :size="14" /></button><div v-if="selectedConceptMessages.length > 12" class="empty-inline">还有 {{ selectedConceptMessages.length - 12 }} 条消息，可打开知识单元查看全部。</div><div v-if="!selectedConceptMessages.length" class="empty-inline">暂无已归属消息。</div></div><button class="button primary-button full-button" @click="openComposer({ topicId: selectedConcept.id, sourceUnitIds: selectedConceptUnits.map((unit) => unit.id) })"><MessageSquare :size="15" />从此知识主题开始新对话</button></div>
+      <div v-else-if="selectedConcept" class="drawer-content concept-drawer-content">
+        <div class="drawer-tags"><span class="soft-tag">知识主题</span><span class="soft-tag">{{ selectedConceptUnits.length }} 个知识单元</span><span class="soft-tag">{{ selectedConceptMessages.length }} 条消息</span></div>
+        <section class="concept-editor" aria-labelledby="concept-editor-title">
+          <div class="subsection-title"><strong id="concept-editor-title">主题信息</strong><span>本地可编辑</span></div>
+          <label class="field-label" for="concept-name">名称 <small>唯一标识</small></label>
+          <input id="concept-name" v-model="conceptDraftName" class="drawer-input" maxlength="120" autocomplete="off" />
+          <label class="field-label" for="concept-notes">主题说明 / 笔记 <small>Concept.notes</small></label>
+          <textarea id="concept-notes" v-model="conceptDraftNotes" class="drawer-textarea concept-notes" placeholder="记录这个主题的长期理解、边界和待核实问题" />
+          <p class="field-hint">知识单元的标题和摘要在单元详情中编辑；主题本身没有单独的摘要字段。</p>
+          <div class="concept-editor-actions"><button class="button primary-button" @click="saveConcept"><Check :size="14" />保存主题</button><button class="button ghost-button" @click="resetConceptDraft">撤销修改</button></div>
+        </section>
+        <div class="drawer-actions concept-drawer-actions"><button class="button danger-button" @click="archiveSelectedConcept"><Archive :size="14" />归档主题</button><select v-model="mergeTargetId" aria-label="合并到另一个知识主题"><option value="">选择合并目标</option><option v-for="concept in store.activeConcepts.filter((item) => item.id !== selectedConcept?.id)" :key="concept.id" :value="concept.id">{{ concept.name }}</option></select><button class="button secondary-button" :disabled="!mergeTargetId" @click="mergeSelectedConcept"><GitBranch :size="14" />合并</button></div>
+        <section class="drawer-section concept-relations-section">
+          <div class="subsection-title"><strong>父主题</strong><span>{{ selectedConceptParents.length }} 个，可多选</span></div>
+          <div class="concept-relation-list">
+            <div v-for="relation in selectedConceptParents" :key="relation.id" class="concept-relation-row"><button class="relation-link" @click="openConcept(otherConceptOf(relation, selectedConcept!.id))">{{ conceptName(otherConceptOf(relation, selectedConcept!.id)) }}</button><span class="status-label" :class="relation.status === 'confirmed' ? 'label-success' : relation.status === 'proposed' ? 'label-warning' : 'label-neutral'">{{ relationStatusLabel(relation.status) }}</span><button class="icon-button relation-remove" title="移除父主题关系" aria-label="移除父主题关系" @click="deleteConceptRelation(relation.id)"><Trash2 :size="13" /></button></div>
+            <div v-if="!selectedConceptParents.length" class="empty-inline">暂无父主题；当前主题是层级根节点。</div>
+          </div>
+          <label class="field-label relation-search-label" for="concept-parent-search">添加父主题</label><div class="relation-search"><Search :size="14" /><input id="concept-parent-search" v-model="conceptParentQuery" placeholder="输入名称实时查找" autocomplete="off" /></div>
+          <div v-if="conceptParentQuery.trim() && conceptParentCandidates.length" class="relation-candidates" role="listbox" aria-label="父主题候选"><button v-for="candidate in conceptParentCandidates" :key="candidate.id" class="relation-candidate" @click="addConceptParent(candidate.id)"><Plus :size="13" /><span>{{ candidate.name }}</span><small>{{ linkedUnitCount(candidate.id) }} 个单元</small></button></div><div v-else-if="conceptParentQuery.trim()" class="relation-candidate-empty">没有匹配的现有主题。</div>
+        </section>
+        <section class="drawer-section concept-relations-section">
+          <div class="subsection-title"><strong>子主题</strong><span>{{ selectedConceptChildren.length }} 个，可多选</span></div>
+          <div class="concept-relation-list">
+            <div v-for="relation in selectedConceptChildren" :key="relation.id" class="concept-relation-row"><button class="relation-link" @click="openConcept(otherConceptOf(relation, selectedConcept!.id))">{{ conceptName(otherConceptOf(relation, selectedConcept!.id)) }}</button><span class="status-label" :class="relation.status === 'confirmed' ? 'label-success' : relation.status === 'proposed' ? 'label-warning' : 'label-neutral'">{{ relationStatusLabel(relation.status) }}</span><button class="text-button relation-promote" title="提升到当前主题的上一级" @click="promoteSelectedChild(relation.id)"><ArrowUp :size="13" />提升</button><button class="icon-button relation-remove" title="移除子主题关系" aria-label="移除子主题关系" @click="deleteConceptRelation(relation.id)"><Trash2 :size="13" /></button></div>
+            <div v-if="!selectedConceptChildren.length" class="empty-inline">暂无子主题。</div>
+          </div>
+          <label class="field-label relation-search-label" for="concept-child-search">添加子主题</label><div class="relation-search"><Search :size="14" /><input id="concept-child-search" v-model="conceptChildQuery" placeholder="输入名称实时查找" autocomplete="off" @keyup.enter="createAndAddConceptChild" /></div>
+          <div v-if="conceptChildQuery.trim() && conceptChildCandidates.length" class="relation-candidates" role="listbox" aria-label="子主题候选"><button v-for="candidate in conceptChildCandidates" :key="candidate.id" class="relation-candidate" @click="addConceptChild(candidate.id)"><Plus :size="13" /><span>{{ candidate.name }}</span><small>{{ linkedUnitCount(candidate.id) }} 个单元</small></button></div><div v-else-if="conceptChildQuery.trim()" class="relation-candidate-empty"><span>没有匹配的现有主题。</span><button class="text-button" @click="createAndAddConceptChild"><Plus :size="13" />创建并添加“{{ conceptChildQuery.trim() }}”</button></div>
+        </section>
+        <section class="drawer-section"><div class="subsection-title"><strong>相关主题</strong><span>{{ selectedConceptRelated.length }} 个</span></div><div class="concept-relation-list"><div v-for="relation in selectedConceptRelated" :key="relation.id" class="concept-relation-row"><button class="relation-link" @click="openConcept(otherConceptOf(relation, selectedConcept!.id))"><Link2 :size="13" />{{ conceptName(otherConceptOf(relation, selectedConcept!.id)) }}</button><span class="status-label" :class="relation.status === 'confirmed' ? 'label-success' : relation.status === 'proposed' ? 'label-warning' : 'label-neutral'">{{ relationStatusLabel(relation.status) }}</span><button class="icon-button relation-remove" title="移除相关关系" aria-label="移除相关关系" @click="deleteConceptRelation(relation.id)"><Trash2 :size="13" /></button></div><div v-if="!selectedConceptRelated.length" class="empty-inline">暂无相关主题；“相关”关系不表示父子层级。</div></div></section>
+        <section class="drawer-section"><div class="subsection-title"><strong>关联知识单元</strong><span>{{ selectedConceptUnits.length }} 个</span></div><button v-for="unit in selectedConceptUnits.slice(0, 12)" :key="unit.id" class="mini-unit-row" @click="openUnit(unit.id)"><BookOpen :size="14" /><span>{{ unit.title || '待命名知识单元' }}</span><ChevronRight :size="14" /></button><div v-if="selectedConceptUnits.length > 12" class="empty-inline">还有 {{ selectedConceptUnits.length - 12 }} 个单元，可在主题目录中继续查看。</div><div v-if="!selectedConceptUnits.length" class="empty-inline">还没有关联单元。</div></section>
+        <section class="drawer-section"><div class="subsection-title"><strong>包含消息</strong><span>{{ selectedConceptMessages.length }} 条</span></div><button v-for="message in selectedConceptMessages.slice(0, 12)" :key="message.id" class="mini-unit-row" @click="openFullscreenMessage(message.id)"><MessageSquare :size="14" /><span>{{ message.content.slice(0, 54) || '空消息' }}</span><Maximize2 :size="14" /></button><div v-if="selectedConceptMessages.length > 12" class="empty-inline">还有 {{ selectedConceptMessages.length - 12 }} 条消息。</div><div v-if="!selectedConceptMessages.length" class="empty-inline">暂无已归属消息。</div></section>
+        <button class="button primary-button full-button" @click="openComposer({ topicId: selectedConcept?.id ?? null, sourceUnitIds: selectedConceptUnits.map((unit) => unit.id) })"><MessageSquare :size="15" />从此知识主题开始新对话</button>
+      </div>
       <div v-else-if="selectedMessage" class="drawer-content"><div class="drawer-tags"><span class="soft-tag">{{ selectedMessage.role }}</span><span class="soft-tag">消息 #{{ selectedMessage.orderInSession + 1 }}</span></div><div class="message-context-actions"><button class="button secondary-button" @click="toggleMessageContext(selectedMessage.id)"><Check v-if="store.selectedContextMessageIds.includes(selectedMessage.id)" :size="14" /><Plus v-else :size="14" />{{ store.selectedContextMessageIds.includes(selectedMessage.id) ? '已加入上下文' : '加入上下文' }}</button><button class="button secondary-button" @click="openFullscreenMessage(selectedMessage.id)"><Maximize2 :size="14" />全屏查看</button></div><div class="md-body message-detail-content" v-html="renderedMessageContent(selectedMessage.content)" @click="handleRenderedClick" @keydown.enter.prevent="handleRenderedClick" /><button v-if="selectedMessage.unitId" class="text-button" @click="openUnit(selectedMessage.unitId)"><BookOpen :size="14" />打开所属知识单元</button></div>
     </aside>
 

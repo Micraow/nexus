@@ -886,8 +886,35 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     })
   }
 
+  /**
+   * Update the user-editable fields of a Concept. Concepts intentionally keep
+   * one free-form `notes` field; KnowledgeUnit owns title/summary metadata.
+   * Name changes are normalized and recorded so they can be undone together
+   * with other graph maintenance operations.
+   */
+  function updateConcept(conceptId: string, updates: { name?: string; notes?: string }): void {
+    const current = db.query<Row>('SELECT * FROM concepts WHERE id = ?', [conceptId])[0]
+    if (!current) throw new Error('知识主题不存在')
+    const nextName = updates.name === undefined ? text(current.name) : updates.name.trim()
+    const normalizedName = normalizeText(nextName)
+    if (!normalizedName) throw new Error('知识主题名称不能为空')
+    if (nextName.length > 120) throw new Error('知识主题名称不能超过 120 个字符')
+    const duplicate = db.query<Row>('SELECT id FROM concepts WHERE normalized_name = ? AND id <> ?', [normalizedName, conceptId])[0]
+    const aliasOwner = db.query<Row>('SELECT concept_id FROM concept_aliases WHERE normalized_alias = ?', [normalizedName])[0]
+    if (duplicate || (aliasOwner && text(aliasOwner.concept_id) !== conceptId)) throw new Error('已有同名知识主题或别名，请换一个名称')
+    const nextNotes = updates.notes === undefined ? text(current.notes) : updates.notes
+    if (nextName === text(current.name) && nextNotes === text(current.notes)) return
+
+    const before = captureConceptOperationSnapshot()
+    mutate(() => {
+      db.run('DELETE FROM concept_aliases WHERE concept_id = ? AND normalized_alias = ?', [conceptId, normalizedName])
+      db.run('UPDATE concepts SET name = ?, normalized_name = ?, notes = ?, updated_at = ? WHERE id = ?', [nextName, normalizedName, nextNotes, isoNow(), conceptId])
+      recordOperation('编辑知识主题', before, captureConceptOperationSnapshot())
+    })
+  }
+
   function updateConceptNotes(conceptId: string, notes: string): void {
-    mutate(() => db.run('UPDATE concepts SET notes = ?, updated_at = ? WHERE id = ?', [notes, isoNow(), conceptId]))
+    updateConcept(conceptId, { notes })
   }
 
   function toggleSessionLocalOnly(sessionId: string, value: boolean): void {
@@ -924,6 +951,26 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     db.run('INSERT INTO concepts(id, name, normalized_name, notes, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [id, name.trim(), normalized, '', 'active', now, now])
     void source
     return id
+  }
+
+  /** Create (or reactivate) a manually maintained Concept and return its id. */
+  function createConcept(name: string, notes = ''): string {
+    const trimmed = name.trim()
+    const normalized = normalizeText(trimmed)
+    if (!normalized) throw new Error('知识主题名称不能为空')
+    if (trimmed.length > 120) throw new Error('知识主题名称不能超过 120 个字符')
+
+    const existing = db.query<Row>('SELECT id, status, notes FROM concepts WHERE normalized_name = ?', [normalized])[0]
+    if (existing && text(existing.status) === 'active') return text(existing.id)
+
+    const before = captureConceptOperationSnapshot()
+    let conceptId = ''
+    mutate(() => {
+      conceptId = ensureConcept(trimmed)
+      if (notes.trim()) db.run('UPDATE concepts SET notes = ?, updated_at = ? WHERE id = ?', [notes, isoNow(), conceptId])
+      recordOperation('创建知识主题', before, captureConceptOperationSnapshot())
+    })
+    return conceptId
   }
 
   function addConceptToUnit(unitId: string, name: string): string {
@@ -1084,6 +1131,41 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     mutate(() => {
       db.run('DELETE FROM concept_relations WHERE id = ?', [relationId])
       recordOperation('删除知识主题关系', before, captureConceptOperationSnapshot())
+    })
+  }
+
+  /**
+   * Move a hierarchy child up one level. Every active parent of the current
+   * parent is connected to the child, then the original edge is removed. A
+   * root child simply becomes a root when the selected edge is removed. The
+   * operation is intentionally atomic and undoable.
+   *
+   * The optional child id is accepted as a convenience for callers that have
+   * endpoints rather than a relation id; the relation id form is preferred.
+   */
+  function promoteConceptChild(relationOrParentId: string, childId?: string): void {
+    const relation = relations.value.find((item) => item.relationType === 'hierarchy'
+      && item.status !== 'rejected'
+      && (item.id === relationOrParentId
+        || (item.parentConceptId === relationOrParentId && item.childConceptId === childId)))
+    if (!relation) throw new Error('找不到需要提升的父子关系')
+
+    const remaining = relations.value.filter((item) => item.id !== relation.id)
+    const grandParents = remaining
+      .filter((item) => item.relationType === 'hierarchy' && item.status !== 'rejected' && item.childConceptId === relation.parentConceptId)
+      .map((item) => item.parentConceptId)
+      .filter((id, index, all) => all.indexOf(id) === index)
+    const promotedRelations = grandParents.filter((parentId) => !wouldCreateHierarchyCycle(parentId, relation.childConceptId, remaining))
+    if (grandParents.length !== promotedRelations.length) throw new Error('提升后会形成层级环，操作已取消')
+
+    const before = captureConceptOperationSnapshot()
+    mutate(() => {
+      const now = isoNow()
+      db.run('DELETE FROM concept_relations WHERE id = ?', [relation.id])
+      promotedRelations.forEach((parentId) => {
+        db.run('INSERT OR IGNORE INTO concept_relations(id, parent_concept_id, child_concept_id, relation_type, source, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [createId('relation'), parentId, relation.childConceptId, 'hierarchy', 'manual', 'confirmed', now, now])
+      })
+      recordOperation('提升知识主题层级', before, captureConceptOperationSnapshot())
     })
   }
 
@@ -2278,8 +2360,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     importJsonText,
     importJsonTextWithMode,
     updateUnit,
+    updateConcept,
     updateConceptNotes,
     toggleSessionLocalOnly,
+    createConcept,
     addConceptToUnit,
     setUnitConcept,
     createRelation,
@@ -2319,6 +2403,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     operationLogs,
     undoOperation,
     deleteRelation,
+    promoteConceptChild,
     graphLayout,
     graphViewport,
     saveGraphLayout,
