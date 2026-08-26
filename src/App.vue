@@ -80,6 +80,10 @@ const graphShowProposed = ref(false)
 const graphShowRetainedSessions = ref(false)
 const graphSearch = ref('')
 const graphControlsOpen = ref(true)
+// Concept disclosure is kept in the view, so selecting a node never mutates
+// the graph topology. The store normalizes ancestor visibility and collapses
+// descendants when a parent is closed.
+const expandedConceptIds = ref<string[]>([])
 const unitDraftTitle = ref('')
 const unitDraftSummary = ref('')
 const newUnitConcept = ref('')
@@ -199,7 +203,13 @@ const navItems: Array<{ id: ViewName; label: string; icon: typeof LayoutDashboar
 
 const viewTitle = computed(() => navItems.find((item) => item.id === activeView.value)?.label ?? '概览')
 const currentGraph = computed(() => {
-  const snapshot = store.viewGraph({ showUnits: graphShowUnits.value, showMessages: graphShowMessages.value, showProposed: graphShowProposed.value, showRetainedSessions: graphShowRetainedSessions.value })
+  const snapshot = store.viewGraph({
+    showUnits: graphShowUnits.value,
+    showMessages: graphShowMessages.value,
+    showProposed: graphShowProposed.value,
+    showRetainedSessions: graphShowRetainedSessions.value,
+    expandedConceptIds: expandedConceptIds.value,
+  })
   if (!graphSearch.value.trim()) return snapshot
   const needle = graphSearch.value.trim().toLocaleUpperCase()
   const matchingIds = new Set(snapshot.nodes.filter((node) => node.label.toLocaleUpperCase().includes(needle)).map((node) => node.id))
@@ -382,6 +392,15 @@ function saveGraphViewport(viewport: { x: number; y: number; scale: number }): v
     store.saveGraphViewport(viewport)
     viewportSaveTimer = null
   }, 350)
+}
+
+function toggleGraphConcept(conceptId: string, expanded: boolean): void {
+  expandedConceptIds.value = store.toggleConceptExpansion(
+    expandedConceptIds.value,
+    conceptId,
+    expanded,
+    graphShowProposed.value,
+  )
 }
 
 function resetGraphLayout(): void {
@@ -1403,7 +1422,7 @@ onBeforeUnmount(() => {
         <section v-else-if="activeView === 'graph'" class="view-panel graph-view">
           <div class="graph-layout">
             <div class="graph-stage-toolbar"><div class="graph-stage-heading"><span class="eyebrow">GLOBAL GRAPH</span><h2>知识主题关系网络</h2></div><div class="toolbar-actions"><div class="compact-search"><Search :size="15" /><input v-model="graphSearch" placeholder="过滤节点" aria-label="过滤图谱节点" /></div><button class="button secondary-button" @click="exportSnapshot"><Download :size="15" />导出快照</button><button class="icon-button" title="重置布局" aria-label="重置布局" @click="resetGraphLayout"><RotateCcw :size="17" /></button></div></div>
-          <div class="graph-main"><GraphCanvas :key="graphLayoutNonce" :snapshot="currentGraph" :viewport="store.graphViewport" :selected-unit-ids="store.selectedContextIds" :reduced-motion="store.config.ui.reducedMotion" @select-concept="openConcept" @select-unit="openUnit" @select-message="openFullscreenMessage" @box-select-unit="addBoxSelectedUnit" @layout-change="saveGraphLayout" @viewport-change="saveGraphViewport" /></div>
+          <div class="graph-main"><GraphCanvas :key="graphLayoutNonce" :snapshot="currentGraph" :viewport="store.graphViewport" :selected-unit-ids="store.selectedContextIds" :expanded-concept-ids="expandedConceptIds" :reduced-motion="store.config.ui.reducedMotion" @select-concept="openConcept" @toggle-concept="toggleGraphConcept" @select-unit="openUnit" @select-message="openFullscreenMessage" @box-select-unit="addBoxSelectedUnit" @layout-change="saveGraphLayout" @viewport-change="saveGraphViewport" /></div>
             <aside v-if="graphControlsOpen" class="graph-controls surface-section"><div class="panel-heading"><div><span class="eyebrow">VIEW</span><h3>显示选项</h3></div><button class="icon-button" title="收起显示选项" aria-label="收起显示选项" @click="graphControlsOpen = false"><X :size="16" /></button></div><label class="toggle-row"><span><strong>知识单元</strong><small>统一显示全部知识单元，点击主题不会改变节点集合</small></span><input v-model="graphShowUnits" type="checkbox" /></label><label class="toggle-row"><span><strong>消息与会话链</strong><small>显示同一会话中的原始消息及顺序连接</small></span><input v-model="graphShowMessages" type="checkbox" /></label><label class="toggle-row"><span><strong>未归档会话</strong><small>显示尚未分类或分类后保留的探讨、流程会话</small></span><input v-model="graphShowRetainedSessions" type="checkbox" /></label><label class="toggle-row"><span><strong>待确认关系</strong><small>以虚线呈现建议关系</small></span><input v-model="graphShowProposed" type="checkbox" /></label><div class="graph-mini-stats"><div><strong>{{ graphOverview.concepts }}</strong><span>知识主题</span></div><div><strong>{{ graphOverview.units }}</strong><span>知识单元</span></div><div><strong>{{ graphOverview.edges }}</strong><span>关系</span></div></div><div class="graph-control-note"><GitBranch :size="15" /><span>同一知识单元中的主题始终由共现线连接；点击只打开详情，拖拽只改变位置。</span></div></aside>
             <button v-else class="icon-button graph-controls-launcher" title="打开显示选项" aria-label="打开显示选项" @click="graphControlsOpen = true"><SlidersHorizontal :size="17" /></button>
           </div>
