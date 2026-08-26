@@ -35,6 +35,9 @@ let userMovedViewport = false
 let hasFittedData = false
 // 拓扑展开时复用已经稳定的坐标，避免新增节点让整张图重新爆散。
 const nodePositions = new Map<string, { x: number; y: number }>()
+// 重渲染会替换 simulation；用 generation 和 timer 忽略旧布局的延迟 fit。
+let renderGeneration = 0
+let fitTimer: number | null = null
 
 const palette: Record<string, string> = {
   concept: '#2c6e9e',
@@ -52,6 +55,11 @@ function edgeColor(edge: GraphEdge): string {
 
 function render(): void {
   if (!svg.value || !host.value) return
+  const generation = ++renderGeneration
+  if (fitTimer != null) {
+    window.clearTimeout(fitTimer)
+    fitTimer = null
+  }
   const element = svg.value
   const width = Math.max(host.value.clientWidth, 480)
   const height = Math.max(host.value.clientHeight, 460)
@@ -99,7 +107,8 @@ function render(): void {
     return copy
   })
   if (!nodes.length && !userMovedViewport) hasFittedData = false
-  const shouldFitInitialView = !userMovedViewport && !hasFittedData && nodes.length > 0
+  const hasNewNodes = nodes.some((node) => !nodePositions.has(node.id))
+  const shouldFitView = !userMovedViewport && nodes.length > 0 && (!hasFittedData || hasNewNodes)
   nodes.forEach((node) => {
     if (node.fixed && node.x != null && node.y != null) {
       node.fx = node.x
@@ -250,10 +259,10 @@ function render(): void {
   else simulation.alpha(0.55)
 
   // 首次挂载且用户未操作时，等力向布局稳定后只适配一次画布，避免每个 tick 触发 zoom 重排。
-  if (shouldFitInitialView) {
+  if (shouldFitView) {
     let fitted = false
-    const fitView = (): void => {
-      if (fitted || userMovedViewport) return
+    const fitView = (freeze = false): void => {
+      if (fitted || userMovedViewport || generation !== renderGeneration) return
       const xs = nodes.map((node) => node.x).filter((value) => value != null) as number[]
       const ys = nodes.map((node) => node.y).filter((value) => value != null) as number[]
       if (!xs.length) return
@@ -261,16 +270,24 @@ function render(): void {
       const maxX = Math.max(...xs) + 60
       const minY = Math.min(...ys) - 60
       const maxY = Math.max(...ys) + 60
-      const scale = Math.min(1.4, Math.max(0.35, Math.min(width / Math.max(maxX - minX, 1), height / Math.max(maxY - minY, 1))))
+      // 大量消息节点的布局跨度可能超过画布，允许缩到 zoom 下限后再由用户放大查看。
+      const scale = Math.min(1.4, Math.max(0.1, Math.min(width / Math.max(maxX - minX, 1), height / Math.max(maxY - minY, 1))))
       const transform = d3.zoomIdentity.translate(width / 2, height / 2).scale(scale).translate(-(minX + maxX) / 2, -(minY + maxY) / 2)
       fitted = true
       hasFittedData = true
+      if (freeze) simulation?.stop()
       fittingProgrammatically = true
       root.call(zoom.transform, transform)
       fittingProgrammatically = false
     }
     simulation.on('end.fit', fitView)
-    requestAnimationFrame(fitView)
+    // 极大图谱或后台节流时 end 事件可能很晚，给用户一个确定的最终视口。
+    fitTimer = window.setTimeout(() => {
+      fitTimer = null
+      // 超大图谱的力向计算可能被后台节流；此时冻结当前布局并适配，
+      // 避免节点在适配后继续漂移到画布外。
+      fitView(true)
+    }, 6000)
   }
 
   // 框选多选：Shift+左键拖出选框，松开后把框内知识单元加入上下文选择。
@@ -346,6 +363,8 @@ watch(() => props.selectedUnitIds.slice(), (selectedIds) => {
 })
 
 onBeforeUnmount(() => {
+  renderGeneration += 1
+  if (fitTimer != null) window.clearTimeout(fitTimer)
   simulation?.stop()
   resizeObserver?.disconnect()
 })

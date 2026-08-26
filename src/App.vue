@@ -561,11 +561,6 @@ function openComposer(input: { topicId?: string | null; sourceUnitIds?: string[]
 
 /** Bring the current context selection to the persistent new-chat surface. */
 function openContextComposer(): void {
-  if (!store.config.llm.mode) {
-    notify('请先在设置中选择 LLM 模式')
-    setView('settings')
-    return
-  }
   composerFollowUp.value = null
   composerTopicId.value = selectedConceptId.value
   composerSourceUnitIds.value = [...store.selectedContextIds]
@@ -575,7 +570,10 @@ function openContextComposer(): void {
   composerPhraseId.value = ''
   composerOpen.value = false
   setView('overview')
-  void nextTick(() => document.querySelector<HTMLTextAreaElement>('textarea[aria-label="新对话问题"]')?.focus())
+  void nextTick(() => {
+    window.scrollTo({ top: 0, behavior: 'auto' })
+    document.querySelector<HTMLTextAreaElement>('textarea[aria-label="新对话问题"]')?.focus()
+  })
 }
 
 function applyComposerPhrase(): void {
