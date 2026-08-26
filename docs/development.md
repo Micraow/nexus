@@ -93,11 +93,13 @@ pnpm tauri build
 
 Windows 上同一命令产出 `msi`/`nsis` 安装包（位于 `bundle/msi` 或 `bundle/nsis`）。
 
-**AppImage 注意事项**：AppImage 打包需要运行 `linuxdeploy` 工具。如果宿主机只有 fuse3（例如较新的 Arch），linuxdeploy 无法直接执行，请改用：
+**AppImage 注意事项**：在 Linux 上推荐使用项目脚本单独构建 AppImage：
 
 ```bash
-APPIMAGE_EXTRACT_AND_RUN=1 pnpm tauri build --bundles appimage
+pnpm run build:appimage
 ```
+
+该脚本设置了 `APPIMAGE_EXTRACT_AND_RUN=1`，因此只有 fuse3 的较新发行版也能运行 linuxdeploy；同时设置 `NO_STRIP=1`，避免 linuxdeploy 内置的旧版 `strip` 无法识别 Arch Linux 新系统库的 `.relr.dyn` 节区。Rust release 二进制仍会由 Cargo 按 release 配置处理，这个变量只跳过 linuxdeploy 对收集到的系统库进行二次 strip。
 
 deb 与 rpm 由 Tauri 纯 Rust 实现，不需要系统安装 `dpkg-deb`/`rpmbuild`。
 
@@ -151,7 +153,7 @@ pnpm build:extension      # 产物在 extension/dist/
 |---|---|
 | `failed to parse the edition key` | Rust 工具链过旧：`rustup update` |
 | 编译报 `webkit2gtk` 未找到 | 未装 Tauri 系统依赖，见第 1 节 |
-| AppImage 阶段 `failed to run linuxdeploy` | 用 `APPIMAGE_EXTRACT_AND_RUN=1` 重试，或安装 fuse2 |
+| AppImage 阶段 `failed to run linuxdeploy` | 使用 `pnpm run build:appimage`；脚本同时兼容 fuse3 和 Arch 新系统库的 `.relr.dyn` 节区 |
 | 应用内 WASM 无法初始化 / 白屏 | 确认未改动 `tauri.conf.json` CSP 中的 `'wasm-unsafe-eval'` |
 | 5173 端口被占用 | 关闭占用进程，或临时改 `vite.config.ts` 的端口并同步 `devUrl` |
 | DeepSeek 历史只显示首批 | 在工作台点击「加载全部历史」；扩展使用逐屏滚动适配虚拟列表，连续两轮没有增长后才结束 |
