@@ -781,7 +781,7 @@ function taskTone(status: LLMTask['status']): string {
 }
 
 function taskTypeLabel(type: LLMTask['type']): string {
-  return ({ session_triage: '会话分类', segmentation: '对话分段', concept_extraction: '知识主题提取', title: '标题生成', summary: '摘要生成', origin_concepts: '起始知识主题', conversation: '对话', maintenance: '维护建议' } as Record<string, string>)[type]
+  return ({ session_triage: '会话分类', segmentation: '对话分段', concept_extraction: '知识主题提取', unit_metadata: '标题与摘要生成', title: '标题生成（旧任务）', summary: '摘要生成（旧任务）', origin_concepts: '起始知识主题', conversation: '对话', maintenance: '维护建议' } as Record<string, string>)[type]
 }
 
 function taskResponse(task: LLMTask): string {

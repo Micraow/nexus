@@ -11,6 +11,7 @@ export type TaskType =
   | 'session_triage'
   | 'segmentation'
   | 'concept_extraction'
+  | 'unit_metadata'
   | 'title'
   | 'summary'
   | 'origin_concepts'

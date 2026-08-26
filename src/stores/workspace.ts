@@ -5,7 +5,7 @@ import { httpRequest } from '@/services/http'
 import { parseConfigText, readConfigText, writeConfig } from '@/services/config'
 import { buildGraph, graphStats } from '@/services/graph'
 import { buildSearchDocuments, searchKnowledge } from '@/services/search'
-import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildRepairPrompt, buildSegmentationPrompt, buildSessionTriagePrompt, buildSummaryPrompt, buildTitlePrompt, PROMPT_VERSION, renderQuickPhrase } from '@/services/prompts'
+import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildRepairPrompt, buildSegmentationPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, PROMPT_VERSION, renderQuickPhrase } from '@/services/prompts'
 import { importPayloadSchema, parseImportPayload, validateSegmentationResult, validateUnitText } from '@/services/validation'
 import { combineSegmentationChunks, splitMessageChunks } from '@/utils/chunks'
 import { wouldCreateHierarchyCycle } from '@/utils/graph-rules'
@@ -1070,6 +1070,28 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const unit = units.value.find((item) => item.id === targetId)
     const session = sessions.value.find((item) => item.id === targetId)
 
+    if (task.type === 'unit_metadata') {
+      if (!unit) errors.push('任务所属的知识单元不存在')
+      else if (String(unit.revision) !== targetRevision) errors.push('任务输入版本已过期，请重新生成 Prompt')
+      const title = data.title
+      const summary = data.summary
+      if (typeof title !== 'string' || !title.trim()) errors.push('标题必须是非空字符串')
+      if (typeof summary !== 'string' || !summary.trim()) errors.push('摘要必须是非空字符串')
+      if (typeof title === 'string' || typeof summary === 'string') {
+        errors.push(...validateUnitText(typeof title === 'string' ? title : unit?.title, typeof summary === 'string' ? summary : unit?.summary).map((issue) => issue.message))
+      }
+      if (errors.length) {
+        markTask(taskId, errors.some((error) => error.includes('版本')) ? 'stale' : 'needs_review', responseText, errors)
+        return { ok: false, errors }
+      }
+      mutate(() => {
+        const now = isoNow()
+        db.run("UPDATE knowledge_units SET title = ?, summary = ?, status = 'ready', updated_at = ? WHERE id = ?", [String(title).trim(), String(summary).trim(), now, targetId])
+        db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = ?, validation_errors = NULL, updated_at = ? WHERE id = ?', ['success', responseText, JSON.stringify(data), now, taskId])
+      })
+      return { ok: true, errors: [] }
+    }
+
     if (task.type === 'title' || task.type === 'summary') {
       if (!unit) errors.push('任务所属的知识单元不存在')
       else if (String(unit.revision) !== targetRevision) errors.push('任务输入版本已过期，请重新生成 Prompt')
@@ -1392,8 +1414,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, ?, NULL, ?, 1, ?)', [nodeId, session.id, rootId, unitResult.title_hint || '待命名知识单元', now])
         db.run('INSERT INTO nav_tree_node_units(node_id, unit_id, order_in_node) VALUES (?, ?, 0)', [nodeId, unitId])
         const createdUnit = unitFromRow(db.query<Row>('SELECT * FROM knowledge_units WHERE id = ?', [unitId])[0])
-        createTask({ type: 'title', mode: task.mode, providerId: task.providerId, model: task.model, promptVersion: PROMPT_VERSION, inputRevision: `${unitId}:1`, prompt: buildTitlePrompt(session, createdUnit, unitMessages, []), status: 'pending', scopeLabel: `${session.title} · 标题` })
-        createTask({ type: 'summary', mode: task.mode, providerId: task.providerId, model: task.model, promptVersion: PROMPT_VERSION, inputRevision: `${unitId}:1`, prompt: buildSummaryPrompt(session, createdUnit, unitMessages, []), status: 'pending', scopeLabel: `${session.title} · 摘要` })
+        createTask({ type: 'unit_metadata', mode: task.mode, providerId: task.providerId, model: task.model, promptVersion: PROMPT_VERSION, inputRevision: `${unitId}:1`, prompt: buildTitleSummaryPrompt(session, createdUnit, unitMessages, []), status: 'pending', scopeLabel: `${session.title} · 标题与摘要` })
         createTask({ type: 'concept_extraction', mode: task.mode, providerId: task.providerId, model: task.model, promptVersion: PROMPT_VERSION, inputRevision: `${unitId}:1`, prompt: buildConceptPrompt(session, createdUnit, unitMessages, []), status: 'pending', scopeLabel: `${session.title} · 知识主题` })
       })
       db.run('UPDATE sessions SET message_count = ?, unit_count = ?, revision = revision + 1, updated_at = ? WHERE id = ?', [sessionMessages.length, segmentation.units.length, now, session.id])

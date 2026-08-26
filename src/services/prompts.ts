@@ -68,6 +68,16 @@ Session：${session.title}
 只返回 JSON：{"summary":"..."}`
 }
 
+export function buildTitleSummaryPrompt(session: Session, unit: KnowledgeUnit, messages: Message[], conceptNames: string[]): string {
+  return `请为下面的 KnowledgeUnit 一次生成标题和摘要。标题不超过 30 个中文字符，应表达具体讨论角度；摘要不超过 120 个中文字符，概括关键结论或比较角度。两者都只能依据输入内容，不要补充输入中没有的事实；标题不要写成摘要，也不要只重复 Concept 名称。
+
+Session：${session.title}
+关联 Concept：${conceptNames.join('、') || '暂无'}
+消息：${messages.map((message) => `${message.role}: ${message.content}`).join('\n')}
+
+只返回 JSON：{"title":"...","summary":"..."}`
+}
+
 export function buildConceptPrompt(session: Session, unit: KnowledgeUnit, messages: Message[], conceptNames: string[]): string {
   return `请从下面的 KnowledgeUnit 提取 1～8 个稳定、可复用的 Concept。优先返回具体知识主体，不要返回“问题”“回答”“内容”等泛词；已有 Concept 只作为候选参考，不要强行合并。
 
