@@ -3,14 +3,57 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as d3 from 'd3'
 import type { GraphEdge, GraphNode, GraphSnapshot, GraphViewport } from '@/types/domain'
 
+/** Optional hierarchy metadata accepted by recursive graph callers. */
+export interface GraphConceptHierarchyMeta {
+  depth?: number
+  level?: number
+  parentId?: string | null
+  childCount?: number
+  hasChildren?: boolean
+}
+
+type LevelMap = Record<string, number> | Map<string, number>
+type HierarchyMap = Record<string, GraphConceptHierarchyMeta> | Map<string, GraphConceptHierarchyMeta>
+type ChildrenMap = Record<string, string[]> | Map<string, string[]>
+
 const props = withDefaults(
   defineProps<{
     snapshot: GraphSnapshot
     selectedUnitIds?: string[]
     reducedMotion?: boolean
     viewport?: GraphViewport
+    /** Concept ids whose local children are currently disclosed. */
+    expandedConceptIds?: string[]
+    /** Optional per-node depth/level map used by recursive graph queries. */
+    visibleNodeLevels?: LevelMap | number
+    /** Maximum depth to render when a caller passes a complete snapshot. */
+    maxVisibleLevel?: number
+    /** Service-level alias used by recursive GraphViewOptions. */
+    expandedConceptDepth?: number
+    /** UI-level alias for callers with a complete, unfiltered snapshot. */
+    visibleNodeDepth?: number
+    /** Optional hierarchy metadata for concepts not yet present in snapshot. */
+    conceptHierarchy?: HierarchyMap
+    /** Optional child ids/counts for collapsed concepts. */
+    conceptChildren?: ChildrenMap
+    expandableConceptIds?: string[]
+    /** Opt in to fitting after a topology update; disabled by default. */
+    fitOnTopologyChange?: boolean
   }>(),
-  { selectedUnitIds: () => [], reducedMotion: false, viewport: () => ({ x: 0, y: 0, scale: 1, layoutVersion: 1 }) },
+  {
+    selectedUnitIds: () => [],
+    reducedMotion: false,
+    viewport: () => ({ x: 0, y: 0, scale: 1, layoutVersion: 1 }),
+    expandedConceptIds: () => [],
+    visibleNodeLevels: undefined,
+    maxVisibleLevel: undefined,
+    expandedConceptDepth: undefined,
+    visibleNodeDepth: undefined,
+    conceptHierarchy: undefined,
+    conceptChildren: undefined,
+    expandableConceptIds: () => [],
+    fitOnTopologyChange: false,
+  },
 )
 
 const emit = defineEmits<{
@@ -20,6 +63,8 @@ const emit = defineEmits<{
   (event: 'box-select-unit', id: string): void
   (event: 'layout-change', entry: { nodeType: GraphNode['type']; refId: string; x: number; y: number; fixed: boolean }): void
   (event: 'viewport-change', viewport: { x: number; y: number; scale: number }): void
+  /** The parent owns expansion state and performs the next recursive query. */
+  (event: 'toggle-concept', id: string, expanded: boolean): void
 }>()
 
 const host = ref<HTMLElement | null>(null)
@@ -54,6 +99,94 @@ function edgeColor(edge: GraphEdge): string {
   if (edge.type === 'conversation') return '#c18d30'
   if (edge.type === 'association') return '#879eae'
   return '#71899a'
+}
+
+function mapValue<T>(map: Record<string, T> | Map<string, T> | undefined, key: string): T | undefined {
+  if (!map) return undefined
+  return map instanceof Map ? map.get(key) : map[key]
+}
+
+function conceptMeta(conceptId: string): GraphConceptHierarchyMeta | undefined {
+  return mapValue(props.conceptHierarchy, conceptId) ?? mapValue(props.conceptHierarchy, `concept:${conceptId}`)
+}
+
+function nodeLevel(node: GraphNode): number | undefined {
+  const levels = props.visibleNodeLevels
+  // A numeric `visibleNodeLevels` value is the max-depth shorthand, not a
+  // claim that every node has that level.
+  if (typeof levels === 'number') return undefined
+  const dynamicNode = node as GraphNode & { depth?: number; level?: number }
+  return mapValue(levels, node.id) ?? mapValue(levels, node.refId)
+    ?? conceptMeta(node.refId)?.depth ?? conceptMeta(node.refId)?.level
+    ?? dynamicNode.depth ?? dynamicNode.level
+}
+
+function configuredMaxLevel(): number | undefined {
+  const direct = props.maxVisibleLevel ?? props.expandedConceptDepth ?? props.visibleNodeDepth
+  if (typeof direct === 'number' && Number.isFinite(direct)) return direct
+  if (typeof props.visibleNodeLevels === 'number' && Number.isFinite(props.visibleNodeLevels)) return props.visibleNodeLevels
+  return undefined
+}
+
+/**
+ * A caller may either pre-filter the snapshot (legacy behavior) or pass a
+ * depth limit alongside a complete recursive snapshot. Unknown levels stay
+ * visible so old snapshots are never accidentally hidden.
+ */
+function visibleSnapshot(): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  const maxLevel = configuredMaxLevel()
+  if (maxLevel == null) return { nodes: props.snapshot.nodes, edges: props.snapshot.edges }
+  const nodes = props.snapshot.nodes.filter((node) => {
+    const level = nodeLevel(node)
+    return level == null || level <= maxLevel
+  })
+  const visibleIds = new Set(nodes.map((node) => node.id))
+  return {
+    nodes,
+    edges: props.snapshot.edges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target)),
+  }
+}
+
+function expandedConceptSet(): Set<string> {
+  return new Set(props.expandedConceptIds ?? [])
+}
+
+function conceptHasChildren(node: GraphNode, edges: GraphEdge[]): boolean {
+  const conceptId = node.refId
+  if ((props.expandedConceptIds ?? []).includes(conceptId) || node.expanded === true) return true
+  const children = mapValue(props.conceptChildren, conceptId) ?? mapValue(props.conceptChildren, `concept:${conceptId}`)
+  if (children?.length) return true
+  const meta = conceptMeta(conceptId)
+  if (meta?.hasChildren || (meta?.childCount ?? 0) > 0) return true
+  const dynamicNode = node as GraphNode & { childCount?: number; hasChildren?: boolean }
+  if (dynamicNode.hasChildren || (dynamicNode.childCount ?? 0) > 0) return true
+  if ((props.expandableConceptIds ?? []).includes(conceptId)) return true
+  const conceptNodeId = `concept:${conceptId}`
+  return edges.some((edge) => edge.type === 'hierarchy' && (edge.source === conceptNodeId || edge.source === conceptId))
+}
+
+function nodeRadius(node: GraphNode): number {
+  return node.type === 'concept'
+    ? Math.min(31, 16 + Math.sqrt(node.unitCount) * 4)
+    : node.type === 'unit' ? 11 : 7
+}
+
+function stableHash(value: string): number {
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return hash >>> 0
+}
+
+function mapSignature<T>(map: Record<string, T> | Map<string, T> | undefined): string {
+  if (!map) return ''
+  const entries = map instanceof Map ? [...map.entries()] : Object.entries(map)
+  return entries
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}:${JSON.stringify(value)}`)
+    .join('|')
 }
 
 function render(): void {
@@ -94,8 +227,23 @@ function render(): void {
   root.call(zoom.transform, liveTransform ?? d3.zoomIdentity.translate(initialViewport.x, initialViewport.y).scale(initialViewport.scale))
   restoringViewport = false
 
+  const snapshot = visibleSnapshot()
+  const links = snapshot.edges.map((edge) => ({ ...edge }))
+  const anchorByNode = new Map<string, string>()
+  links.forEach((edge) => {
+    if (edge.type !== 'hierarchy' && edge.type !== 'association') return
+    // Only a deterministic seed for newly disclosed nodes; D3 still settles
+    // the final position through the force simulation.
+    if (!anchorByNode.has(edge.target)) anchorByNode.set(edge.target, edge.source)
+  })
   const hasPreviousLayout = nodePositions.size > 0
-  const nodes = props.snapshot.nodes.map((node, index) => {
+  const seedPositions = new Map(nodePositions)
+  snapshot.nodes.forEach((node) => {
+    if (!seedPositions.has(node.id) && node.x != null && node.y != null) {
+      seedPositions.set(node.id, { x: node.x, y: node.y })
+    }
+  })
+  const nodes = snapshot.nodes.map((node, index) => {
     const position = nodePositions.get(node.id)
     const copy = { ...node } as GraphNode & d3.SimulationNodeDatum
     if (position) {
@@ -104,27 +252,31 @@ function render(): void {
     } else if (!copy.fixed || copy.x == null || copy.y == null) {
       // D3 默认的随机初始位置会在展开时制造明显的闪跳；确定性散点
       // 只用于新节点，随后交给力导向微调。
-      const angle = index * 2.399963229728653
-      const radius = 26 + (index % 5) * 10
-      copy.x = width / 2 + Math.cos(angle) * radius
-      copy.y = height / 2 + Math.sin(angle) * radius
+      // Seed disclosed children around their stable parent. Falling back to a
+      // deterministic spiral avoids D3's random jump for legacy snapshots.
+      const anchorId = anchorByNode.get(node.id)
+      const anchor = anchorId ? seedPositions.get(anchorId) : undefined
+      const angle = (stableHash(node.id) % 6283) / 1000 + index * 0.17
+      const radius = node.type === 'concept' ? 76 : node.type === 'unit' ? 48 : 34
+      copy.x = (anchor?.x ?? width / 2) + Math.cos(angle) * radius
+      copy.y = (anchor?.y ?? height / 2) + Math.sin(angle) * radius
     }
+    if (copy.x != null && copy.y != null) seedPositions.set(node.id, { x: copy.x, y: copy.y })
     return copy
   })
-  const largeGraph = nodes.length > 220 || props.snapshot.edges.length > 420
+  const largeGraph = nodes.length > 220 || snapshot.edges.length > 420
   viewport.classed('is-large', largeGraph)
   if (!nodes.length && !userMovedViewport) hasFittedData = false
   const nodeSignature = nodes.map((node) => node.id).join('|')
   const topologyChanged = nodeSignature !== lastNodeSignature
   lastNodeSignature = nodeSignature
-  const shouldFitView = !userMovedViewport && nodes.length > 0 && (!hasFittedData || topologyChanged)
+  const shouldFitView = !userMovedViewport && nodes.length > 0 && (!hasFittedData || (topologyChanged && props.fitOnTopologyChange))
   nodes.forEach((node) => {
     if (node.fixed && node.x != null && node.y != null) {
       node.fx = node.x
       node.fy = node.y
     }
   })
-  const links = props.snapshot.edges.map((edge) => ({ ...edge }))
   const linkLayer = viewport.append('g').attr('class', 'graph-links')
   const nodeLayer = viewport.append('g').attr('class', 'graph-nodes')
 
@@ -154,20 +306,26 @@ function render(): void {
     .attr('d', 'M0,-5L10,0L0,5')
     .attr('fill', '#2c6e9e')
 
+  const expanded = expandedConceptSet()
+  const isExpanded = (node: GraphNode): boolean => expanded.has(node.refId) || node.expanded === true
   const nodeSelection = nodeLayer
     .selectAll<SVGGElement, GraphNode & d3.SimulationNodeDatum>('g')
     .data(nodes, (node) => node.id)
     .join((enter) => {
-      const group = enter.append('g').attr('class', 'graph-node').attr('tabindex', 0)
+      const group = enter
+        .append('g')
+        .attr('class', 'graph-node')
+        .attr('tabindex', 0)
+        .attr('role', 'group')
       group
         .append('circle')
         .attr('class', 'graph-node-shape')
-        .attr('r', (node) => (node.type === 'concept' ? Math.min(31, 16 + Math.sqrt(node.unitCount) * 4) : node.type === 'unit' ? 11 : 7))
+        .attr('r', nodeRadius)
         .attr('fill', (node) => palette[node.type])
       group
         .append('text')
         .attr('class', (node) => `graph-node-label graph-node-label-${node.type}`)
-        .attr('dy', (node) => (node.type === 'concept' ? 45 : 28))
+        .attr('dy', (node) => (node.type === 'concept' ? nodeRadius(node) + 15 : nodeRadius(node) + 17))
         .text((node) => node.label)
       group
         .append('title')
@@ -175,7 +333,63 @@ function render(): void {
       return group
     })
 
-  nodeSelection.classed('is-selected', (node) => props.selectedUnitIds.includes(node.refId))
+  nodeSelection
+    .attr('data-node-type', (node) => node.type)
+    .attr('data-ref-id', (node) => node.refId)
+    .attr('data-depth', (node) => nodeLevel(node) == null ? null : String(nodeLevel(node)))
+    .attr('data-expanded', (node) => node.type === 'concept' ? String(isExpanded(node)) : null)
+    .attr('aria-label', (node) => `${node.label} · ${node.subtitle ?? node.type}`)
+  nodeSelection.classed('is-selected', (node) => node.type === 'unit' && props.selectedUnitIds.includes(node.refId))
+
+  // Expansion is deliberately a separate affordance from node selection. A
+  // concept click can therefore open its detail drawer without changing the
+  // snapshot underneath the pointer; only this control asks the parent for a
+  // recursive query.
+  const expandControl = nodeSelection
+    .filter((node) => node.type === 'concept' && conceptHasChildren(node, links))
+    .append('g')
+    .attr('class', 'graph-node-expand-control')
+    .attr('role', 'button')
+    .attr('tabindex', 0)
+    .attr('pointer-events', 'all')
+    .attr('aria-label', (node) => isExpanded(node) ? '收起子节点' : '展开子节点')
+    .attr('aria-expanded', (node) => String(isExpanded(node)))
+    .attr('transform', (node) => {
+      const offset = nodeRadius(node) + 10
+      return `translate(${offset},${-offset})`
+    })
+  expandControl
+    .append('circle')
+    .attr('class', 'graph-node-expand-background')
+    .attr('r', 8)
+  expandControl
+    .append('path')
+    .attr('class', 'graph-node-expand-horizontal')
+    .attr('d', 'M-4 0H4')
+  expandControl
+    .append('path')
+    .attr('class', 'graph-node-expand-vertical')
+    .attr('d', 'M0-4V4')
+  expandControl
+    .append('title')
+    .text((node) => isExpanded(node) ? '收起子节点' : '展开子节点')
+  expandControl.classed('is-expanded', (node) => isExpanded(node))
+
+  const toggleConcept = (event: Event, node: GraphNode): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    const nextExpanded = !isExpanded(node)
+    emit('toggle-concept', node.refId, nextExpanded)
+  }
+  expandControl
+    .on('pointerdown', (event) => { event.stopPropagation() })
+    .on('mousedown', (event) => { event.stopPropagation() })
+    .on('touchstart', (event) => { event.stopPropagation() })
+    .on('click', toggleConcept)
+    .on('keydown', (event, node) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return
+      toggleConcept(event, node)
+    })
   const adjacency = new Map<string, Set<string>>()
   links.forEach((link) => {
     const source = typeof link.source === 'string' ? link.source : String(link.source)
@@ -431,16 +645,19 @@ onMounted(() => {
   }
 })
 
-// 视口以 liveTransform 为准；只有图谱拓扑或可见节点选择变化时才重建画布。
+// 视口以 liveTransform 为准；展开状态/层级窗口变化也需要更新控件，
+// 但不会因为选中状态变化而重建力向布局。
 watch(() => {
   const nodes = props.snapshot.nodes.map((node) => `${node.id}:${node.label}:${node.subtitle ?? ''}`).join('|')
   const edges = props.snapshot.edges.map((edge) => `${edge.id}:${edge.source}:${edge.target}:${edge.type}:${edge.status ?? ''}`).join('|')
-  return `${props.snapshot.revision}|${nodes}|${edges}`
+  const expanded = (props.expandedConceptIds ?? []).slice().sort().join(',')
+  const expandable = (props.expandableConceptIds ?? []).slice().sort().join(',')
+  return `${props.snapshot.revision}|${nodes}|${edges}|${expanded}|${expandable}|${props.maxVisibleLevel ?? ''}|${props.expandedConceptDepth ?? ''}|${props.visibleNodeDepth ?? ''}|${typeof props.visibleNodeLevels === 'number' ? props.visibleNodeLevels : mapSignature(props.visibleNodeLevels)}|${mapSignature(props.conceptHierarchy)}|${mapSignature(props.conceptChildren)}|${props.fitOnTopologyChange ? 1 : 0}`
 }, render)
 
 watch(() => props.selectedUnitIds.slice(), (selectedIds) => {
   if (!svg.value) return
-  d3.select(svg.value).selectAll<SVGGElement, GraphNode>('.graph-node').classed('is-selected', (node) => selectedIds.includes(node.refId))
+  d3.select(svg.value).selectAll<SVGGElement, GraphNode>('.graph-node').classed('is-selected', (node) => node.type === 'unit' && selectedIds.includes(node.refId))
 })
 
 onBeforeUnmount(() => {
@@ -460,7 +677,41 @@ onBeforeUnmount(() => {
       <span class="legend-dot concept-dot" /> 知识主题
       <span class="legend-dot unit-dot" /> 知识单元
       <span class="legend-dot message-dot" /> 消息
-      <span class="graph-hint">滚轮缩放 · 拖拽平移/定位 · Shift+拖动框选知识单元 · 点击知识主题展开单元</span>
+      <span class="graph-hint">滚轮缩放 · 拖拽平移/定位 · Shift+拖动框选知识单元 · 节点 +/− 展开层级</span>
     </div>
   </div>
 </template>
+
+<style>
+.graph-node-expand-control {
+  cursor: pointer;
+  outline: none;
+}
+
+.graph-node-expand-background {
+  fill: var(--surface);
+  stroke: var(--primary-strong);
+  stroke-width: 1.5px;
+  vector-effect: non-scaling-stroke;
+  transition: fill var(--motion-fast), stroke var(--motion-fast);
+}
+
+.graph-node-expand-control path {
+  fill: none;
+  stroke: var(--primary-strong);
+  stroke-width: 1.7px;
+  stroke-linecap: round;
+  pointer-events: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.graph-node-expand-control:hover .graph-node-expand-background,
+.graph-node-expand-control:focus .graph-node-expand-background {
+  fill: var(--primary-soft);
+  stroke-width: 2px;
+}
+
+.graph-node-expand-control.is-expanded .graph-node-expand-vertical {
+  opacity: 0;
+}
+</style>
