@@ -38,6 +38,8 @@ const nodePositions = new Map<string, { x: number; y: number }>()
 // 重渲染会替换 simulation；用 generation 和 timer 忽略旧布局的延迟 fit。
 let renderGeneration = 0
 let fitTimer: number | null = null
+let draggingNodeId: string | null = null
+let lastNodeSignature = ''
 
 const palette: Record<string, string> = {
   concept: '#2c6e9e',
@@ -47,10 +49,10 @@ const palette: Record<string, string> = {
 
 function edgeColor(edge: GraphEdge): string {
   if (edge.type === 'hierarchy') return '#2c6e9e'
-  if (edge.type === 'related') return '#6c8e9e'
-  if (edge.type === 'conversation') return '#d5a85a'
-  if (edge.type === 'association') return '#b4c1cb'
-  return '#93a4b2'
+  if (edge.type === 'related') return '#5d7f94'
+  if (edge.type === 'conversation') return '#c18d30'
+  if (edge.type === 'association') return '#879eae'
+  return '#71899a'
 }
 
 function render(): void {
@@ -107,8 +109,10 @@ function render(): void {
     return copy
   })
   if (!nodes.length && !userMovedViewport) hasFittedData = false
-  const hasNewNodes = nodes.some((node) => !nodePositions.has(node.id))
-  const shouldFitView = !userMovedViewport && nodes.length > 0 && (!hasFittedData || hasNewNodes)
+  const nodeSignature = nodes.map((node) => node.id).join('|')
+  const topologyChanged = nodeSignature !== lastNodeSignature
+  lastNodeSignature = nodeSignature
+  const shouldFitView = !userMovedViewport && nodes.length > 0 && (!hasFittedData || topologyChanged)
   nodes.forEach((node) => {
     if (node.fixed && node.x != null && node.y != null) {
       node.fx = node.x
@@ -127,6 +131,8 @@ function render(): void {
     .attr('stroke', edgeColor)
     .attr('stroke-width', (edge) => Math.min(6, 1 + Math.log2(edge.weight + 1)))
     .attr('stroke-dasharray', (edge) => (edge.status === 'proposed' || edge.type === 'related' || edge.type === 'conversation' ? '5 5' : null))
+    .attr('stroke-linecap', 'round')
+    .attr('vector-effect', 'non-scaling-stroke')
     .attr('marker-end', (edge) => (edge.type === 'hierarchy' ? 'url(#graph-arrow)' : null))
 
   const defs = root.append('defs')
@@ -199,8 +205,15 @@ function render(): void {
       })
   }
   nodeSelection
-    .on('mouseenter', (_event, node) => highlightNode(node.id))
-    .on('mouseleave', clearHighlight)
+    .on('mouseenter', (_event, node) => {
+      if (draggingNodeId && draggingNodeId !== node.id) return
+      highlightNode(node.id)
+    })
+    .on('mouseleave', () => {
+      // Dragging moves the element under a stationary pointer. Ignore the
+      // synthetic leave/enter pairs this produces until the drag ends.
+      if (!draggingNodeId) clearHighlight()
+    })
     .on('click', (event, node) => {
       event.stopPropagation()
       if (node.type === 'concept') emit('select-concept', node.refId)
@@ -217,8 +230,9 @@ function render(): void {
   const drag = d3
     .drag<SVGGElement, GraphNode & d3.SimulationNodeDatum>()
     .on('start', (event, node) => {
+      draggingNodeId = node.id
       highlightNode(node.id)
-      if (!event.active) simulation?.alphaTarget(0.05).restart()
+      if (!event.active) simulation?.alphaTarget(0.12).restart()
       node.fx = node.x
       node.fy = node.y
     })
@@ -230,30 +244,54 @@ function render(): void {
       if (!event.active) simulation?.alphaTarget(0)
       node.fx = event.x
       node.fy = event.y
+      draggingNodeId = null
       clearHighlight()
       emit('layout-change', { nodeType: node.type, refId: node.refId, x: event.x, y: event.y, fixed: true })
     })
   nodeSelection.call(drag)
 
   simulation?.stop()
+  const linkForce = d3
+    .forceLink<GraphNode & d3.SimulationNodeDatum, GraphEdge>(links)
+    .id((node) => node.id)
+    .distance((edge) => edge.type === 'hierarchy' ? 130 : edge.type === 'conversation' ? 58 : edge.type === 'association' ? 82 : 105)
+    .strength((edge) => edge.type === 'hierarchy' ? 0.78 : edge.type === 'conversation' ? 0.46 : edge.type === 'association' ? 0.34 : Math.min(0.7, 0.28 + edge.weight * 0.06))
+    .iterations(2)
+  const chargeForce = d3
+    .forceManyBody<GraphNode & d3.SimulationNodeDatum>()
+    .strength((node) => (node as GraphNode).type === 'concept' ? -360 : -145)
+    .distanceMax(Math.max(width, height) * 1.8)
   simulation = d3
     .forceSimulation(nodes)
-    .force('link', d3.forceLink<GraphNode & d3.SimulationNodeDatum, GraphEdge>(links).id((node) => node.id).distance((edge) => edge.type === 'hierarchy' ? 130 : edge.type === 'conversation' ? 58 : edge.type === 'association' ? 82 : 105).strength((edge) => edge.type === 'hierarchy' ? 0.75 : edge.type === 'conversation' ? 0.42 : Math.min(0.65, 0.25 + edge.weight * 0.06)))
-    .force('charge', d3.forceManyBody<GraphNode & d3.SimulationNodeDatum>().strength((node) => (node as GraphNode).type === 'concept' ? -330 : -125))
+    // Explicit springs + repulsion + collision keep related nodes connected
+    // without letting dense sessions collapse into one pile.
+    .force('link', linkForce)
+    .force('charge', chargeForce)
     .force('center', d3.forceCenter(width / 2, height / 2))
-    .force('collide', d3.forceCollide<GraphNode & d3.SimulationNodeDatum>().radius((node) => (node as GraphNode).type === 'concept' ? 50 : 28))
+    .force('x', d3.forceX<GraphNode & d3.SimulationNodeDatum>(width / 2).strength(0.018))
+    .force('y', d3.forceY<GraphNode & d3.SimulationNodeDatum>(height / 2).strength(0.018))
+    .force('collide', d3.forceCollide<GraphNode & d3.SimulationNodeDatum>().radius((node) => (node as GraphNode).type === 'concept' ? 50 : 28).strength(0.9).iterations(2))
     .velocityDecay(0.72)
-    .on('tick', () => {
-      nodes.forEach((node) => {
-        if (node.x != null && node.y != null) nodePositions.set(node.id, { x: node.x, y: node.y })
-      })
+  let paintPending = false
+  const paint = (): void => {
       linkSelection
         .attr('x1', (edge) => (edge.source as unknown as GraphNode).x ?? 0)
         .attr('y1', (edge) => (edge.source as unknown as GraphNode).y ?? 0)
         .attr('x2', (edge) => (edge.target as unknown as GraphNode).x ?? 0)
         .attr('y2', (edge) => (edge.target as unknown as GraphNode).y ?? 0)
       nodeSelection.attr('transform', (node) => `translate(${node.x ?? width / 2},${node.y ?? height / 2})`)
+  }
+  simulation.on('tick', () => {
+    nodes.forEach((node) => {
+      if (node.x != null && node.y != null) nodePositions.set(node.id, { x: node.x, y: node.y })
     })
+    if (paintPending) return
+    paintPending = true
+    requestAnimationFrame(() => {
+      paintPending = false
+      if (generation === renderGeneration) paint()
+    })
+  })
   if (props.reducedMotion) simulation.alphaDecay(0.4)
   else if (hasPreviousLayout) simulation.alpha(0.18)
   else simulation.alpha(0.55)
