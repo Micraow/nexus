@@ -1,5 +1,6 @@
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
+import hljs from 'highlight.js/lib/common'
 
 export interface MarkdownConcept {
   id: string
@@ -25,7 +26,7 @@ function escapeRegExp(value: string): string {
 }
 
 interface InlineToken {
-  type: 'code' | 'anchor' | 'mention' | 'math' | 'text'
+  type: 'code' | 'anchor' | 'mention' | 'math' | 'strong' | 'text'
   value: string
 }
 
@@ -66,6 +67,25 @@ function anchorHtml(url: string, label: string): string {
   return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`
 }
 
+function highlightedCode(code: string, language: string): string {
+  const normalized = language.trim().toLowerCase()
+  try {
+    if (normalized && hljs.getLanguage(normalized)) {
+      return hljs.highlight(code, { language: normalized, ignoreIllegals: true }).value
+    }
+    if (!normalized && code.trim()) return hljs.highlightAuto(code).value
+  } catch {
+    // Unknown grammars and malformed snippets remain safely escaped below.
+  }
+  return escapeHtml(code)
+}
+
+function fencedCodeHtml(language: string, code: string): string {
+  const normalized = language.trim().toLowerCase()
+  const className = normalized ? ` class="hljs language-${escapeHtml(normalized)}"` : ' class="hljs"'
+  return `<pre><code${className}>${highlightedCode(code, normalized)}</code></pre>`
+}
+
 function linkifyConcepts(raw: string, matcher: ConceptMatcher | null): InlineToken[] {
   if (!matcher) return raw ? [{ type: 'text', value: raw }] : []
   const tokens: InlineToken[] = []
@@ -88,32 +108,31 @@ function tokenizeInline(line: string, matcher: ConceptMatcher | null): InlineTok
   const pushText = (value: string): void => {
     tokens.push(...linkifyConcepts(escapeHtml(value), matcher))
   }
-  const pattern = /`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<]+)|\$\$([\s\S]+?)\$\$|\\\(([^\n]+?)\\\)|\\\[([\s\S]+?)\\\]|(?<!\$)\$([^$\n]+?)\$(?!\$)/g
+  // Protect strong spans before concept linkification so `**bold Concept**`
+  // keeps both markers in one token.
+  const pattern = /`([^`]+)`|\*\*([\s\S]+?)\*\*|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<]+)|\$\$([\s\S]+?)\$\$|\\\(([^\n]+?)\\\)|\\\[([\s\S]+?)\\\]|(?<!\$)\$([^$\n]+?)\$(?!\$)/g
   let cursor = 0
   let match: RegExpExecArray | null
   while ((match = pattern.exec(line))) {
     if (match.index > cursor) pushText(line.slice(cursor, match.index))
     if (match[1] != null) tokens.push({ type: 'code', value: `<code>${escapeHtml(match[1])}</code>` })
-    else if (match[2] != null && match[3]) tokens.push({ type: 'anchor', value: anchorHtml(match[3], match[2]) })
-    else if (match[4]) tokens.push({ type: 'anchor', value: anchorHtml(match[4], match[4]) })
-    else if (match[5] != null) tokens.push({ type: 'math', value: renderMath(match[5], true) })
-    else if (match[6] != null) tokens.push({ type: 'math', value: renderMath(match[6], false) })
-    else if (match[7] != null) tokens.push({ type: 'math', value: renderMath(match[7], true) })
-    else if (match[8] != null) tokens.push({ type: 'math', value: renderMath(match[8], false) })
+    else if (match[2] != null) tokens.push({ type: 'strong', value: `<strong>${renderInline(tokenizeInline(match[2], matcher))}</strong>` })
+    else if (match[3] != null && match[4]) tokens.push({ type: 'anchor', value: anchorHtml(match[4], match[3]) })
+    else if (match[5]) tokens.push({ type: 'anchor', value: anchorHtml(match[5], match[5]) })
+    else if (match[6] != null) tokens.push({ type: 'math', value: renderMath(match[6], true) })
+    else if (match[7] != null) tokens.push({ type: 'math', value: renderMath(match[7], false) })
+    else if (match[8] != null) tokens.push({ type: 'math', value: renderMath(match[8], true) })
+    else if (match[9] != null) tokens.push({ type: 'math', value: renderMath(match[9], false) })
     cursor = match.index + match[0].length
   }
   if (cursor < line.length) pushText(line.slice(cursor))
   return tokens
 }
 
-function applyEmphasis(value: string): string {
-  return value
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/(^|[\s(（【，、])\*([^*\n]+)\*(?=[\s)）】，、。；：!?]|$)/g, '$1<em>$2</em>')
-}
-
 function renderInline(tokens: InlineToken[]): string {
-  return tokens.map((token) => token.type === 'text' ? applyEmphasis(token.value) : token.value).join('')
+  return tokens.map((token) => token.type === 'text'
+    ? token.value.replace(/(^|[\s(（【，、])\*([^*\n]+)\*(?=[\s)）】，、。；：!?]|$)/g, '$1<em>$2</em>')
+    : token.value).join('')
 }
 
 function tableCells(line: string): string[] {
@@ -153,12 +172,18 @@ function isTableSeparator(line: string): boolean {
  */
 export function renderMarkdown(source: string, options: RenderMarkdownOptions = {}): string {
   const matcher = buildConceptMatcher(options.concepts ?? [])
-  const segments = source.replace(/\r\n?/g, '\n').split('```')
-  return segments.map((segment, index) => {
-    // Odd segments are the inside of fenced code blocks.
-    if (index % 2 === 1) return `<pre><code>${escapeHtml(segment.replace(/\n$/, ''))}</code></pre>`
-    return renderBlocks(segment, matcher)
-  }).join('')
+  const normalized = source.replace(/\r\n?/g, '\n')
+  const fence = /```([A-Za-z0-9_+#.-]*)[ \t]*\n([\s\S]*?)```/g
+  let cursor = 0
+  let output = ''
+  let match: RegExpExecArray | null
+  while ((match = fence.exec(normalized))) {
+    output += renderBlocks(normalized.slice(cursor, match.index), matcher)
+    output += fencedCodeHtml(match[1], match[2].replace(/\n$/, ''))
+    cursor = match.index + match[0].length
+  }
+  output += renderBlocks(normalized.slice(cursor), matcher)
+  return output
 }
 
 function renderBlocks(text: string, matcher: ConceptMatcher | null): string {

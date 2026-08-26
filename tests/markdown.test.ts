@@ -31,9 +31,21 @@ describe('renderMarkdown', () => {
 
   it('renders fenced code blocks with escaped content', () => {
     const html = renderMarkdown('```js\nconst a = "<b>";\n```')
-    expect(html).toContain('<pre><code>')
+    expect(html).toContain('<pre><code')
     expect(html).toContain('&lt;b&gt;')
     expect(html).not.toContain('<b>')
+    expect(html).toContain('language-js')
+    expect(html).toContain('hljs-keyword')
+  })
+
+  it('keeps Chinese bold text intact when it contains punctuation or concepts', () => {
+    const html = renderMarkdown('因为 **B.com 的解析权不在你这台自建服务器上**，所以可以继续。', {
+      concepts: [{ id: 'bcom', name: 'B.com' }],
+    })
+    expect(html).toContain('<strong>')
+    expect(html).toContain('B.com')
+    expect(html).toContain('解析权不在你这台自建服务器上</strong>')
+    expect(html).not.toContain('**')
   })
 
   it('only linkifies http(s) links and rejects other schemes', () => {
