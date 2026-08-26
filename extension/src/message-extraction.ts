@@ -306,15 +306,28 @@ export function orderCapturedMessages(input: CapturedMessage[]): CapturedMessage
   const timed = entries.filter((message): message is CapturedMessage & { timestamp: string } => Boolean(message.timestamp))
   const enoughTimes = timed.length >= Math.max(2, Math.ceil(entries.length * 0.8))
   if (enoughTimes) {
-    let ascending = 0
-    let descending = 0
-    for (let index = 1; index < timed.length; index += 1) {
-      const previous = timed[index - 1].timestamp
-      const current = timed[index].timestamp
-      if (current > previous) ascending += 1
-      if (current < previous) descending += 1
+    // DeepSeek often stamps the user turn a few milliseconds after the
+    // assistant turn that belongs to it. Counting only adjacent inversions
+    // would therefore mistake a perfectly chronological transcript for a
+    // newest-first response (the real `Spine Leaf与Clos关系` export has 25
+    // such local inversions). Compare all timestamp pairs instead: a truly
+    // reversed page remains overwhelmingly descending, while local skew does
+    // not outweigh the ordering between separate turns.
+    let ascendingPairs = 0
+    let descendingPairs = 0
+    for (let left = 0; left < timed.length - 1; left += 1) {
+      const previous = timed[left].timestamp
+      for (let right = left + 1; right < timed.length; right += 1) {
+        const current = timed[right].timestamp
+        if (current > previous) ascendingPairs += 1
+        else if (current < previous) descendingPairs += 1
+      }
     }
-    if (descending > ascending && descending > 0) {
+    const comparablePairs = ascendingPairs + descendingPairs
+    const stronglyDescending = comparablePairs > 0
+      && descendingPairs > ascendingPairs
+      && descendingPairs / comparablePairs >= 0.75
+    if (stronglyDescending) {
       return [...entries].sort((left, right) => {
         if (left.timestamp && right.timestamp && left.timestamp !== right.timestamp) return left.timestamp.localeCompare(right.timestamp)
         return left.sourceOrder - right.sourceOrder

@@ -106,6 +106,29 @@ describe('DeepSeek message extraction', () => {
     expect(noTimestamps.map((item) => item.content)).toEqual(['后一个', '前一个'])
   })
 
+  it('keeps the real Spine Leaf conversation order despite DeepSeek pairwise timestamp skew', () => {
+    // Extracted from data/2-sessions.json. DeepSeek stamped every assistant
+    // placeholder 3-5 ms before its user turn even though the API/tree order
+    // correctly alternates question then answer.
+    const realConversationExcerpt: CapturedMessage[] = [
+      { ...captured('m-1', 'user', 'Spine Leaf是不是就是Clos?', 0), timestamp: '2026-06-29T07:47:58.224Z' },
+      { ...captured('m-2', 'assistant', 'Spine-Leaf 是 Clos 的一种实现', 1), timestamp: '2026-06-29T07:47:58.221Z' },
+      { ...captured('m-3', 'user', 'fat tree是不是也是clos？', 2), timestamp: '2026-06-29T07:49:29.329Z' },
+      { ...captured('m-4', 'assistant', 'Fat Tree 也是 Clos 的一种', 3), timestamp: '2026-06-29T07:49:29.324Z' },
+      { ...captured('m-5', 'user', '为什么clos不阻塞', 4), timestamp: '2026-06-29T08:30:59.346Z' },
+      { ...captured('m-6', 'assistant', 'Clos 通过充足的中间级路径实现不阻塞', 5), timestamp: '2026-06-29T08:30:59.342Z' },
+    ]
+
+    expect(orderCapturedMessages(realConversationExcerpt).map((item) => item.content)).toEqual([
+      'Spine Leaf是不是就是Clos?',
+      'Spine-Leaf 是 Clos 的一种实现',
+      'fat tree是不是也是clos？',
+      'Fat Tree 也是 Clos 的一种',
+      '为什么clos不阻塞',
+      'Clos 通过充足的中间级路径实现不阻塞',
+    ])
+  })
+
   it('merges repeated full snapshots without duplicating messages', () => {
     const first = [captured('m-1', 'user', '问题', 0), captured('m-2', 'assistant', '回答', 1)]
     const second = [
