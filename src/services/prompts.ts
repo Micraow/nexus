@@ -77,6 +77,7 @@ KnowledgeUnit：${unit.title ?? '待命名'}
 消息：${messages.map((message) => `${message.role}: ${message.content}`).join('\n')}
 
 关系语义：hierarchy 使用 source 作为父主题、target 作为子主题；related 只是两个主题之间的无向关联，不存在父子顺序。
+关系必须有消息中的直接证据：不要因为两个 Concept 同时出现、属于同一知识单元或“看起来有关”就建立关系。每个 KnowledgeUnit 最多返回 0～2 条关系，宁可为空；不要为了凑数建立 related。只保留最强、最明确的关系。
 
 只返回 JSON：{"concepts":[{"name":"...","aliases":[]}],"relations":[{"source":"Concept 名称","target":"Concept 名称","type":"hierarchy|related"}]}
 `
@@ -137,5 +138,5 @@ ${input.includeMessages ? `\n补充原文：\n${input.includeMessages}` : ''}
 
 只返回 JSON：
 {"suggestions":[{"type":"merge","source_concept_id":"待合并主题 id","target_concept_id":"保留主题 id","reason":"理由"},{"type":"alias","concept_id":"主题 id","alias":"别名","reason":"理由"},{"type":"relation","source_concept_id":"关系一端；hierarchy 时为父主题","target_concept_id":"关系另一端；hierarchy 时为子主题","relation_type":"hierarchy|related","reason":"理由"},{"type":"unit_relink","unit_id":"知识单元 id","concept_id":"主题 id","reason":"理由"},{"type":"unit_revision","unit_id":"知识单元 id","title":"建议标题","summary":"建议摘要","reason":"理由"}]}
-只返回确有依据的建议；没有建议时返回空数组。不要输出解释文字。`
+只返回确有依据的建议；关系建议最多 2 条，不能仅凭共同出现推断 related；没有建议时返回空数组。不要输出解释文字。`
 }

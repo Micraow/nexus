@@ -604,7 +604,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           model: null,
           promptVersion: PROMPT_VERSION,
           inputRevision: `${session.id}:${session.revision}`,
-          prompt: `请从下面的 Session 中提取 1～8 个核心 Concept，并给出有明确证据的 Concept 关系。探讨或流程内容也可以提取其中稳定的知识；不要为了凑数建立关系。hierarchy 使用 source 作为父主题、target 作为子主题；related 是无向关联，不存在父子顺序。只返回 JSON：{"concepts":[{"name":"...","aliases":[]}],"relations":[{"source":"Concept 名称","target":"Concept 名称","type":"hierarchy|related"}]}\n\n${importedMessages.map((message) => `${message.role}: ${message.content}`).join('\n')}`,
+          prompt: `请从下面的 Session 中提取 1～8 个核心 Concept，并给出有明确证据的 Concept 关系。探讨或流程内容也可以提取其中稳定的知识；不要为了凑数建立关系。关系必须有消息中的直接证据，不能因为两个主题共同出现或“看起来有关”就连接；最多返回 0～2 条最强关系。hierarchy 使用 source 作为父主题、target 作为子主题；related 是无向关联，不存在父子顺序。只返回 JSON：{"concepts":[{"name":"...","aliases":[]}],"relations":[{"source":"Concept 名称","target":"Concept 名称","type":"hierarchy|related"}]}\n\n${importedMessages.map((message) => `${message.role}: ${message.content}`).join('\n')}`,
           status: 'pending',
           scopeLabel: `${session.title} · 起始知识主题`,
         })
@@ -1128,7 +1128,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           units.value.filter((item) => item.sessionId === session.id).forEach((sessionUnit) => conceptIds.forEach((conceptId) => db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [sessionUnit.id, conceptId, 'llm', now])))
         }
         const pendingRelations: ConceptRelation[] = []
-        if (Array.isArray(data.relations)) data.relations.forEach((rawRelation) => {
+        const relationKeys = new Set<string>(relations.value.map((relation) => {
+          const pair = relation.relationType === 'related'
+            ? [relation.parentConceptId, relation.childConceptId].sort().join('|')
+            : `${relation.parentConceptId}|${relation.childConceptId}`
+          return `${relation.relationType}:${pair}`
+        }))
+        if (Array.isArray(data.relations)) data.relations.slice(0, 2).forEach((rawRelation) => {
           if (!rawRelation || typeof rawRelation !== 'object') return
           const value = rawRelation as Record<string, unknown>
           const sourceName = typeof value.source === 'string' ? value.source : typeof value.parent === 'string' ? value.parent : typeof value.source_name === 'string' ? value.source_name : typeof value.parent_name === 'string' ? value.parent_name : ''
@@ -1139,6 +1145,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           if (!sourceRawId || !targetRawId || !relationType || sourceRawId === targetRawId) return
           const [sourceId, targetId] = relationType === 'related' && sourceRawId > targetRawId ? [targetRawId, sourceRawId] : [sourceRawId, targetRawId]
           if (relationType === 'hierarchy' && wouldCreateHierarchyCycle(sourceId, targetId, [...relations.value, ...pendingRelations])) return
+          const pair = relationType === 'related' ? [sourceId, targetId].sort().join('|') : `${sourceId}|${targetId}`
+          const relationKey = `${relationType}:${pair}`
+          if (relationKeys.has(relationKey)) return
+          relationKeys.add(relationKey)
           const relation: ConceptRelation = { id: createId('relation'), parentConceptId: sourceId, childConceptId: targetId, relationType, source: 'llm', status: 'proposed', createdAt: now, updatedAt: now }
           pendingRelations.push(relation)
           db.run('INSERT OR IGNORE INTO concept_relations(id, parent_concept_id, child_concept_id, relation_type, source, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [relation.id, sourceId, targetId, relationType, 'llm', 'proposed', now, now])

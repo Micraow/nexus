@@ -29,6 +29,24 @@ describe('derived graph', () => {
     expect(snapshot.nodes.filter((node) => node.type === 'concept')).toHaveLength(2)
   })
 
+  it('hides one-off co-occurrence edges to keep dense units readable', () => {
+    const snapshot = buildGraph({
+      concepts: [
+        { id: 'c1', name: 'A', normalizedName: 'A', notes: '', status: 'active', createdAt: now, updatedAt: now },
+        { id: 'c2', name: 'B', normalizedName: 'B', notes: '', status: 'active', createdAt: now, updatedAt: now },
+      ],
+      units: [{ id: 'u1', sessionId: 's', title: 'U1', summary: '', orderInSession: 0, status: 'ready', revision: 1, createdAt: now, updatedAt: now }],
+      messages: [],
+      unitConcepts: [
+        { unitId: 'u1', conceptId: 'c1', source: 'llm', createdAt: now },
+        { unitId: 'u1', conceptId: 'c2', source: 'llm', createdAt: now },
+      ],
+      relations: [],
+      revision: 1,
+    })
+    expect(snapshot.edges.filter((edge) => edge.type === 'co_occurrence')).toHaveLength(0)
+  })
+
   it('shows expanded units for one concept without globally enabling units', () => {
     const snapshot = buildGraph({
       concepts: [{ id: 'c1', name: 'A', normalizedName: 'A', notes: '', status: 'active', createdAt: now, updatedAt: now }],

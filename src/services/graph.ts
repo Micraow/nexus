@@ -94,6 +94,9 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
         if (node) node.unitCount += 1
       }
     })
+    // A single unit can mention many topics without asserting that every pair
+    // is related. Only repeated co-occurrence is useful as a quiet background
+    // signal; direct semantic relations are stored separately below.
     for (let left = 0; left < ids.length; left += 1) {
       for (let right = left + 1; right < ids.length; right += 1) {
         ensureEdge(conceptNode(ids[left]), conceptNode(ids[right]), 'co_occurrence')
@@ -171,6 +174,24 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
     if (!nodes.some((node) => node.id === source) || !nodes.some((node) => node.id === target)) return
     ensureEdge(source, target, 'manual', 1)
   })
+
+  // Co-occurrence is only a weak background hint. A pair mentioned once is
+  // not a semantic relationship, and displaying every pair makes dense units
+  // unreadable. Keep repeated pairs, capped to the strongest few neighbors per
+  // concept; explicit hierarchy/related/manual edges are unaffected.
+  const coOccurrence = edges.filter((edge) => edge.type === 'co_occurrence' && edge.weight >= 2)
+  const retainedCoOccurrence = new Set<string>()
+  conceptById.forEach((_concept, conceptId) => {
+    coOccurrence
+      .filter((edge) => edge.source === conceptNode(conceptId) || edge.target === conceptNode(conceptId))
+      .sort((left, right) => right.weight - left.weight || left.id.localeCompare(right.id))
+      .slice(0, 4)
+      .forEach((edge) => retainedCoOccurrence.add(edge.id))
+  })
+  for (let index = edges.length - 1; index >= 0; index -= 1) {
+    const edge = edges[index]
+    if (edge.type === 'co_occurrence' && !retainedCoOccurrence.has(edge.id)) edges.splice(index, 1)
+  }
 
   nodes.forEach((node) => {
     node.degree = edges.filter((edge) => edge.source === node.id || edge.target === node.id).length
