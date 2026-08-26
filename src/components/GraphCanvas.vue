@@ -237,7 +237,10 @@ function render(): void {
     .on('start', (event, node) => {
       draggingNodeId = node.id
       highlightNode(node.id)
-      if (!event.active) simulation?.alphaTarget(0.12).restart()
+      // Reheat the springs while dragging so connected nodes follow the
+      // pointer instead of feeling pinned in place. Keep the target finite;
+      // an unlimited alpha target makes dense imported graphs oscillate.
+      if (!event.active) simulation?.alphaTarget(0.18).restart()
       node.fx = node.x
       node.fy = node.y
     })
@@ -246,7 +249,13 @@ function render(): void {
       node.fy = event.y
     })
     .on('end', (event, node) => {
-      if (!event.active) simulation?.alphaTarget(0)
+      if (!event.active) {
+        simulation?.alphaTarget(0)
+        // Give the revised links one short settling pass after the pointer is
+        // released. This makes the elastic response visible without leaving
+        // the simulation running indefinitely.
+        if (simulation && !props.reducedMotion) simulation.alpha(Math.max(simulation.alpha(), 0.14)).restart()
+      }
       node.fx = event.x
       node.fy = event.y
       draggingNodeId = null
@@ -259,12 +268,30 @@ function render(): void {
   const linkForce = d3
     .forceLink<GraphNode & d3.SimulationNodeDatum, GraphEdge>(links)
     .id((node) => node.id)
-    .distance((edge) => edge.type === 'hierarchy' ? 130 : edge.type === 'conversation' ? 58 : edge.type === 'association' ? 82 : 105)
-    .strength((edge) => edge.type === 'hierarchy' ? 0.78 : edge.type === 'conversation' ? 0.46 : edge.type === 'association' ? 0.34 : Math.min(0.7, 0.28 + edge.weight * 0.06))
-    .iterations(1)
+    // Keep the semantic hierarchy visibly elastic while giving conversation
+    // chains enough room to read as a sequence. These values are deliberately
+    // stronger than the previous conservative profile; damping below keeps
+    // the result from becoming a runaway spring system.
+    .distance((edge) => {
+      if (edge.type === 'hierarchy') return 148
+      if (edge.type === 'conversation') return 72
+      if (edge.type === 'association') return 96
+      if (edge.type === 'related') return 112
+      if (edge.type === 'co_occurrence') return 104
+      return 112
+    })
+    .strength((edge) => {
+      if (edge.type === 'hierarchy') return 0.92
+      if (edge.type === 'conversation') return 0.62
+      if (edge.type === 'association') return 0.52
+      if (edge.type === 'related') return 0.5
+      if (edge.type === 'manual') return 0.58
+      return Math.min(0.78, 0.34 + edge.weight * 0.08)
+    })
+    .iterations(largeGraph ? 1 : 2)
   const chargeForce = d3
     .forceManyBody<GraphNode & d3.SimulationNodeDatum>()
-    .strength((node) => (node as GraphNode).type === 'concept' ? -360 : -145)
+    .strength((node) => (node as GraphNode).type === 'concept' ? -390 : -165)
     .distanceMax(Math.max(width, height) * (largeGraph ? 1.1 : 1.6))
   simulation = d3
     .forceSimulation(nodes)
@@ -273,10 +300,10 @@ function render(): void {
     .force('link', linkForce)
     .force('charge', chargeForce)
     .force('center', d3.forceCenter(width / 2, height / 2))
-    .force('x', d3.forceX<GraphNode & d3.SimulationNodeDatum>(width / 2).strength(0.018))
-    .force('y', d3.forceY<GraphNode & d3.SimulationNodeDatum>(height / 2).strength(0.018))
-    .force('collide', d3.forceCollide<GraphNode & d3.SimulationNodeDatum>().radius((node) => (node as GraphNode).type === 'concept' ? 50 : 28).strength(0.9).iterations(largeGraph ? 1 : 2))
-    .velocityDecay(largeGraph ? 0.8 : 0.72)
+    .force('x', d3.forceX<GraphNode & d3.SimulationNodeDatum>(width / 2).strength(largeGraph ? 0.014 : 0.02))
+    .force('y', d3.forceY<GraphNode & d3.SimulationNodeDatum>(height / 2).strength(largeGraph ? 0.014 : 0.02))
+    .force('collide', d3.forceCollide<GraphNode & d3.SimulationNodeDatum>().radius((node) => (node as GraphNode).type === 'concept' ? 50 : 28).strength(0.86).iterations(largeGraph ? 1 : 2))
+    .velocityDecay(largeGraph ? 0.68 : 0.64)
   let paintPending = false
   const paint = (): void => {
       linkSelection
@@ -302,9 +329,9 @@ function render(): void {
     })
   })
   if (props.reducedMotion) simulation.alphaDecay(0.5)
-  else if (largeGraph) simulation.alphaDecay(0.08).alpha(0.22)
-  else if (hasPreviousLayout) simulation.alpha(0.18)
-  else simulation.alpha(0.55)
+  else if (largeGraph) simulation.alphaDecay(0.045).alpha(0.3)
+  else if (hasPreviousLayout) simulation.alphaDecay(0.04).alpha(0.24)
+  else simulation.alphaDecay(0.05).alpha(0.62)
 
   // 首次挂载且用户未操作时，等力向布局稳定后只适配一次画布，避免每个 tick 触发 zoom 重排。
   if (shouldFitView) {
