@@ -1,5 +1,6 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -156,6 +157,19 @@ fn write_config(app: AppHandle, content: String) -> Result<(), String> {
     write_atomic(&config_path(&app)?, content.as_bytes())
 }
 
+#[tauri::command]
+fn list_system_fonts() -> Result<Vec<String>, String> {
+    let mut database = fontdb::Database::new();
+    database.load_system_fonts();
+    let families = database
+        .faces()
+        .flat_map(|face| face.families.iter().map(|(family, _)| family.trim()))
+        .filter(|family| !family.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<BTreeSet<_>>();
+    Ok(families.into_iter().collect())
+}
+
 fn main() {
     configure_input_method();
     tauri::Builder::default()
@@ -170,7 +184,8 @@ fn main() {
             backup_database,
             restore_database_backup,
             read_config,
-            write_config
+            write_config,
+            list_system_fonts
         ])
         .run(tauri::generate_context!())
         .expect("error while running Nexus Weave");

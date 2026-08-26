@@ -269,7 +269,8 @@ export interface AppConfig {
   ui: {
     theme: 'light' | 'dark' | 'system'
     reducedMotion: boolean
-    fontFamily: 'system-sans' | 'chinese-sans' | 'system-serif' | 'system-mono'
+    /** A built-in preset id or an exact system font family returned by Tauri. */
+    fontFamily: string
     fontSize: number
     graph: { showUnits: boolean; showMessages: boolean; showProposed: boolean; showRetainedSessions: boolean }
   }

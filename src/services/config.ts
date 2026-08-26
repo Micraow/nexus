@@ -95,9 +95,12 @@ export function parseConfig(value: unknown): Partial<AppConfig> {
     ui: {
       theme: raw.ui?.theme ?? 'system',
       reducedMotion: raw.ui?.reduced_motion ?? raw.ui?.reducedMotion ?? false,
-      fontFamily: ['system-sans', 'chinese-sans', 'system-serif', 'system-mono'].includes(raw.ui?.font_family ?? raw.ui?.fontFamily ?? '')
-        ? raw.ui?.font_family ?? raw.ui?.fontFamily as AppConfig['ui']['fontFamily']
-        : 'system-sans',
+      fontFamily: (() => {
+        const value = raw.ui?.font_family ?? raw.ui?.fontFamily
+        return typeof value === 'string' && value.trim().length > 0 && value.trim().length <= 160
+          ? value.trim()
+          : 'system-sans'
+      })(),
       fontSize: Number.isFinite(Number(raw.ui?.font_size ?? raw.ui?.fontSize))
         ? Math.min(20, Math.max(13, Number(raw.ui?.font_size ?? raw.ui?.fontSize)))
         : 15,

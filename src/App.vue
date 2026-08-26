@@ -123,11 +123,47 @@ const visibleConceptCount = ref(60)
 const visibleCompletedTaskCount = ref(30)
 let viewportSaveTimer: number | null = null
 
-const fontStacks: Record<AppConfig['ui']['fontFamily'], string> = {
+const fontStacks: Record<string, string> = {
   'system-sans': 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
   'chinese-sans': 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif',
   'system-serif': 'ui-serif, Georgia, "Times New Roman", "Noto Serif SC", serif',
   'system-mono': 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
+}
+const fontFamilyPresets: Array<{ value: string; label: string }> = [
+  { value: 'system-sans', label: '系统无衬线' },
+  { value: 'chinese-sans', label: '中文优先无衬线' },
+  { value: 'system-serif', label: '系统衬线' },
+  { value: 'system-mono', label: '系统等宽' },
+]
+const desktopFontRuntime = isTauriRuntime()
+const systemFontFamilies = ref<string[]>([])
+const systemFontsLoading = ref(false)
+const systemFontsUnavailable = ref(false)
+const fontFamilyOptions = computed(() => {
+  const options = fontFamilyPresets.map((preset) => ({ ...preset }))
+  const seen = new Set(options.map((option) => option.value))
+  for (const family of systemFontFamilies.value) {
+    if (!seen.has(family)) {
+      options.push({ value: family, label: family })
+      seen.add(family)
+    }
+  }
+  const configured = store.config.ui.fontFamily
+  if (configured && !seen.has(configured)) options.push({ value: configured, label: `${configured}（当前配置）` })
+  return options
+})
+const systemFontStatus = computed(() => {
+  if (!desktopFontRuntime) return '浏览器模式提供稳定预设'
+  if (systemFontsLoading.value) return '正在读取桌面系统字体…'
+  if (systemFontsUnavailable.value) return '系统字体读取失败，当前使用稳定预设'
+  return systemFontFamilies.value.length ? `已检测到 ${systemFontFamilies.value.length} 个系统字体` : '未检测到额外系统字体'
+})
+
+function fontStackForFamily(value: string): string {
+  const preset = fontStacks[value]
+  if (preset) return preset
+  const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+  return `"${escaped}", ${fontStacks['system-sans']}`
 }
 
 const storageSummary = computed(() => {
@@ -882,6 +918,24 @@ async function fetchStorageInfo(): Promise<void> {
   }
 }
 
+async function fetchSystemFonts(): Promise<void> {
+  if (!desktopFontRuntime) return
+  systemFontsLoading.value = true
+  systemFontsUnavailable.value = false
+  try {
+    const families = await invokeTauri<unknown>('list_system_fonts')
+    if (!Array.isArray(families)) throw new Error('字体列表格式无效')
+    systemFontFamilies.value = [...new Set(families
+      .filter((family): family is string => typeof family === 'string' && family.trim().length > 0)
+      .map((family) => family.trim()))]
+      .sort((left, right) => left.localeCompare(right, 'zh-Hans-CN'))
+  } catch {
+    systemFontsUnavailable.value = true
+  } finally {
+    systemFontsLoading.value = false
+  }
+}
+
 function applyDatabasePath(): void {
   const next = databasePathDraft.value.trim()
   if (next === (store.config.storage.databasePath ?? '')) return
@@ -906,8 +960,9 @@ function setConcurrency(value: number): void {
 }
 
 function setFontFamily(value: string): void {
-  if (!(value in fontStacks)) return
-  store.updateConfig({ ui: { ...store.config.ui, fontFamily: value as AppConfig['ui']['fontFamily'] } })
+  const family = value.trim()
+  if (!family || family.length > 160) return
+  store.updateConfig({ ui: { ...store.config.ui, fontFamily: family } })
 }
 
 function setFontSize(value: number): void {
@@ -963,11 +1018,14 @@ watch(() => store.config.ui.theme, (theme) => {
 }, { immediate: true })
 
 watch(() => store.config.ui.fontFamily, (fontFamily) => {
-  document.documentElement.style.setProperty('--app-font-family', fontStacks[fontFamily] ?? fontStacks['system-sans'])
+  document.documentElement.style.setProperty('--app-font-family', fontStackForFamily(fontFamily))
+  document.documentElement.style.setProperty('--app-mono-font-family', fontFamily === 'system-mono' ? fontStacks['system-mono'] : 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace')
 }, { immediate: true })
 
 watch(() => store.config.ui.fontSize, (fontSize) => {
-  document.documentElement.style.setProperty('--app-font-size', `${fontSize || 15}px`)
+  const normalized = Math.min(20, Math.max(13, Number(fontSize) || 15))
+  document.documentElement.style.setProperty('--app-font-size', `${normalized}px`)
+  document.documentElement.style.setProperty('--app-font-scale', String(normalized / 15))
 }, { immediate: true })
 
 watch(() => store.config.ui.reducedMotion, () => {
@@ -990,6 +1048,7 @@ onMounted(async () => {
   if (provider) providerDraft.value = { ...provider }
   databasePathDraft.value = store.config.storage.databasePath ?? ''
   void fetchStorageInfo()
+  void fetchSystemFonts()
 })
 
 onBeforeUnmount(() => {
@@ -1101,7 +1160,7 @@ onBeforeUnmount(() => {
 
         <section v-else-if="activeView === 'tasks'" class="view-panel tasks-view"><div class="page-toolbar"><div><span class="eyebrow">LLM TASK QUEUE</span><h2>任务中心</h2></div><div class="task-toolbar-meta"><span class="soft-tag" :class="store.config.llm.mode ? 'tag-active' : 'tag-warning'">{{ store.config.llm.mode ? (store.config.llm.mode === 'api' ? 'API 模式' : 'Prompt 粘贴') : '未选择模式' }}</span><span>{{ store.tasks.length }} 个任务</span></div></div><div v-if="!store.config.llm.mode" class="mode-callout"><Sparkles :size="19" /><div><strong>先选择 LLM 模式</strong><span>原始数据可以继续浏览；选择 API 或 Prompt 粘贴后才能启动整理任务。</span></div><button class="button primary-button" @click="setView('settings')"><Settings2 :size="15" />去设置</button></div><div class="task-layout"><div class="task-list surface-section"><div class="task-list-heading"><div><strong>任务队列</strong><span>正常结果自动落图，异常结果需要检查</span></div><button class="icon-button" title="刷新任务" aria-label="刷新任务" @click="store.refreshFromDb"><RefreshCw :size="16" /></button></div><div v-for="group in [taskGroups.active, taskGroups.review, taskGroups.completed]" :key="group[0]?.status || 'empty'" class="task-group"><button v-for="task in taskGroupSlice(group)" :key="task.id" class="task-row" :class="{ selected: selectedTaskId === task.id }" @click="selectedTaskId = task.id"><div class="task-state" :class="`state-${taskTone(task.status)}`"><LoaderCircle v-if="task.status === 'running'" class="spin" :size="15" /><Check v-else-if="task.status === 'success'" :size="15" /><CircleHelp v-else :size="15" /></div><div class="row-main"><strong>{{ taskTypeLabel(task.type) }}</strong><span>{{ task.scopeLabel || new Date(task.createdAt).toLocaleString('zh-CN') }} · {{ new Date(task.createdAt).toLocaleString('zh-CN') }}</span></div><span class="status-label" :class="`label-${taskTone(task.status)}`">{{ taskStatusLabel(task.status) }}</span><ChevronRight :size="15" /></button></div><div v-if="!store.tasks.length" class="empty-state compact"><ListChecks :size="28" /><strong>还没有任务</strong><span>导入 JSON 后，整理任务会出现在这里。</span></div><button v-if="taskGroups.completed.length > visibleCompletedTaskCount" class="text-button load-more-button" @click="visibleCompletedTaskCount += 30">加载更多历史任务（还有 {{ taskGroups.completed.length - visibleCompletedTaskCount }} 个）</button></div><div class="task-detail surface-section"><template v-if="selectedTask"><div class="detail-header"><div><span class="eyebrow">TASK DETAIL</span><h3>{{ taskTypeLabel(selectedTask.type) }}</h3><span class="detail-subtitle">{{ selectedTask.scopeLabel }}</span></div><span class="status-label" :class="`label-${taskTone(selectedTask.status)}`">{{ taskStatusLabel(selectedTask.status) }}</span></div><div class="task-meta-grid"><div><span>模式</span><strong>{{ selectedTask.mode === 'api' ? 'API' : 'Prompt 粘贴' }}</strong></div><div><span>Prompt 版本</span><strong>{{ selectedTask.promptVersion }}</strong></div><div><span>重试次数</span><strong>{{ selectedTask.retryCount }}</strong></div></div><div class="prompt-box"><div class="subsection-title"><strong>Prompt</strong><button class="text-button" @click="copyTaskPrompt(selectedTask)"><Clipboard :size="14" />复制</button></div><pre>{{ selectedTask.prompt }}</pre></div><div class="response-box"><label for="task-response">粘贴 LLM 返回结果</label><textarea id="task-response" :value="taskResponse(selectedTask)" placeholder="在网页端执行 Prompt 后，将完整响应粘贴到这里" @input="setTaskDraft(selectedTask!.id, ($event.target as HTMLTextAreaElement).value)" /><div class="response-actions"><button class="button primary-button" @click="applyTask(selectedTask)"><Check :size="15" />校验并应用</button><button v-if="selectedTask.status === 'needs_review'" class="button secondary-button" @click="selectedTaskId = selectedTask.id"><RefreshCw :size="15" />生成修复 Prompt</button></div><div v-if="selectedTask.validationErrors" class="validation-errors"><strong>校验问题</strong><span v-for="(error, index) in JSON.parse(selectedTask.validationErrors)" :key="index">{{ error }}</span></div></div></template><div v-else class="empty-detail"><ListChecks :size="30" /><strong>选择一个任务</strong><span>查看 Prompt、原始响应和本地校验结果。</span></div></div></div></section>
 
-        <section v-else-if="activeView === 'settings'" class="view-panel settings-view"><div class="page-toolbar"><div><span class="eyebrow">LOCAL CONFIGURATION</span><h2>设置</h2></div><button class="button secondary-button" @click="exportConfig"><Download :size="15" />导出配置文件</button></div><div class="settings-grid"><section class="surface-section settings-section"><div class="section-heading"><div><span class="eyebrow">LLM MODE</span><h3>选择任务模式</h3></div><Sparkles :size="18" /></div><p class="section-description">选择任务模式后才会启动 LLM 整理；原始数据始终先保存到本地。</p><div class="mode-cards"><button class="mode-card" :class="{ selected: store.config.llm.mode === 'api' }" @click="updateMode('api')"><div class="mode-icon blue"><Send :size="18" /></div><div><strong>API 模式</strong><span>通过 OpenAI 兼容端点直接执行任务</span></div><Check v-if="store.config.llm.mode === 'api'" :size="17" /></button><button class="mode-card" :class="{ selected: store.config.llm.mode === 'prompt_paste' }" @click="updateMode('prompt_paste')"><div class="mode-icon amber"><Clipboard :size="18" /></div><div><strong>Prompt 粘贴模式</strong><span>复制 Prompt 到网页端，再粘贴回复</span></div><Check v-if="store.config.llm.mode === 'prompt_paste'" :size="17" /></button></div><div class="mode-concurrency"><label for="api-concurrency">API 并发数<small>同时执行的 API 任务数量，1～4</small></label><select id="api-concurrency" :value="store.config.llm.concurrency" @change="setConcurrency(Number(($event.target as HTMLSelectElement).value))"><option value="1">1（逐个执行）</option><option value="2">2（默认）</option><option value="3">3</option><option value="4">4</option></select></div></section><section class="surface-section settings-section"><div class="section-heading"><div><span class="eyebrow">PROVIDER</span><h3>模型连接</h3></div><Database :size="18" /></div><p class="section-description">配置 OpenAI 兼容端点。API Key 会按你的选择明文写入本机配置文件，能读取该文件的系统用户同样能看到；它只在明确启动 API 任务时发送。</p><div class="provider-list"><div v-for="provider in store.config.llm.providers" :key="provider.id" class="provider-row" :class="{ active: provider.id === store.config.llm.defaultProvider }"><label class="inline-toggle"><input type="radio" name="default-provider" :checked="provider.id === store.config.llm.defaultProvider" @change="setDefaultProvider(provider.id)" />默认</label><div class="row-main"><strong>{{ provider.name }}</strong><span>{{ provider.model || '未填写模型' }} · {{ provider.baseUrl || '未填写地址' }}</span></div><button class="icon-button" title="删除连接" :aria-label="`删除连接 ${provider.name}`" @click="removeProvider(provider.id)"><Trash2 :size="14" /></button></div><p v-if="!store.config.llm.providers.length" class="empty-inline">还没有保存的连接，在下方填写并保存。</p></div><div class="form-grid"><label>名称<input v-model="providerDraft.name" placeholder="例如 DeepSeek" /></label><label class="span-two">Base URL<input v-model="providerDraft.baseUrl" placeholder="https://api.deepseek.com/v1" /></label><label>模型<input v-model="providerDraft.model" placeholder="deepseek-chat" /></label><label>API Key<input v-model="providerDraft.apiKey" type="text" placeholder="sk-…" /></label></div><div class="settings-actions"><button class="button primary-button" @click="saveProvider"><Check :size="15" />保存连接</button><span class="form-hint">同一会话的整理任务始终按顺序执行。</span></div></section><section class="surface-section settings-section"><div class="section-heading"><div><span class="eyebrow">STORAGE</span><h3>本地数据</h3></div><Database :size="18" /></div><p class="section-description">业务数据与配置分开保存；备份和导出永远不包含 API Key。</p><div class="storage-grid"><div><span>业务数据库</span><strong class="storage-path">{{ storageInfo?.databasePath ?? 'nexus.db · 应用数据目录' }}</strong></div><div><span>配置文件</span><strong class="storage-path">{{ storageInfo?.configPath ?? 'config.yaml · 应用数据目录' }}</strong></div></div><div class="settings-actions"><button class="button secondary-button" @click="createDatabaseBackup"><Database :size="15" />创建数据库备份</button><button class="button secondary-button" @click="store.clearAllData(); notify('知识库已清空')"><Trash2 :size="15" />清空知识库</button></div><div class="path-editor"><label>自定义数据库位置<small>留空使用应用数据目录；切换前会自动备份当前数据库。</small><input v-model="databasePathDraft" placeholder="/home/you/nexus/nexus.db" /></label><button class="button secondary-button" @click="applyDatabasePath"><Check :size="15" />应用路径</button></div></section><section class="surface-section settings-section"><div class="section-heading"><div><span class="eyebrow">MOTION & ACCESSIBILITY</span><h3>界面偏好</h3></div><PanelRight :size="18" /></div><label class="toggle-row"><span><strong>减少动态效果</strong><small>遵循 prefers-reduced-motion，缩短图谱和面板动画</small></span><input :checked="store.config.ui.reducedMotion" type="checkbox" @change="store.updateConfig({ ui: { ...store.config.ui, reducedMotion: ($event.target as HTMLInputElement).checked } })" /></label><div class="font-settings"><label><span>界面字体</span><select :value="store.config.ui.fontFamily" @change="setFontFamily(($event.target as HTMLSelectElement).value)"><option value="system-sans">系统无衬线</option><option value="chinese-sans">中文优先无衬线</option><option value="system-serif">系统衬线</option><option value="system-mono">系统等宽</option></select></label><label><span>字号 <output>{{ store.config.ui.fontSize }}px</output></span><input :value="store.config.ui.fontSize" type="range" min="13" max="20" step="1" @input="setFontSize(Number(($event.target as HTMLInputElement).value))" /></label></div></section></div></section>
+        <section v-else-if="activeView === 'settings'" class="view-panel settings-view"><div class="page-toolbar"><div><span class="eyebrow">LOCAL CONFIGURATION</span><h2>设置</h2></div><button class="button secondary-button" @click="exportConfig"><Download :size="15" />导出配置文件</button></div><div class="settings-grid"><section class="surface-section settings-section"><div class="section-heading"><div><span class="eyebrow">LLM MODE</span><h3>选择任务模式</h3></div><Sparkles :size="18" /></div><p class="section-description">选择任务模式后才会启动 LLM 整理；原始数据始终先保存到本地。</p><div class="mode-cards"><button class="mode-card" :class="{ selected: store.config.llm.mode === 'api' }" @click="updateMode('api')"><div class="mode-icon blue"><Send :size="18" /></div><div><strong>API 模式</strong><span>通过 OpenAI 兼容端点直接执行任务</span></div><Check v-if="store.config.llm.mode === 'api'" :size="17" /></button><button class="mode-card" :class="{ selected: store.config.llm.mode === 'prompt_paste' }" @click="updateMode('prompt_paste')"><div class="mode-icon amber"><Clipboard :size="18" /></div><div><strong>Prompt 粘贴模式</strong><span>复制 Prompt 到网页端，再粘贴回复</span></div><Check v-if="store.config.llm.mode === 'prompt_paste'" :size="17" /></button></div><div class="mode-concurrency"><label for="api-concurrency">API 并发数<small>同时执行的 API 任务数量，1～4</small></label><select id="api-concurrency" :value="store.config.llm.concurrency" @change="setConcurrency(Number(($event.target as HTMLSelectElement).value))"><option value="1">1（逐个执行）</option><option value="2">2（默认）</option><option value="3">3</option><option value="4">4</option></select></div></section><section class="surface-section settings-section"><div class="section-heading"><div><span class="eyebrow">PROVIDER</span><h3>模型连接</h3></div><Database :size="18" /></div><p class="section-description">配置 OpenAI 兼容端点。API Key 会按你的选择明文写入本机配置文件，能读取该文件的系统用户同样能看到；它只在明确启动 API 任务时发送。</p><div class="provider-list"><div v-for="provider in store.config.llm.providers" :key="provider.id" class="provider-row" :class="{ active: provider.id === store.config.llm.defaultProvider }"><label class="inline-toggle"><input type="radio" name="default-provider" :checked="provider.id === store.config.llm.defaultProvider" @change="setDefaultProvider(provider.id)" />默认</label><div class="row-main"><strong>{{ provider.name }}</strong><span>{{ provider.model || '未填写模型' }} · {{ provider.baseUrl || '未填写地址' }}</span></div><button class="icon-button" title="删除连接" :aria-label="`删除连接 ${provider.name}`" @click="removeProvider(provider.id)"><Trash2 :size="14" /></button></div><p v-if="!store.config.llm.providers.length" class="empty-inline">还没有保存的连接，在下方填写并保存。</p></div><div class="form-grid"><label>名称<input v-model="providerDraft.name" placeholder="例如 DeepSeek" /></label><label class="span-two">Base URL<input v-model="providerDraft.baseUrl" placeholder="https://api.deepseek.com/v1" /></label><label>模型<input v-model="providerDraft.model" placeholder="deepseek-chat" /></label><label>API Key<input v-model="providerDraft.apiKey" type="text" placeholder="sk-…" /></label></div><div class="settings-actions"><button class="button primary-button" @click="saveProvider"><Check :size="15" />保存连接</button><span class="form-hint">同一会话的整理任务始终按顺序执行。</span></div></section><section class="surface-section settings-section"><div class="section-heading"><div><span class="eyebrow">STORAGE</span><h3>本地数据</h3></div><Database :size="18" /></div><p class="section-description">业务数据与配置分开保存；备份和导出永远不包含 API Key。</p><div class="storage-grid"><div><span>业务数据库</span><strong class="storage-path">{{ storageInfo?.databasePath ?? 'nexus.db · 应用数据目录' }}</strong></div><div><span>配置文件</span><strong class="storage-path">{{ storageInfo?.configPath ?? 'config.yaml · 应用数据目录' }}</strong></div></div><div class="settings-actions"><button class="button secondary-button" @click="createDatabaseBackup"><Database :size="15" />创建数据库备份</button><button class="button secondary-button" @click="store.clearAllData(); notify('知识库已清空')"><Trash2 :size="15" />清空知识库</button></div><div class="path-editor"><label>自定义数据库位置<small>留空使用应用数据目录；切换前会自动备份当前数据库。</small><input v-model="databasePathDraft" placeholder="/home/you/nexus/nexus.db" /></label><button class="button secondary-button" @click="applyDatabasePath"><Check :size="15" />应用路径</button></div></section><section class="surface-section settings-section"><div class="section-heading"><div><span class="eyebrow">MOTION & ACCESSIBILITY</span><h3>界面偏好</h3></div><PanelRight :size="18" /></div><label class="toggle-row"><span><strong>减少动态效果</strong><small>遵循 prefers-reduced-motion，缩短图谱和面板动画</small></span><input :checked="store.config.ui.reducedMotion" type="checkbox" @change="store.updateConfig({ ui: { ...store.config.ui, reducedMotion: ($event.target as HTMLInputElement).checked } })" /></label><div class="font-settings"><label><span>界面字体</span><select :value="store.config.ui.fontFamily" @change="setFontFamily(($event.target as HTMLSelectElement).value)"><option v-for="option in fontFamilyOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select><small class="font-settings-status" aria-live="polite">{{ systemFontStatus }}</small></label><label><span>字号 <output>{{ store.config.ui.fontSize }}px</output></span><input :value="store.config.ui.fontSize" type="range" min="13" max="20" step="1" @input="setFontSize(Number(($event.target as HTMLInputElement).value))" /></label></div></section></div></section>
         <section v-if="activeView === 'settings'" class="surface-section phrase-section"><div class="section-heading"><div><span class="eyebrow">QUICK PHRASES</span><h3>快捷短语</h3></div><MessageSquare :size="18" /></div><p class="section-description">使用 <code>$(topic)</code> 和 <code>$(context)</code> 插入当前主题与上下文。</p><div class="phrase-list"><div v-for="phrase in store.quickPhrases" :key="phrase.id" class="phrase-row"><span>{{ phrase.template }}</span><div v-if="!phrase.isBuiltin" class="phrase-actions"><button class="icon-button" title="编辑快捷短语" :aria-label="`编辑 ${phrase.template}`" @click="beginEditPhrase(phrase.id, phrase.template)"><Settings2 :size="14" /></button><button class="icon-button" title="删除快捷短语" :aria-label="`删除 ${phrase.template}`" @click="removePhrase(phrase.id)"><Trash2 :size="14" /></button></div><span v-else class="soft-tag">内置</span></div></div><div class="phrase-editor"><input v-model="customPhraseDraft" placeholder="例如：请比较 $(topic) 与 $(context)" @keyup.enter="editingPhraseId ? savePhraseEdit() : addCustomPhrase()" /><button class="button secondary-button" @click="editingPhraseId ? savePhraseEdit() : addCustomPhrase()"><Check :size="14" />{{ editingPhraseId ? '保存' : '添加' }}</button><button v-if="editingPhraseId" class="text-button" @click="editingPhraseId = null; customPhraseDraft = ''">取消</button></div></section>
       </section>
       <section v-if="activeView === 'sessions' && selectedSession" class="surface-section session-tree-overview"><div class="section-heading"><div><span class="eyebrow">EXPLORATION TREE</span><h3>{{ selectedSession.title }} 的探索树</h3></div><div class="tree-heading-actions"><button v-if="rootNavNode" class="button secondary-button" @click="openNodeComposer(rootNavNode)"><MessageSquare :size="14" />从起点继续追问</button><History :size="18" /></div></div><NavTree :nodes="store.navNodes.filter((node) => node.sessionId === selectedSession?.id && !node.parentId)" :node-units="store.navNodeUnits" :units="store.units" :selected-node-id="selectedNavNodeId" @select-node="openNavNode" @ask="openNodeComposer" /></section>
