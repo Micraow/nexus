@@ -5,7 +5,7 @@ export type UnitStatus = 'pending' | 'ready' | 'needs_review'
 export type ConceptStatus = 'active' | 'archived' | 'merged'
 export type RelationType = 'hierarchy' | 'related'
 export type RelationStatus = 'proposed' | 'confirmed' | 'rejected'
-export type Provenance = 'llm' | 'manual' | 'maintenance' | 'merge'
+export type Provenance = 'llm' | 'manual' | 'maintenance' | 'merge' | 'import'
 export type SessionKnowledgeKind = 'unknown' | 'knowledge' | 'discussion' | 'procedure' | 'mixed'
 export type TaskType =
   | 'session_triage'
@@ -101,6 +101,22 @@ export interface ConceptAlias {
 
 export interface UnitConcept {
   unitId: string
+  conceptId: string
+  source: Provenance
+  createdAt: string
+}
+
+/** Direct many-to-many Concept membership for a Session. */
+export interface SessionConcept {
+  sessionId: string
+  conceptId: string
+  source: Provenance
+  createdAt: string
+}
+
+/** Direct many-to-many Concept membership for a Message. */
+export interface MessageConcept {
+  messageId: string
   conceptId: string
   source: Provenance
   createdAt: string

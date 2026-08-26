@@ -31,11 +31,13 @@ import type {
   MaintenanceSuggestion,
   ManualGraphEdge,
   Message,
+  MessageConcept,
   NavTreeNode,
   NavTreeNodeUnit,
   OperationLog,
   QuickPhrase,
   Session,
+  SessionConcept,
   UnitConcept,
 } from '@/types/domain'
 import type { GraphWorkerResponse } from '@/workers/graph.worker'
@@ -164,6 +166,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const concepts = ref<Concept[]>([])
   const aliases = ref<ConceptAlias[]>([])
   const unitConcepts = ref<UnitConcept[]>([])
+  const sessionConcepts = ref<SessionConcept[]>([])
+  const messageConcepts = ref<MessageConcept[]>([])
   const relations = ref<ConceptRelation[]>([])
   const navNodes = ref<NavTreeNode[]>([])
   const navNodeUnits = ref<NavTreeNodeUnit[]>([])
@@ -222,6 +226,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       unitId: text(row.unit_id),
       conceptId: text(row.concept_id),
       source: text(row.source) as UnitConcept['source'],
+      createdAt: text(row.created_at),
+    }))
+    sessionConcepts.value = db.query<Row>('SELECT * FROM session_concepts').map((row) => ({
+      sessionId: text(row.session_id),
+      conceptId: text(row.concept_id),
+      source: text(row.source) as SessionConcept['source'],
+      createdAt: text(row.created_at),
+    }))
+    messageConcepts.value = db.query<Row>('SELECT * FROM message_concepts').map((row) => ({
+      messageId: text(row.message_id),
+      conceptId: text(row.concept_id),
+      source: text(row.source) as MessageConcept['source'],
       createdAt: text(row.created_at),
     }))
     relations.value = db.query<Row>('SELECT * FROM concept_relations').map((row) => ({
@@ -386,6 +402,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       messages: messages.value.filter((message) => activeSessionIds.value.has(message.sessionId)),
       sessions: sessions.value.filter((session) => activeSessionIds.value.has(session.id)),
       unitConcepts: unitConcepts.value.filter((link) => activeUnitIds.has(link.unitId)),
+      sessionConcepts: sessionConcepts.value,
+      messageConcepts: messageConcepts.value,
       relations: relations.value,
       manualEdges: manualEdges.value,
       revision: graphRevision.value,
@@ -618,6 +636,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     selectedMessageIds.forEach((messageId) => {
       const message = messages.value.find((item) => item.id === messageId)
       if (message?.unitId) unitConcepts.value.filter((link) => link.unitId === message.unitId).forEach((link) => relevantConceptIds.add(link.conceptId))
+      messageConcepts.value.filter((link) => link.messageId === messageId).forEach((link) => relevantConceptIds.add(link.conceptId))
       const declared = message?.metadata?.concept_ids
       if (Array.isArray(declared)) declared.filter((id): id is string => typeof id === 'string').forEach((id) => { if (activeIds.has(id)) relevantConceptIds.add(id) })
     })
@@ -700,6 +719,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       concepts: concepts.value,
       aliases: aliases.value,
       unit_concepts: unitConcepts.value,
+      session_concepts: sessionConcepts.value,
+      message_concepts: messageConcepts.value,
       relations: relations.value,
       nav_nodes: navNodes.value,
       nav_node_units: navNodeUnits.value,
@@ -729,6 +750,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         'DELETE FROM nav_tree_nodes',
         'DELETE FROM manual_graph_edges',
         'DELETE FROM unit_concepts',
+        'DELETE FROM session_concepts',
+        'DELETE FROM message_concepts',
         'DELETE FROM concept_aliases',
         'DELETE FROM concept_relations',
         'DELETE FROM knowledge_units',
@@ -749,6 +772,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       records.messages.forEach((item: Message) => db.run('INSERT INTO messages(id, session_id, unit_id, role, content, order_in_session, timestamp, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.sessionId, item.unitId ?? null, item.role, item.content, item.orderInSession, item.timestamp ?? null, item.metadata ? JSON.stringify(item.metadata) : null]))
       records.aliases.forEach((item: ConceptAlias) => db.run('INSERT INTO concept_aliases(id, concept_id, alias, normalized_alias, source, created_at) VALUES (?, ?, ?, ?, ?, ?)', [item.id, item.conceptId, item.alias, item.normalizedAlias, item.source, item.createdAt]))
       records.unit_concepts.forEach((item: UnitConcept) => db.run('INSERT INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [item.unitId, item.conceptId, item.source, item.createdAt]))
+      ;(Array.isArray(records.session_concepts) ? records.session_concepts : []).forEach((item: SessionConcept) => db.run('INSERT INTO session_concepts(session_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [item.sessionId, item.conceptId, item.source, item.createdAt]))
+      ;(Array.isArray(records.message_concepts) ? records.message_concepts : []).forEach((item: MessageConcept) => db.run('INSERT INTO message_concepts(message_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [item.messageId, item.conceptId, item.source, item.createdAt]))
       records.relations.forEach((item: ConceptRelation) => db.run('INSERT INTO concept_relations(id, parent_concept_id, child_concept_id, relation_type, source, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.parentConceptId, item.childConceptId, item.relationType, item.source, item.status, item.createdAt, item.updatedAt]))
       records.nav_nodes.forEach((item: NavTreeNode) => db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [item.id, item.sessionId, item.parentId ?? null, item.triggerConceptId ?? null, item.label, item.depth, item.createdAt]))
       records.nav_node_units.forEach((item: NavTreeNodeUnit) => db.run('INSERT INTO nav_tree_node_units(node_id, unit_id, order_in_node) VALUES (?, ?, ?)', [item.nodeId, item.unitId, item.orderInNode]))
@@ -793,10 +818,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         )
         conversation.messages.forEach((message, index) => {
           const role = message.role === 'assistant' || message.role === 'system' ? message.role : 'user'
+          const messageId = createId('message')
           db.run(
             'INSERT INTO messages(id, session_id, role, content, order_in_session, timestamp, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            [createId('message'), sessionId, role, message.content ?? '', index, parseIsoTimestamp(message.timestamp) ?? null, message.metadata ? JSON.stringify(message.metadata) : null],
+            [messageId, sessionId, role, message.content ?? '', index, parseIsoTimestamp(message.timestamp) ?? null, message.metadata ? JSON.stringify(message.metadata) : null],
           )
+          const declared = message.metadata?.concept_ids
+          if (Array.isArray(declared)) declared.filter((id): id is string => typeof id === 'string' && concepts.value.some((concept) => concept.id === id.trim())).forEach((conceptId) => {
+            db.run('INSERT OR IGNORE INTO message_concepts(message_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [messageId, conceptId.trim(), 'import', now])
+          })
         })
         const rootId = createId('nav')
         db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, NULL, NULL, ?, 0, ?)', [rootId, sessionId, conversation.title?.trim() || '起始对话', now])
@@ -984,6 +1014,32 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     return conceptId
   }
 
+  function setMessageConcept(messageId: string, conceptId: string, linked: boolean): void {
+    mutate(() => {
+      const message = messages.value.find((item) => item.id === messageId)
+      const concept = concepts.value.find((item) => item.id === conceptId && item.status === 'active')
+      if (!message || !concept) throw new Error('消息或知识主题不存在')
+      if (linked) db.run('INSERT OR IGNORE INTO message_concepts(message_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [messageId, conceptId, 'manual', isoNow()])
+      else db.run('DELETE FROM message_concepts WHERE message_id = ? AND concept_id = ?', [messageId, conceptId])
+      const metadata = parseMetadata(message.metadata)
+      const current = Array.isArray(metadata.concept_ids) ? metadata.concept_ids.filter((id): id is string => typeof id === 'string') : []
+      const next = linked ? [...new Set([...current, conceptId])] : current.filter((id) => id !== conceptId)
+      if (next.length) metadata.concept_ids = next
+      else delete metadata.concept_ids
+      db.run('UPDATE messages SET metadata = ? WHERE id = ?', [Object.keys(metadata).length ? JSON.stringify(metadata) : null, messageId])
+    })
+  }
+
+  function setSessionConcept(sessionId: string, conceptId: string, linked: boolean): void {
+    mutate(() => {
+      const session = sessions.value.find((item) => item.id === sessionId)
+      const concept = concepts.value.find((item) => item.id === conceptId && item.status === 'active')
+      if (!session || !concept) throw new Error('会话或知识主题不存在')
+      if (linked) db.run('INSERT OR IGNORE INTO session_concepts(session_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [sessionId, conceptId, 'manual', isoNow()])
+      else db.run('DELETE FROM session_concepts WHERE session_id = ? AND concept_id = ?', [sessionId, conceptId])
+    })
+  }
+
   function addManualGraphEdge(sourceType: ManualGraphEdge['sourceType'], sourceRefId: string, targetType: ManualGraphEdge['targetType'], targetRefId: string, label?: string): string {
     if (sourceType === targetType && sourceRefId === targetRefId) throw new Error('不能建立自环边')
     const id = createId('edge')
@@ -1002,9 +1058,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       concepts: db.query<Row>('SELECT * FROM concepts'),
       aliases: db.query<Row>('SELECT * FROM concept_aliases'),
       unit_concepts: db.query<Row>('SELECT * FROM unit_concepts'),
+      session_concepts: db.query<Row>('SELECT * FROM session_concepts'),
+      message_concepts: db.query<Row>('SELECT * FROM message_concepts'),
       relations: db.query<Row>('SELECT * FROM concept_relations'),
       manual_edges: db.query<Row>('SELECT * FROM manual_graph_edges'),
       graph_layout: db.query<Row>('SELECT * FROM graph_layout'),
+      message_metadata: db.query<Row>('SELECT id, metadata FROM messages'),
       knowledge_units: db.query<Row>('SELECT * FROM knowledge_units'),
       sessions: db.query<Row>('SELECT id, revision, updated_at FROM sessions'),
       tasks: db.query<Row>('SELECT id, parsed_result, updated_at FROM llm_tasks'),
@@ -1016,14 +1075,19 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       concepts: Row[]
       aliases: Row[]
       unit_concepts: Row[]
+      session_concepts?: Row[]
+      message_concepts?: Row[]
       relations: Row[]
       manual_edges: Row[]
       graph_layout: Row[]
+      message_metadata?: Row[]
       knowledge_units?: Row[]
       sessions?: Row[]
       tasks?: Row[]
     }
     db.run('DELETE FROM unit_concepts')
+    db.run('DELETE FROM session_concepts')
+    db.run('DELETE FROM message_concepts')
     db.run('DELETE FROM concept_aliases')
     db.run('DELETE FROM concept_relations')
     db.run('DELETE FROM manual_graph_edges')
@@ -1032,9 +1096,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     snapshot.concepts.forEach((row) => db.run('INSERT INTO concepts(id, name, normalized_name, notes, status, merged_into_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [text(row.id), text(row.name), text(row.normalized_name), text(row.notes), text(row.status), row.merged_into_id ?? null, text(row.created_at), text(row.updated_at), row.deleted_at ?? null]))
     snapshot.aliases.forEach((row) => db.run('INSERT INTO concept_aliases(id, concept_id, alias, normalized_alias, source, created_at) VALUES (?, ?, ?, ?, ?, ?)', [text(row.id), text(row.concept_id), text(row.alias), text(row.normalized_alias), text(row.source), text(row.created_at)]))
     snapshot.unit_concepts.forEach((row) => db.run('INSERT INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [text(row.unit_id), text(row.concept_id), text(row.source), text(row.created_at)]))
+    snapshot.session_concepts?.forEach((row) => db.run('INSERT INTO session_concepts(session_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [text(row.session_id), text(row.concept_id), text(row.source), text(row.created_at)]))
+    snapshot.message_concepts?.forEach((row) => db.run('INSERT INTO message_concepts(message_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [text(row.message_id), text(row.concept_id), text(row.source), text(row.created_at)]))
     snapshot.relations.forEach((row) => db.run('INSERT INTO concept_relations(id, parent_concept_id, child_concept_id, relation_type, source, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [text(row.id), text(row.parent_concept_id), text(row.child_concept_id), text(row.relation_type), text(row.source), text(row.status), text(row.created_at), text(row.updated_at)]))
     snapshot.manual_edges.forEach((row) => db.run('INSERT INTO manual_graph_edges(id, source_type, source_ref_id, target_type, target_ref_id, label, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [text(row.id), text(row.source_type), text(row.source_ref_id), text(row.target_type), text(row.target_ref_id), row.label ?? null, text(row.created_at)]))
     snapshot.graph_layout.forEach((row) => db.run('INSERT INTO graph_layout(node_type, ref_id, x, y, fixed, layout_version) VALUES (?, ?, ?, ?, ?, ?)', [text(row.node_type), text(row.ref_id), number(row.x), number(row.y), bool(row.fixed) ? 1 : 0, number(row.layout_version, 1)]))
+    snapshot.message_metadata?.forEach((row) => db.run('UPDATE messages SET metadata = ? WHERE id = ?', [row.metadata ?? null, text(row.id)]))
     snapshot.knowledge_units?.forEach((row) => db.run('UPDATE knowledge_units SET title = ?, summary = ?, order_in_session = ?, status = ?, revision = ?, updated_at = ? WHERE id = ?', [row.title ?? null, row.summary ?? null, number(row.order_in_session), text(row.status), number(row.revision, 1), text(row.updated_at), text(row.id)]))
     snapshot.sessions?.forEach((row) => db.run('UPDATE sessions SET revision = ?, updated_at = ? WHERE id = ?', [number(row.revision, 1), text(row.updated_at), text(row.id)]))
     snapshot.tasks?.forEach((row) => db.run('UPDATE llm_tasks SET parsed_result = ?, updated_at = ? WHERE id = ?', [row.parsed_result ?? null, text(row.updated_at), text(row.id)]))
@@ -1195,6 +1262,16 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     })
     db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) SELECT unit_id, ?, ?, created_at FROM unit_concepts WHERE concept_id = ?', [targetId, 'merge', sourceId])
     db.run('DELETE FROM unit_concepts WHERE concept_id = ?', [sourceId])
+    db.run('INSERT OR IGNORE INTO session_concepts(session_id, concept_id, source, created_at) SELECT session_id, ?, ?, created_at FROM session_concepts WHERE concept_id = ?', [targetId, 'merge', sourceId])
+    db.run('DELETE FROM session_concepts WHERE concept_id = ?', [sourceId])
+    db.run('INSERT OR IGNORE INTO message_concepts(message_id, concept_id, source, created_at) SELECT message_id, ?, ?, created_at FROM message_concepts WHERE concept_id = ?', [targetId, 'merge', sourceId])
+    db.run('DELETE FROM message_concepts WHERE concept_id = ?', [sourceId])
+    db.query<Row>('SELECT id, metadata FROM messages WHERE metadata IS NOT NULL').forEach((row) => {
+      const metadata = parseMetadata(row.metadata)
+      if (!Array.isArray(metadata.concept_ids) || !metadata.concept_ids.includes(sourceId)) return
+      metadata.concept_ids = [...new Set(metadata.concept_ids.map((id) => id === sourceId ? targetId : id).filter((id): id is string => typeof id === 'string'))]
+      db.run('UPDATE messages SET metadata = ? WHERE id = ?', [JSON.stringify(metadata), text(row.id)])
+    })
 
     const sourceRelations = db.query<Row>('SELECT * FROM concept_relations WHERE parent_concept_id = ? OR child_concept_id = ?', [sourceId, sourceId])
     sourceRelations.forEach((relation) => {
@@ -1292,10 +1369,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     return issues
   }
 
-  /** Persist a multi-membership declaration using the existing many-to-many
-   * UnitConcept table. Message/session declarations are projected onto their
-   * owning units; unassigned messages retain IDs in metadata until a unit is
-   * created by segmentation. */
+  /** Persist multi-membership declarations in exact join tables. Metadata is
+   * still mirrored for backwards compatibility with pre-v4 databases and
+   * segmentation imports that already know how to carry those IDs forward. */
   function persistConceptMemberships(memberships: unknown, now: string): void {
     if (!Array.isArray(memberships)) return
     memberships.forEach((raw) => {
@@ -1306,31 +1382,22 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const ids = Array.isArray(item.concept_ids) ? item.concept_ids.filter((id): id is string => typeof id === 'string' && id.trim().length > 0).map((id) => id.trim()) : []
       if (!targetId || !ids.length) return
       const addToUnit = (unitId: string): void => ids.forEach((conceptId) => db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [unitId, conceptId, 'llm', now]))
+      const addToMessage = (messageId: string): void => ids.forEach((conceptId) => db.run('INSERT OR IGNORE INTO message_concepts(message_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [messageId, conceptId, 'llm', now]))
       if (targetType === 'unit') {
         addToUnit(targetId)
       } else if (targetType === 'message') {
         const messageRow = db.query<Row>('SELECT unit_id, metadata FROM messages WHERE id = ?', [targetId])[0]
         if (!messageRow) return
+        addToMessage(targetId)
         const unitId = messageRow.unit_id == null ? '' : text(messageRow.unit_id)
         if (unitId) addToUnit(unitId)
-        else {
-          let metadata: Record<string, unknown> = {}
-          try { metadata = messageRow.metadata ? JSON.parse(text(messageRow.metadata)) as Record<string, unknown> : {} } catch { metadata = {} }
-          const current = Array.isArray(metadata.concept_ids) ? metadata.concept_ids.filter((id): id is string => typeof id === 'string') : []
-          metadata.concept_ids = [...new Set([...current, ...ids])]
-          db.run('UPDATE messages SET metadata = ? WHERE id = ?', [JSON.stringify(metadata), targetId])
-        }
+        let metadata: Record<string, unknown> = {}
+        try { metadata = messageRow.metadata ? JSON.parse(text(messageRow.metadata)) as Record<string, unknown> : {} } catch { metadata = {} }
+        const current = Array.isArray(metadata.concept_ids) ? metadata.concept_ids.filter((id): id is string => typeof id === 'string') : []
+        metadata.concept_ids = [...new Set([...current, ...ids])]
+        db.run('UPDATE messages SET metadata = ? WHERE id = ?', [JSON.stringify(metadata), targetId])
       } else if (targetType === 'session') {
-        db.query<Row>('SELECT id FROM knowledge_units WHERE session_id = ?', [targetId]).forEach((row) => addToUnit(text(row.id)))
-        db.query<Row>('SELECT id, unit_id, metadata FROM messages WHERE session_id = ?', [targetId]).forEach((row) => {
-          const unitId = row.unit_id == null ? '' : text(row.unit_id)
-          if (unitId) return
-          let metadata: Record<string, unknown> = {}
-          try { metadata = row.metadata ? JSON.parse(text(row.metadata)) as Record<string, unknown> : {} } catch { metadata = {} }
-          const current = Array.isArray(metadata.concept_ids) ? metadata.concept_ids.filter((id): id is string => typeof id === 'string') : []
-          metadata.concept_ids = [...new Set([...current, ...ids])]
-          db.run('UPDATE messages SET metadata = ? WHERE id = ?', [JSON.stringify(metadata), text(row.id)])
-        })
+        ids.forEach((conceptId) => db.run('INSERT OR IGNORE INTO session_concepts(session_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [targetId, conceptId, 'llm', now]))
       }
     })
   }
@@ -2289,6 +2356,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       db.run('DELETE FROM nav_tree_node_units')
       db.run('DELETE FROM nav_tree_nodes')
       db.run('DELETE FROM unit_concepts')
+      db.run('DELETE FROM session_concepts')
+      db.run('DELETE FROM message_concepts')
       db.run('DELETE FROM concept_relations')
       db.run('DELETE FROM concept_aliases')
       db.run('DELETE FROM manual_graph_edges')
@@ -2314,6 +2383,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     concepts,
     aliases,
     unitConcepts,
+    sessionConcepts,
+    messageConcepts,
     relations,
     navNodes,
     navNodeUnits,
@@ -2365,6 +2436,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     toggleSessionLocalOnly,
     createConcept,
     addConceptToUnit,
+    setMessageConcept,
+    setSessionConcept,
     setUnitConcept,
     createRelation,
     setConceptParent,

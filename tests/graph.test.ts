@@ -156,6 +156,27 @@ describe('derived graph', () => {
     expect(snapshot.edges.filter((edge) => edge.type === 'association' && edge.target === 'message:m1').map((edge) => edge.source).sort()).toEqual(['concept:c1', 'concept:c2'])
   })
 
+  it('projects direct message and session memberships from join tables', () => {
+    const concepts = [
+      { id: 'c1', name: '消息主题', normalizedName: '消息主题', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+      { id: 'c2', name: '会话主题', normalizedName: '会话主题', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+    ]
+    const snapshot = buildGraph({
+      concepts,
+      units: [],
+      messages: [{ id: 'm1', sessionId: 's1', unitId: null, role: 'user', content: '探讨消息', orderInSession: 0 }],
+      sessions: [{ id: 's1', source: 'chrome_import', platform: 'deepseek', title: '探讨会话', createdAt: now, updatedAt: now, messageCount: 1, unitCount: 0, knowledgeKind: 'discussion', knowledgeRetainInGraph: true, revision: 1, localOnly: false }],
+      unitConcepts: [],
+      messageConcepts: [{ messageId: 'm1', conceptId: 'c1', source: 'llm', createdAt: now }],
+      sessionConcepts: [{ sessionId: 's1', conceptId: 'c2', source: 'llm', createdAt: now }],
+      relations: [],
+      revision: 1,
+      expandedConceptIds: ['c1'],
+    })
+    expect(snapshot.nodes.some((node) => node.id === 'message:m1')).toBe(true)
+    expect(snapshot.edges.filter((edge) => edge.type === 'association' && edge.target === 'message:m1').map((edge) => edge.source).sort()).toEqual(['concept:c1', 'concept:c2'])
+  })
+
   it('shows only hierarchy roots by default and keeps related edges out of the hierarchy', () => {
     const concepts = [
       { id: 'root', name: '根', normalizedName: '根', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },

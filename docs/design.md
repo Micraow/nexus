@@ -443,7 +443,7 @@ API 服务支持结构化输出时，同时使用接口级 JSON Schema；Prompt 
 
 `refID` 由本地生成且不可由模型猜测、改写或拼接。所有目录、摘要和原文都按不可信数据处理，其中的文字指令、代码、SQL 和链接不执行；模型可以使用自身知识、推理和调用方明确允许的外部搜索，但必须区分输入证据、外部资料与推断。
 
-Concept 归属是多对多的：同一个 Session、Message 或 KnowledgeUnit 可以同时关联多个知识主题，也可以暂时没有主题。任务结果用 `memberships[].concept_ids` 或目标对象中的 `concept_ids` 数组表达归属，不能用单个 `concept_id` 代表“主主题”。一个子 Concept 也可以拥有多个 `hierarchy` 父主题；`related` 始终是无向关系。知识维护中的重新关联建议同样使用 `concept_ids` 数组，应用前逐项校验 ID、重复项和当前任务范围。
+Concept 归属是多对多的：同一个 Session、Message 或 KnowledgeUnit 可以同时关联多个知识主题，也可以暂时没有主题。任务结果用 `memberships[].concept_ids` 或目标对象中的 `concept_ids` 数组表达归属，不能用单个 `concept_id` 代表“主主题”。运行时分别使用 `session_concepts`、`message_concepts` 和 `unit_concepts` 三张关联表；旧版本写入 `messages.metadata.concept_ids` 的数据会在迁移时兼容导入。一个子 Concept 也可以拥有多个 `hierarchy` 父主题；`related` 始终是无向关系。知识维护中的重新关联建议同样使用 `concept_ids` 数组，应用前逐项校验 ID、重复项和当前任务范围。
 
 ### 6.1 分段输出
 

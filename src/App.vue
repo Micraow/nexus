@@ -93,6 +93,7 @@ const conceptDraftNotes = ref('')
 const conceptChildQuery = ref('')
 const conceptParentQuery = ref('')
 const newUnitConcept = ref('')
+const newMessageConcept = ref('')
 const relationParentId = ref('')
 const relationChildId = ref('')
 const relationType = ref<'hierarchy' | 'related'>('hierarchy')
@@ -305,12 +306,21 @@ const selectedConceptUnits = computed(() => {
 const selectedConceptMessages = computed(() => {
   const unitIds = new Set(selectedConceptUnits.value.map((unit) => unit.id))
   const conceptId = selectedConcept.value?.id
+  const sessionIds = new Set(conceptId ? store.sessionConcepts.filter((link) => link.conceptId === conceptId).map((link) => link.sessionId) : [])
   return store.messages.filter((message) => {
     if (message.unitId && unitIds.has(message.unitId)) return true
+    if (sessionIds.has(message.sessionId)) return true
     if (!conceptId) return false
     const declared = parseMetadata(message.metadata).concept_ids
-    return Array.isArray(declared) && declared.some((id) => id === conceptId)
+    const direct = store.messageConcepts.some((link) => link.messageId === message.id && link.conceptId === conceptId)
+    return direct || (Array.isArray(declared) && declared.some((id) => id === conceptId))
   }).sort((left, right) => left.orderInSession - right.orderInSession)
+})
+const selectedConceptSessions = computed(() => {
+  const conceptId = selectedConcept.value?.id
+  if (!conceptId) return []
+  const ids = new Set(store.sessionConcepts.filter((link) => link.conceptId === conceptId).map((link) => link.sessionId))
+  return store.activeSessions.filter((session) => ids.has(session.id))
 })
 const otherConceptOf = (relation: { parentConceptId: string; childConceptId: string }, conceptId: string): string => (relation.childConceptId === conceptId ? relation.parentConceptId : relation.childConceptId)
 const selectedConceptParents = computed(() => selectedConcept.value ? store.relations.filter((relation) => relation.childConceptId === selectedConcept.value?.id && relation.relationType === 'hierarchy').sort((left, right) => linkedUnitCount(otherConceptOf(right, selectedConcept.value!.id)) - linkedUnitCount(otherConceptOf(left, selectedConcept.value!.id))) : [])
@@ -605,6 +615,24 @@ function addConceptToSelectedUnit(): void {
 function removeConceptFromUnit(unitId: string, conceptId: string): void {
   store.setUnitConcept(unitId, conceptId, false)
   notify('知识主题关联已移除')
+}
+
+function addConceptToSelectedMessage(): void {
+  if (!selectedMessage.value || !newMessageConcept.value.trim()) return
+  try {
+    const concept = store.activeConcepts.find((item) => item.name.toLocaleUpperCase() === newMessageConcept.value.trim().toLocaleUpperCase())
+    if (!concept) throw new Error('请输入现有知识主题的完整名称')
+    store.setMessageConcept(selectedMessage.value.id, concept.id, true)
+    newMessageConcept.value = ''
+    notify('消息归属已添加')
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '消息归属添加失败')
+  }
+}
+
+function removeConceptFromMessage(messageId: string, conceptId: string): void {
+  store.setMessageConcept(messageId, conceptId, false)
+  notify('消息归属已移除')
 }
 
 function createRelationFromForm(): void {
@@ -1647,11 +1675,12 @@ onBeforeUnmount(() => {
           <div v-if="conceptChildQuery.trim() && conceptChildCandidates.length" class="relation-candidates" role="listbox" aria-label="子主题候选"><button v-for="candidate in conceptChildCandidates" :key="candidate.id" class="relation-candidate" @click="addConceptChild(candidate.id)"><Plus :size="13" /><span>{{ candidate.name }}</span><small>{{ linkedUnitCount(candidate.id) }} 个单元</small></button></div><div v-else-if="conceptChildQuery.trim()" class="relation-candidate-empty"><span>没有匹配的现有主题。</span><button class="text-button" @click="createAndAddConceptChild"><Plus :size="13" />创建并添加“{{ conceptChildQuery.trim() }}”</button></div>
         </section>
         <section class="drawer-section"><div class="subsection-title"><strong>相关主题</strong><span>{{ selectedConceptRelated.length }} 个</span></div><div class="concept-relation-list"><div v-for="relation in selectedConceptRelated" :key="relation.id" class="concept-relation-row"><button class="relation-link" @click="openConcept(otherConceptOf(relation, selectedConcept!.id))"><Link2 :size="13" />{{ conceptName(otherConceptOf(relation, selectedConcept!.id)) }}</button><span class="status-label" :class="relation.status === 'confirmed' ? 'label-success' : relation.status === 'proposed' ? 'label-warning' : 'label-neutral'">{{ relationStatusLabel(relation.status) }}</span><button class="icon-button relation-remove" title="移除相关关系" aria-label="移除相关关系" @click="deleteConceptRelation(relation.id)"><Trash2 :size="13" /></button></div><div v-if="!selectedConceptRelated.length" class="empty-inline">暂无相关主题；“相关”关系不表示父子层级。</div></div></section>
+        <section class="drawer-section"><div class="subsection-title"><strong>关联会话</strong><span>{{ selectedConceptSessions.length }} 个</span></div><button v-for="session in selectedConceptSessions.slice(0, 8)" :key="session.id" class="mini-unit-row" @click="openFullscreenSession(session.id)"><History :size="14" /><span>{{ session.title }}</span><Maximize2 :size="14" /></button><div v-if="!selectedConceptSessions.length" class="empty-inline">暂无直接会话归属。</div></section>
         <section class="drawer-section"><div class="subsection-title"><strong>关联知识单元</strong><span>{{ selectedConceptUnits.length }} 个</span></div><button v-for="unit in selectedConceptUnits.slice(0, 12)" :key="unit.id" class="mini-unit-row" @click="openUnit(unit.id)"><BookOpen :size="14" /><span>{{ unit.title || '待命名知识单元' }}</span><ChevronRight :size="14" /></button><div v-if="selectedConceptUnits.length > 12" class="empty-inline">还有 {{ selectedConceptUnits.length - 12 }} 个单元，可在主题目录中继续查看。</div><div v-if="!selectedConceptUnits.length" class="empty-inline">还没有关联单元。</div></section>
         <section class="drawer-section"><div class="subsection-title"><strong>包含消息</strong><span>{{ selectedConceptMessages.length }} 条</span></div><button v-for="message in selectedConceptMessages.slice(0, 12)" :key="message.id" class="mini-unit-row" @click="openFullscreenMessage(message.id)"><MessageSquare :size="14" /><span>{{ message.content.slice(0, 54) || '空消息' }}</span><Maximize2 :size="14" /></button><div v-if="selectedConceptMessages.length > 12" class="empty-inline">还有 {{ selectedConceptMessages.length - 12 }} 条消息。</div><div v-if="!selectedConceptMessages.length" class="empty-inline">暂无已归属消息。</div></section>
         <button class="button primary-button full-button" @click="openComposer({ topicId: selectedConcept?.id ?? null, sourceUnitIds: selectedConceptUnits.map((unit) => unit.id) })"><MessageSquare :size="15" />从此知识主题开始新对话</button>
       </div>
-      <div v-else-if="selectedMessage" class="drawer-content"><div class="drawer-tags"><span class="soft-tag">{{ selectedMessage.role }}</span><span class="soft-tag">消息 #{{ selectedMessage.orderInSession + 1 }}</span></div><div class="message-context-actions"><button class="button secondary-button" @click="toggleMessageContext(selectedMessage.id)"><Check v-if="store.selectedContextMessageIds.includes(selectedMessage.id)" :size="14" /><Plus v-else :size="14" />{{ store.selectedContextMessageIds.includes(selectedMessage.id) ? '已加入上下文' : '加入上下文' }}</button><button class="button secondary-button" @click="openFullscreenMessage(selectedMessage.id)"><Maximize2 :size="14" />全屏查看</button></div><div class="md-body message-detail-content" v-html="renderedMessageContent(selectedMessage.content)" @click="handleRenderedClick" @keydown.enter.prevent="handleRenderedClick" /><button v-if="selectedMessage.unitId" class="text-button" @click="openUnit(selectedMessage.unitId)"><BookOpen :size="14" />打开所属知识单元</button></div>
+      <div v-else-if="selectedMessage" class="drawer-content"><div class="drawer-tags"><span class="soft-tag">{{ selectedMessage.role }}</span><span class="soft-tag">消息 #{{ selectedMessage.orderInSession + 1 }}</span></div><div class="message-context-actions"><button class="button secondary-button" @click="toggleMessageContext(selectedMessage.id)"><Check v-if="store.selectedContextMessageIds.includes(selectedMessage.id)" :size="14" /><Plus v-else :size="14" />{{ store.selectedContextMessageIds.includes(selectedMessage.id) ? '已加入上下文' : '加入上下文' }}</button><button class="button secondary-button" @click="openFullscreenMessage(selectedMessage.id)"><Maximize2 :size="14" />全屏查看</button></div><div class="drawer-section message-membership-editor"><div class="subsection-title"><strong>消息归属</strong><span>可多选</span></div><div class="chip-list"><button v-for="link in store.messageConcepts.filter((item) => item.messageId === selectedMessage?.id)" :key="link.conceptId" class="concept-chip" @click="openConcept(link.conceptId)">{{ store.concepts.find((concept) => concept.id === link.conceptId)?.name }}<X :size="12" @click.stop="removeConceptFromMessage(selectedMessage!.id, link.conceptId)" /></button><span v-if="!store.messageConcepts.some((item) => item.messageId === selectedMessage?.id)" class="muted">暂无直接主题归属</span></div><div class="add-inline"><input v-model="newMessageConcept" list="message-concept-options" placeholder="输入现有知识主题名称" @keyup.enter="addConceptToSelectedMessage" /><datalist id="message-concept-options"><option v-for="concept in store.activeConcepts" :key="concept.id" :value="concept.name" /></datalist><button class="icon-button" aria-label="添加消息知识主题" title="添加消息知识主题" @click="addConceptToSelectedMessage"><Plus :size="15" /></button></div></div><div class="md-body message-detail-content" v-html="renderedMessageContent(selectedMessage.content)" @click="handleRenderedClick" @keydown.enter.prevent="handleRenderedClick" /><button v-if="selectedMessage.unitId" class="text-button" @click="openUnit(selectedMessage.unitId)"><BookOpen :size="14" />打开所属知识单元</button></div>
     </aside>
 
     <aside v-if="store.selectedUnits.length || store.selectedContextMessages.length" class="context-drawer" :class="{ 'with-detail-drawer': isDetailOpen && (selectedConcept || selectedUnit || selectedMessage) }"><div class="context-header"><div><span class="eyebrow">CONTEXT BUILDER</span><h3>已选上下文</h3></div><button class="icon-button" aria-label="清空上下文" title="清空上下文" @click="store.clearContext"><X :size="16" /></button></div><div class="context-count"><strong>{{ store.selectedUnits.length + store.selectedContextMessages.length }}</strong><span>个来源 · {{ store.selectedUnits.length }} 个单元，{{ store.selectedContextMessages.length }} 条消息</span></div><div class="context-list"><div v-for="(unit, index) in store.selectedUnits" :key="unit.id" class="context-item" draggable="true" @dragstart="startContextDrag(unit.id)" @dragover.prevent @drop="dropContext(unit.id)"><span class="context-index">{{ index + 1 }}</span><div><strong>{{ unit.title || '待命名知识单元' }}</strong><span>{{ sessionForUnit(unit)?.title }}</span></div><button class="icon-button" aria-label="移除上下文" title="移除上下文" @click="store.selectContext(unit.id, false)"><X :size="13" /></button></div><div v-for="(message, index) in store.selectedContextMessages" :key="message.id" class="context-item message-context-item"><span class="context-index">{{ store.selectedUnits.length + index + 1 }}</span><div><strong>{{ message.role === 'user' ? '你' : 'AI' }} · {{ message.content.slice(0, 48) || '空消息' }}</strong><span>消息 #{{ message.orderInSession + 1 }}</span></div><button class="icon-button" aria-label="移除消息上下文" title="移除消息上下文" @click="toggleMessageContext(message.id)"><X :size="13" /></button></div></div><label class="toggle-row context-toggle"><span><strong>附带完整原文</strong><small>默认只注入标题、摘要和知识主题；单独选择的消息始终附带</small></span><input v-model="contextIncludeFull" type="checkbox" /></label><div class="context-budget" :class="{ over: contextTokenEstimate > store.config.llm.tokenBudget }"><span>预计输入</span><strong>{{ contextTokenEstimate.toLocaleString() }} tokens</strong><small>预算 {{ store.config.llm.tokenBudget.toLocaleString() }} tokens{{ contextTokenEstimate > store.config.llm.tokenBudget ? ' · 已超出' : '' }}</small></div><button class="button primary-button full-button" @click="openContextComposer"><MessageSquare :size="15" />带入新对话页</button><button class="text-button full-button" @click="createContextPrompt"><Clipboard :size="14" />复制上下文文本</button><span class="context-hint">{{ contextIncludeFull ? '完整原文会增加输入长度，请确认模型预算。' : '摘要模式适合跨会话整理。' }}</span></aside>

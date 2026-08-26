@@ -2,11 +2,19 @@ import initSqlJs, { type Database, type SqlJsStatic } from 'sql.js'
 import { invokeTauri, isTauriRuntime } from '@/services/tauri'
 import wasmUrl from 'sql.js/dist/sql-wasm.wasm?url'
 
+// Vite serves the imported asset URL in the browser. Vitest exposes the same
+// import as `/node_modules/...`; resolve that virtual URL to the workspace file
+// only when a Node process is loading the store directly.
+const nodeProcess = (globalThis as { process?: { versions?: { node?: string } } }).process
+const sqlWasmUrl = nodeProcess?.versions?.node && typeof wasmUrl === 'string' && wasmUrl.startsWith('/node_modules/')
+  ? new URL(`../..${wasmUrl}`, import.meta.url).pathname
+  : wasmUrl
+
 const STORAGE_KEY = 'nexus:sqlite:v1'
 const BROWSER_STORAGE_DB = 'nexus:storage'
 const BROWSER_STORAGE_STORE = 'kv'
 const BACKUP_STORAGE_PREFIX = 'nexus:sqlite:backup:'
-const CURRENT_SCHEMA_VERSION = 3
+const CURRENT_SCHEMA_VERSION = 4
 
 export interface DatabaseIntegrityReport {
   ok: boolean
@@ -110,6 +118,22 @@ CREATE TABLE IF NOT EXISTS unit_concepts (
   created_at TEXT NOT NULL,
   PRIMARY KEY (unit_id, concept_id)
 );
+CREATE TABLE IF NOT EXISTS session_concepts (
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+  source TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (session_id, concept_id)
+);
+CREATE INDEX IF NOT EXISTS idx_session_concepts_concept ON session_concepts(concept_id);
+CREATE TABLE IF NOT EXISTS message_concepts (
+  message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+  source TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (message_id, concept_id)
+);
+CREATE INDEX IF NOT EXISTS idx_message_concepts_concept ON message_concepts(concept_id);
 CREATE TABLE IF NOT EXISTS concept_relations (
   id TEXT PRIMARY KEY,
   parent_concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
@@ -232,6 +256,48 @@ const migrations: Array<{ version: number; apply: (database: Database) => void }
       if (!columns.includes('knowledge_retain_in_graph')) database.run('ALTER TABLE sessions ADD COLUMN knowledge_retain_in_graph INTEGER NOT NULL DEFAULT 0')
     },
   },
+  {
+    version: 4,
+    apply(database) {
+      database.run(`
+        CREATE TABLE IF NOT EXISTS session_concepts (
+          session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+          concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+          source TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY (session_id, concept_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_concepts_concept ON session_concepts(concept_id);
+        CREATE TABLE IF NOT EXISTS message_concepts (
+          message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+          concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+          source TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY (message_id, concept_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_message_concepts_concept ON message_concepts(concept_id);
+      `)
+      // Preserve metadata memberships created by the v3 compatibility path.
+      // Invalid/stale IDs are ignored rather than making migration fail; the
+      // original metadata remains available for a later repair task.
+      const conceptIds = new Set<string>()
+      const conceptRows = database.exec('SELECT id FROM concepts')[0]?.values ?? []
+      conceptRows.forEach((row) => conceptIds.add(String(row[0])))
+      const messageRows = database.exec('SELECT id, metadata FROM messages WHERE metadata IS NOT NULL')[0]?.values ?? []
+      const now = new Date().toISOString()
+      messageRows.forEach((row) => {
+        let metadata: unknown
+        try { metadata = JSON.parse(String(row[1])) } catch { metadata = null }
+        const ids = metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+          ? (metadata as Record<string, unknown>).concept_ids
+          : null
+        if (!Array.isArray(ids)) return
+        ids.filter((id): id is string => typeof id === 'string' && conceptIds.has(id.trim())).forEach((id) => {
+          database.run('INSERT OR IGNORE INTO message_concepts(message_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [String(row[0]), id.trim(), 'llm', now])
+        })
+      })
+    },
+  },
 ]
 
 export class SqliteStore {
@@ -318,7 +384,7 @@ export class SqliteStore {
 
   async init(): Promise<void> {
     if (this.db) return
-    this.sqlJs = await initSqlJs({ locateFile: () => wasmUrl })
+    this.sqlJs = await initSqlJs({ locateFile: () => sqlWasmUrl })
     const stored = isTauriRuntime()
       ? await invokeTauri<string | null>('read_database', this.databaseArgs())
       : await this.readBrowserStorage()
@@ -399,6 +465,24 @@ export class SqliteStore {
     if (!columns.includes('knowledge_confidence')) this.requireDb().run('ALTER TABLE sessions ADD COLUMN knowledge_confidence REAL')
     if (!columns.includes('knowledge_judgment')) this.requireDb().run('ALTER TABLE sessions ADD COLUMN knowledge_judgment TEXT')
     if (!columns.includes('knowledge_retain_in_graph')) this.requireDb().run('ALTER TABLE sessions ADD COLUMN knowledge_retain_in_graph INTEGER NOT NULL DEFAULT 0')
+    this.requireDb().run(`
+      CREATE TABLE IF NOT EXISTS session_concepts (
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+        source TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (session_id, concept_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_session_concepts_concept ON session_concepts(concept_id);
+      CREATE TABLE IF NOT EXISTS message_concepts (
+        message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+        concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+        source TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (message_id, concept_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_message_concepts_concept ON message_concepts(concept_id);
+    `)
   }
 
   private requireDb(): Database {

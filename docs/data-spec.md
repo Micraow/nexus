@@ -165,12 +165,26 @@
 |---|---|---:|---|
 | `unit_id` | TEXT | 是 | 外键 → KnowledgeUnit |
 | `concept_id` | TEXT | 是 | 外键 → Concept |
-| `source` | TEXT | 是 | `llm`、`manual`、`maintenance` |
+| `source` | TEXT | 是 | `llm`、`manual`、`maintenance`、`merge`、`import` |
 | `created_at` | TEXT | 是 | |
 
 主键为 `(unit_id, concept_id)`。同一单元和 Concept 只能有一条关联；手动关联不能被后续自动整理静默删除。
 
-### 3.7 ConceptRelation
+### 3.7 SessionConcept / MessageConcept
+
+Session 和 Message 也可以直接归属于多个 Concept。两类直接归属分别保存在
+`session_concepts(session_id, concept_id)` 和
+`message_concepts(message_id, concept_id)`，复合主键防止重复关联，并通过外键
+级联到所属实体和 Concept。`source` 使用与 UnitConcept 相同的来源枚举
+（`llm`、`manual`、`maintenance`、`merge`、`import`）。
+
+直接归属是独立事实：Session 归属不会在数据库中复制成该 Session 的所有
+Message 或 KnowledgeUnit 归属。图谱需要展示 Session 主题时可以把它投影到对应
+单元或未分段消息，但编辑或移除直接归属只修改对应关联表。旧版本曾把未分段
+Message 的 `metadata.concept_ids` 作为兼容字段；schema v4 会将其中存在的
+Concept ID 导入 `message_concepts`，同时保留 metadata 原文以便回溯。
+
+### 3.8 ConceptRelation
 
 | 字段 | 类型 | 必填 | 约束 |
 |---|---|---:|---|
@@ -178,7 +192,7 @@
 | `parent_concept_id` | TEXT | 是 | hierarchy 的父节点，related 的一端 |
 | `child_concept_id` | TEXT | 是 | hierarchy 的子节点，related 的另一端 |
 | `relation_type` | TEXT | 是 | `hierarchy`、`related` |
-| `source` | TEXT | 是 | `llm`、`manual`、`maintenance` |
+| `source` | TEXT | 是 | `llm`、`manual`、`maintenance`、`merge`、`import` |
 | `status` | TEXT | 是 | `proposed`、`confirmed`、`rejected` |
 | `created_at` | TEXT | 是 | |
 | `updated_at` | TEXT | 是 | |
@@ -192,7 +206,7 @@
 - 拒绝关系保留历史记录，但不参与图谱和搜索；
 - 删除一条 hierarchy 只解除该父子引用，不删除任一 Concept；子节点仍有其他父级时保留其他路径，否则自然成为根节点。提升为根节点等价于可撤销地删除该节点的全部 hierarchy 父引用。
 
-### 3.8 NavTreeNode / NavTreeNodeUnit
+### 3.9 NavTreeNode / NavTreeNodeUnit
 
 `NavTreeNode` 表示一次探索动作；`NavTreeNodeUnit` 将该动作关联到一个或多个 KnowledgeUnit。
 
@@ -206,7 +220,7 @@
 - 导入线性会话可以创建链式节点；软件内回到旧节点继续提问创建新分支；
 - 删除 KnowledgeUnit 前必须先解除 NavTreeNodeUnit 或由事务级联处理。
 
-### 3.9 ContextReference
+### 3.10 ContextReference
 
 记录目标 Session 首条 Prompt 使用的来源 Session、KnowledgeUnit 或 Message。
 
@@ -218,7 +232,7 @@
 - `include_full_content=0` 表示标题/摘要/Concept，`1` 表示附带完整原文；
 - 新 Session 的 KnowledgeUnit 归属于目标 Session，不修改来源单元。
 
-### 3.10 LLMTask
+### 3.11 LLMTask
 
 | 字段 | 类型 | 必填 | 约束 |
 |---|---|---:|---|

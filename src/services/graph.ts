@@ -8,7 +8,9 @@ import type {
   KnowledgeUnit,
   ManualGraphEdge,
   Message,
+  MessageConcept,
   Session,
+  SessionConcept,
   UnitConcept,
 } from '@/types/domain'
 
@@ -19,6 +21,8 @@ export interface GraphInput extends GraphViewOptions {
   messages: Message[]
   sessions?: Session[]
   unitConcepts: UnitConcept[]
+  sessionConcepts?: SessionConcept[]
+  messageConcepts?: MessageConcept[]
   relations: ConceptRelation[]
   manualEdges?: ManualGraphEdge[]
   revision: number
@@ -303,20 +307,60 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
     conceptsByUnit.set(link.unitId, set)
   })
 
-  // Project metadata memberships onto a unit when one exists; otherwise keep
-  // them at Message level so unassigned messages remain discoverable in the
-  // graph and in Concept details before segmentation has run.
+  // Keep direct Message memberships at Message level. Legacy metadata is read
+  // alongside the v4 join table so existing databases keep their assignments.
   const conceptsByMessage = new Map<string, Set<string>>()
+  const directConceptIdsByMessage = new Map<string, Set<string>>()
+  ;(input.messageConcepts ?? []).forEach((link) => {
+    if (!conceptById.has(link.conceptId)) return
+    const ids = directConceptIdsByMessage.get(link.messageId) ?? new Set<string>()
+    ids.add(link.conceptId)
+    directConceptIdsByMessage.set(link.messageId, ids)
+  })
   input.messages.forEach((message) => {
-    const ids = messageConceptIds(message).filter((id) => conceptById.has(id))
+    const ids = [
+      ...messageConceptIds(message),
+      ...(directConceptIdsByMessage.get(message.id) ?? []),
+    ].filter((id) => conceptById.has(id))
     if (!ids.length) return
+    conceptsByMessage.set(message.id, new Set(ids))
     if (message.unitId && unitById.has(message.unitId)) {
       const set = conceptsByUnit.get(message.unitId) ?? new Set<string>()
       ids.forEach((id) => set.add(id))
       conceptsByUnit.set(message.unitId, set)
-      return
     }
-    conceptsByMessage.set(message.id, new Set(ids))
+  })
+
+  // The graph currently has no decorative Session node. Project an exact
+  // Session membership onto its units for layout and onto unassigned messages
+  // when the session has not been segmented yet; persistence remains exact in
+  // session_concepts and the maintenance UI exposes the Session itself.
+  const unitsBySession = new Map<string, KnowledgeUnit[]>()
+  input.units.forEach((unit) => {
+    const sessionUnits = unitsBySession.get(unit.sessionId) ?? []
+    sessionUnits.push(unit)
+    unitsBySession.set(unit.sessionId, sessionUnits)
+  })
+  const messagesBySessionId = new Map<string, Message[]>()
+  input.messages.forEach((message) => {
+    const sessionMessages = messagesBySessionId.get(message.sessionId) ?? []
+    sessionMessages.push(message)
+    messagesBySessionId.set(message.sessionId, sessionMessages)
+  })
+  ;(input.sessionConcepts ?? []).forEach((link) => {
+    if (!conceptById.has(link.conceptId)) return
+    const sessionUnits = unitsBySession.get(link.sessionId) ?? []
+    sessionUnits.forEach((unit) => {
+      const set = conceptsByUnit.get(unit.id) ?? new Set<string>()
+      set.add(link.conceptId)
+      conceptsByUnit.set(unit.id, set)
+    })
+    if (sessionUnits.length) return
+    ;(messagesBySessionId.get(link.sessionId) ?? []).forEach((message) => {
+      const set = conceptsByMessage.get(message.id) ?? new Set<string>()
+      set.add(link.conceptId)
+      conceptsByMessage.set(message.id, set)
+    })
   })
 
   // Map each hidden descendant to its nearest visible ancestor.  This lets a
