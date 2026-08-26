@@ -29,7 +29,7 @@ describe('derived graph', () => {
     expect(snapshot.nodes.filter((node) => node.type === 'concept')).toHaveLength(2)
   })
 
-  it('hides one-off co-occurrence edges to keep dense units readable', () => {
+  it('keeps one-off co-occurrence edges so concepts in one unit remain connected', () => {
     const snapshot = buildGraph({
       concepts: [
         { id: 'c1', name: 'A', normalizedName: 'A', notes: '', status: 'active', createdAt: now, updatedAt: now },
@@ -44,7 +44,7 @@ describe('derived graph', () => {
       relations: [],
       revision: 1,
     })
-    expect(snapshot.edges.filter((edge) => edge.type === 'co_occurrence')).toHaveLength(0)
+    expect(snapshot.edges.filter((edge) => edge.type === 'co_occurrence')).toHaveLength(1)
   })
 
   it('shows expanded units for one concept without globally enabling units', () => {

@@ -38,6 +38,7 @@ const nodePositions = new Map<string, { x: number; y: number }>()
 // 重渲染会替换 simulation；用 generation 和 timer 忽略旧布局的延迟 fit。
 let renderGeneration = 0
 let fitTimer: number | null = null
+let resizeTimer: number | null = null
 let draggingNodeId: string | null = null
 let lastNodeSignature = ''
 
@@ -57,6 +58,7 @@ function edgeColor(edge: GraphEdge): string {
 
 function render(): void {
   if (!svg.value || !host.value) return
+  draggingNodeId = null
   const generation = ++renderGeneration
   if (fitTimer != null) {
     window.clearTimeout(fitTimer)
@@ -108,6 +110,8 @@ function render(): void {
     }
     return copy
   })
+  const largeGraph = nodes.length > 220 || props.snapshot.edges.length > 420
+  viewport.classed('is-large', largeGraph)
   if (!nodes.length && !userMovedViewport) hasFittedData = false
   const nodeSignature = nodes.map((node) => node.id).join('|')
   const topologyChanged = nodeSignature !== lastNodeSignature
@@ -161,7 +165,7 @@ function render(): void {
         .attr('fill', (node) => palette[node.type])
       group
         .append('text')
-        .attr('class', 'graph-node-label')
+        .attr('class', (node) => `graph-node-label graph-node-label-${node.type}`)
         .attr('dy', (node) => (node.type === 'concept' ? 45 : 28))
         .text((node) => node.label)
       group
@@ -256,11 +260,11 @@ function render(): void {
     .id((node) => node.id)
     .distance((edge) => edge.type === 'hierarchy' ? 130 : edge.type === 'conversation' ? 58 : edge.type === 'association' ? 82 : 105)
     .strength((edge) => edge.type === 'hierarchy' ? 0.78 : edge.type === 'conversation' ? 0.46 : edge.type === 'association' ? 0.34 : Math.min(0.7, 0.28 + edge.weight * 0.06))
-    .iterations(2)
+    .iterations(1)
   const chargeForce = d3
     .forceManyBody<GraphNode & d3.SimulationNodeDatum>()
     .strength((node) => (node as GraphNode).type === 'concept' ? -360 : -145)
-    .distanceMax(Math.max(width, height) * 1.8)
+    .distanceMax(Math.max(width, height) * (largeGraph ? 1.1 : 1.6))
   simulation = d3
     .forceSimulation(nodes)
     // Explicit springs + repulsion + collision keep related nodes connected
@@ -270,8 +274,8 @@ function render(): void {
     .force('center', d3.forceCenter(width / 2, height / 2))
     .force('x', d3.forceX<GraphNode & d3.SimulationNodeDatum>(width / 2).strength(0.018))
     .force('y', d3.forceY<GraphNode & d3.SimulationNodeDatum>(height / 2).strength(0.018))
-    .force('collide', d3.forceCollide<GraphNode & d3.SimulationNodeDatum>().radius((node) => (node as GraphNode).type === 'concept' ? 50 : 28).strength(0.9).iterations(2))
-    .velocityDecay(0.72)
+    .force('collide', d3.forceCollide<GraphNode & d3.SimulationNodeDatum>().radius((node) => (node as GraphNode).type === 'concept' ? 50 : 28).strength(0.9).iterations(largeGraph ? 1 : 2))
+    .velocityDecay(largeGraph ? 0.8 : 0.72)
   let paintPending = false
   const paint = (): void => {
       linkSelection
@@ -281,8 +285,12 @@ function render(): void {
         .attr('y2', (edge) => (edge.target as unknown as GraphNode).y ?? 0)
       nodeSelection.attr('transform', (node) => `translate(${node.x ?? width / 2},${node.y ?? height / 2})`)
   }
+  let tickCount = 0
   simulation.on('tick', () => {
-    nodes.forEach((node) => {
+    tickCount += 1
+    // Layout coordinates only need to be retained at frame cadence. Avoid
+    // allocating a map entry on every physics tick for large imported graphs.
+    if (tickCount % (largeGraph ? 3 : 1) === 0) nodes.forEach((node) => {
       if (node.x != null && node.y != null) nodePositions.set(node.id, { x: node.x, y: node.y })
     })
     if (paintPending) return
@@ -292,7 +300,8 @@ function render(): void {
       if (generation === renderGeneration) paint()
     })
   })
-  if (props.reducedMotion) simulation.alphaDecay(0.4)
+  if (props.reducedMotion) simulation.alphaDecay(0.5)
+  else if (largeGraph) simulation.alphaDecay(0.08).alpha(0.22)
   else if (hasPreviousLayout) simulation.alpha(0.18)
   else simulation.alpha(0.55)
 
@@ -325,7 +334,7 @@ function render(): void {
       // 超大图谱的力向计算可能被后台节流；此时冻结当前布局并适配，
       // 避免节点在适配后继续漂移到画布外。
       fitView(true)
-    }, 6000)
+    }, largeGraph ? 2600 : 6000)
   }
 
   // 框选多选：Shift+左键拖出选框，松开后把框内知识单元加入上下文选择。
@@ -383,7 +392,13 @@ function render(): void {
 onMounted(() => {
   render()
   if (host.value) {
-    resizeObserver = new ResizeObserver(() => render())
+    resizeObserver = new ResizeObserver(() => {
+      if (resizeTimer != null) window.clearTimeout(resizeTimer)
+      resizeTimer = window.setTimeout(() => {
+        resizeTimer = null
+        render()
+      }, 120)
+    })
     resizeObserver.observe(host.value)
   }
 })
@@ -403,6 +418,7 @@ watch(() => props.selectedUnitIds.slice(), (selectedIds) => {
 onBeforeUnmount(() => {
   renderGeneration += 1
   if (fitTimer != null) window.clearTimeout(fitTimer)
+  if (resizeTimer != null) window.clearTimeout(resizeTimer)
   simulation?.stop()
   resizeObserver?.disconnect()
 })

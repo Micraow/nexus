@@ -379,12 +379,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   function graphInputFor(options: GraphViewOptions) {
+    const activeUnits = units.value.filter((unit) => activeSessionIds.value.has(unit.sessionId))
+    const activeUnitIds = new Set(activeUnits.map((unit) => unit.id))
     return {
       concepts: concepts.value,
-      units: units.value.filter((unit) => activeSessionIds.value.has(unit.sessionId)),
+      units: activeUnits,
       messages: messages.value.filter((message) => activeSessionIds.value.has(message.sessionId)),
       sessions: sessions.value.filter((session) => activeSessionIds.value.has(session.id)),
-      unitConcepts: unitConcepts.value.filter((link) => units.value.some((unit) => unit.id === link.unitId && activeSessionIds.value.has(unit.sessionId))),
+      unitConcepts: unitConcepts.value.filter((link) => activeUnitIds.has(link.unitId)),
       relations: relations.value,
       manualEdges: manualEdges.value,
       revision: graphRevision.value,

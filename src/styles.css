@@ -263,6 +263,8 @@ textarea { resize: vertical; }
 .graph-link { opacity: .82; transition: stroke var(--motion-fast), opacity var(--motion-fast), stroke-width var(--motion-fast); vector-effect: non-scaling-stroke; }
 .graph-link.is-dimmed { opacity: .08; }
 .graph-link.is-hovered { stroke: #7c3aed !important; opacity: 1; stroke-width: 3px; }
+.graph-viewport.is-large .graph-node-label-unit, .graph-viewport.is-large .graph-node-label-message { display: none; }
+.graph-canvas svg { touch-action: none; contain: strict; }
 .graph-scale-hint { position: absolute; left: 18px; right: 18px; bottom: 15px; display: flex; align-items: center; flex-wrap: wrap; gap: 12px; color: var(--muted); font-size: calc(10px * var(--app-font-scale)); pointer-events: none; }
 .graph-selection-feedback { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); padding: 7px 11px; color: var(--primary-strong); background: var(--surface); border: 1px solid var(--line-strong); border-radius: 6px; box-shadow: var(--shadow-sm); font-size: calc(11px * var(--app-font-scale)); pointer-events: none; animation: drawer-enter var(--motion-fast) ease-out both; }
 .legend-dot { width: 8px; height: 8px; display: inline-block; margin-right: -7px; border-radius: 50%; }

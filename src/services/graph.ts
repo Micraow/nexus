@@ -49,6 +49,7 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
     degree: 0,
     unitCount: 0,
   }))
+  const nodeById = new Map(nodes.map((node) => [node.id, node]))
   const edges: GraphEdge[] = []
   const edgeMap = new Map<string, GraphEdge>()
   const ensureEdge = (source: string, target: string, type: GraphEdge['type'], weight = 1, status?: GraphEdge['status']) => {
@@ -82,6 +83,7 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
       degree: conceptIds.size,
       unitCount: 0,
     })
+    nodeById.set(unitNodeId, nodes[nodes.length - 1])
     conceptIds.forEach((conceptId) => ensureEdge(conceptNode(conceptId), unitNodeId, 'association'))
   }
 
@@ -90,7 +92,7 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
     ids.forEach((conceptId) => {
       const concept = conceptById.get(conceptId)
       if (concept) {
-        const node = nodes.find((item) => item.id === conceptNode(concept.id))
+        const node = nodeById.get(conceptNode(concept.id))
         if (node) node.unitCount += 1
       }
     })
@@ -137,20 +139,19 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
           degree: 0,
           unitCount: 0,
         })
+        nodeById.set(messageNodeId, nodes[nodes.length - 1])
         if (message.unitId && visibleUnitIds.has(message.unitId)) ensureEdge(`unit:${message.unitId}`, messageNodeId, 'association')
     })
     const messagesBySession = new Map<string, GraphNode[]>()
     visibleMessages.forEach((message) => {
       const list = messagesBySession.get(message.sessionId) ?? []
-      list.push(nodes.find((node) => node.id === `message:${message.id}`) as GraphNode)
+      const node = nodeById.get(`message:${message.id}`)
+      if (node) list.push(node)
       messagesBySession.set(message.sessionId, list)
     })
+    const messageOrder = new Map(visibleMessages.map((message) => [message.id, message.orderInSession]))
     messagesBySession.forEach((sessionNodes) => {
-      sessionNodes.sort((left, right) => {
-        const l = visibleMessages.find((message) => message.id === left.refId)?.orderInSession ?? 0
-        const r = visibleMessages.find((message) => message.id === right.refId)?.orderInSession ?? 0
-        return l - r
-      })
+      sessionNodes.sort((left, right) => (messageOrder.get(left.refId) ?? 0) - (messageOrder.get(right.refId) ?? 0))
       for (let index = 1; index < sessionNodes.length; index += 1) ensureEdge(sessionNodes[index - 1].id, sessionNodes[index].id, 'conversation')
     })
   }
@@ -171,31 +172,19 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
   input.manualEdges?.forEach((edge) => {
     const source = `${edge.sourceType}:${edge.sourceRefId}`
     const target = `${edge.targetType}:${edge.targetRefId}`
-    if (!nodes.some((node) => node.id === source) || !nodes.some((node) => node.id === target)) return
+    if (!nodeById.has(source) || !nodeById.has(target)) return
     ensureEdge(source, target, 'manual', 1)
   })
 
-  // Co-occurrence is only a weak background hint. A pair mentioned once is
-  // not a semantic relationship, and displaying every pair makes dense units
-  // unreadable. Keep repeated pairs, capped to the strongest few neighbors per
-  // concept; explicit hierarchy/related/manual edges are unaffected.
-  const coOccurrence = edges.filter((edge) => edge.type === 'co_occurrence' && edge.weight >= 2)
-  const retainedCoOccurrence = new Set<string>()
-  conceptById.forEach((_concept, conceptId) => {
-    coOccurrence
-      .filter((edge) => edge.source === conceptNode(conceptId) || edge.target === conceptNode(conceptId))
-      .sort((left, right) => right.weight - left.weight || left.id.localeCompare(right.id))
-      .slice(0, 4)
-      .forEach((edge) => retainedCoOccurrence.add(edge.id))
+  // Co-occurrence is factual: concepts assigned to the same knowledge unit
+  // must remain visibly connected even when they only co-occur once. Explicit
+  // semantic relations stay separate through their own edge types.
+  const degreeByNode = new Map<string, number>()
+  edges.forEach((edge) => {
+    degreeByNode.set(edge.source, (degreeByNode.get(edge.source) ?? 0) + 1)
+    degreeByNode.set(edge.target, (degreeByNode.get(edge.target) ?? 0) + 1)
   })
-  for (let index = edges.length - 1; index >= 0; index -= 1) {
-    const edge = edges[index]
-    if (edge.type === 'co_occurrence' && !retainedCoOccurrence.has(edge.id)) edges.splice(index, 1)
-  }
-
-  nodes.forEach((node) => {
-    node.degree = edges.filter((edge) => edge.source === node.id || edge.target === node.id).length
-  })
+  nodes.forEach((node) => { node.degree = degreeByNode.get(node.id) ?? 0 })
   return { nodes, edges, revision: input.revision }
 }
 
