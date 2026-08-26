@@ -5,8 +5,9 @@ import { httpRequest } from '@/services/http'
 import { parseConfigText, readConfigText, writeConfig } from '@/services/config'
 import { buildGraph, graphStats } from '@/services/graph'
 import { buildSearchDocuments, searchKnowledge } from '@/services/search'
-import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildRepairPrompt, buildSegmentationPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, PROMPT_VERSION, renderQuickPhrase } from '@/services/prompts'
-import { importPayloadSchema, parseImportPayload, validateSegmentationResult, validateUnitText } from '@/services/validation'
+import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildOriginConceptPrompt, buildRepairPrompt, buildSegmentationPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, ensureHarnessPrompt, listedDisclosureRefIds, parseDisclosureContext, PROMPT_VERSION, renderQuickPhrase, replaceDisclosureContext } from '@/services/prompts'
+import { importPayloadSchema, parseImportPayload, validateConceptIdList, validateConceptMemberships, validateDisclosureRequests, validateSegmentationResult, validateUnitText } from '@/services/validation'
+import type { DisclosureContext } from '@/services/prompts'
 import { combineSegmentationChunks, splitMessageChunks } from '@/utils/chunks'
 import { wouldCreateHierarchyCycle } from '@/utils/graph-rules'
 import { createId, isoNow, normalizeText, parseIsoTimestamp, stableHash } from '@/utils/id'
@@ -141,7 +142,7 @@ function taskFromRow(row: Row): LLMTask {
     model: row.model == null ? null : text(row.model),
     promptVersion: text(row.prompt_version),
     inputRevision: text(row.input_revision),
-    prompt: text(row.prompt),
+    prompt: ensureHarnessPrompt(text(row.prompt)),
     response: row.response == null ? null : text(row.response),
     parsedResult: row.parsed_result == null ? null : text(row.parsed_result),
     validationErrors: row.validation_errors == null ? null : text(row.validation_errors),
@@ -449,13 +450,242 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     return ids.map((id) => concepts.value.find((concept) => concept.id === id)?.name).filter(Boolean) as string[]
   }
 
+  /**
+   * Hierarchy queries used by the graph and by progressive-disclosure UIs.
+   * `related` relations are intentionally excluded from every helper here:
+   * they describe an undirected association and never imply a parent.
+   */
+  function hierarchyRelations(includeProposed = false): ConceptRelation[] {
+    const activeIds = new Set(activeConcepts.value.map((concept) => concept.id))
+    return relations.value.filter((relation) =>
+      relation.relationType === 'hierarchy'
+      && (relation.status === 'confirmed' || (includeProposed && relation.status === 'proposed'))
+      && activeIds.has(relation.parentConceptId)
+      && activeIds.has(relation.childConceptId),
+    )
+  }
+
+  function sortConceptsByName(items: Concept[]): Concept[] {
+    return items.slice().sort((left, right) => left.name.localeCompare(right.name, 'zh-CN') || left.id.localeCompare(right.id))
+  }
+
+  function conceptParentIds(conceptId: string, includeProposed = false): string[] {
+    return hierarchyRelations(includeProposed)
+      .filter((relation) => relation.childConceptId === conceptId)
+      .map((relation) => relation.parentConceptId)
+  }
+
+  function conceptChildIds(conceptId: string, includeProposed = false): string[] {
+    return hierarchyRelations(includeProposed)
+      .filter((relation) => relation.parentConceptId === conceptId)
+      .map((relation) => relation.childConceptId)
+  }
+
+  function conceptParents(conceptId: string, includeProposed = false): Concept[] {
+    const ids = new Set(conceptParentIds(conceptId, includeProposed))
+    return sortConceptsByName(activeConcepts.value.filter((concept) => ids.has(concept.id)))
+  }
+
+  function conceptChildren(conceptId: string, includeProposed = false): Concept[] {
+    const ids = new Set(conceptChildIds(conceptId, includeProposed))
+    return sortConceptsByName(activeConcepts.value.filter((concept) => ids.has(concept.id)))
+  }
+
+  /** Return all ancestors, nearest first, while tolerating malformed cycles. */
+  function conceptAncestors(conceptId: string, includeProposed = false): Concept[] {
+    const byId = new Map(activeConcepts.value.map((concept) => [concept.id, concept]))
+    const queue = conceptParentIds(conceptId, includeProposed).map((id) => ({ id, distance: 1 }))
+    const seen = new Set<string>()
+    const found: Array<{ id: string; distance: number }> = []
+    while (queue.length) {
+      const current = queue.shift()!
+      if (seen.has(current.id)) continue
+      seen.add(current.id)
+      if (byId.has(current.id)) found.push(current)
+      conceptParentIds(current.id, includeProposed).forEach((parentId) => {
+        if (!seen.has(parentId)) queue.push({ id: parentId, distance: current.distance + 1 })
+      })
+    }
+    return found
+      .sort((left, right) => left.distance - right.distance || (byId.get(left.id)?.name ?? '').localeCompare(byId.get(right.id)?.name ?? '', 'zh-CN'))
+      .map(({ id }) => byId.get(id)!)
+  }
+
+  /** Return all descendants, nearest first, while tolerating malformed cycles. */
+  function conceptDescendants(conceptId: string, includeProposed = false): Concept[] {
+    const byId = new Map(activeConcepts.value.map((concept) => [concept.id, concept]))
+    const queue = conceptChildIds(conceptId, includeProposed).map((id) => ({ id, distance: 1 }))
+    const seen = new Set<string>()
+    const found: Array<{ id: string; distance: number }> = []
+    while (queue.length) {
+      const current = queue.shift()!
+      if (seen.has(current.id)) continue
+      seen.add(current.id)
+      if (byId.has(current.id)) found.push(current)
+      conceptChildIds(current.id, includeProposed).forEach((childId) => {
+        if (!seen.has(childId)) queue.push({ id: childId, distance: current.distance + 1 })
+      })
+    }
+    return found
+      .sort((left, right) => left.distance - right.distance || (byId.get(left.id)?.name ?? '').localeCompare(byId.get(right.id)?.name ?? '', 'zh-CN'))
+      .map(({ id }) => byId.get(id)!)
+  }
+
+  function rootConcepts(includeProposed = false): Concept[] {
+    const childIds = new Set(hierarchyRelations(includeProposed).map((relation) => relation.childConceptId))
+    return sortConceptsByName(activeConcepts.value.filter((concept) => !childIds.has(concept.id)))
+  }
+
+  /** Ancestor path (root first) plus the requested Concept itself. */
+  function conceptExpansionPath(conceptId: string, includeProposed = false): string[] {
+    const path: string[] = []
+    const visited = new Set<string>()
+    const visiting = new Set<string>()
+    const visit = (id: string): void => {
+      if (visited.has(id) || visiting.has(id)) return
+      visiting.add(id)
+      conceptParentIds(id, includeProposed).sort().forEach((parentId) => visit(parentId))
+      visiting.delete(id)
+      visited.add(id)
+      path.push(id)
+    }
+    if (activeConcepts.value.some((concept) => concept.id === conceptId)) visit(conceptId)
+    return path
+  }
+
+  /**
+   * Pure expansion-state helper for callers that keep the open-node set in
+   * component state. Collapsing a Concept also collapses its entire subtree,
+   * matching the progressive-disclosure interaction contract.
+   */
+  function toggleConceptExpansion(currentIds: string[], conceptId: string, expanded?: boolean, includeProposed = false): string[] {
+    if (!activeConcepts.value.some((concept) => concept.id === conceptId)) return currentIds.slice()
+    const current = new Set(currentIds)
+    const shouldExpand = expanded ?? !current.has(conceptId)
+    if (shouldExpand) {
+      current.add(conceptId)
+      return [...current]
+    }
+    current.delete(conceptId)
+    conceptDescendants(conceptId, includeProposed).forEach((concept) => current.delete(concept.id))
+    return [...current]
+  }
+  /**
+   * Build the read-only catalog used by LLM prompts. The catalog is derived
+   * from existing ConceptRelation/UnitConcept/Message rows; no graph schema
+   * or persistent field is added for the disclosure protocol.
+   */
+  function promptDisclosureContext(options: { unitIds?: string[]; messageIds?: string[]; includeFullContent?: boolean; expandedRefIds?: string[]; round?: number } = {}): DisclosureContext {
+    const active = activeConcepts.value.slice().sort((left, right) => left.name.localeCompare(right.name, 'zh-CN') || left.id.localeCompare(right.id))
+    const activeIds = new Set(active.map((concept) => concept.id))
+    const hierarchy = relations.value.filter((relation) =>
+      relation.relationType === 'hierarchy' && relation.status !== 'rejected' && activeIds.has(relation.parentConceptId) && activeIds.has(relation.childConceptId),
+    )
+    const byParent = new Map<string, string[]>()
+    const byChild = new Map<string, string[]>()
+    hierarchy.forEach((relation) => {
+      byParent.set(relation.parentConceptId, [...(byParent.get(relation.parentConceptId) ?? []), relation.childConceptId])
+      byChild.set(relation.childConceptId, [...(byChild.get(relation.childConceptId) ?? []), relation.parentConceptId])
+    })
+    const conceptUnits = new Map<string, string[]>()
+    unitConcepts.value.forEach((link) => {
+      if (!activeIds.has(link.conceptId) || !units.value.some((unit) => unit.id === link.unitId)) return
+      conceptUnits.set(link.conceptId, [...(conceptUnits.get(link.conceptId) ?? []), link.unitId])
+    })
+    const conceptSummary = (concept: Concept): string => {
+      if (concept.notes.trim()) return concept.notes.trim().replace(/\s+/g, ' ').slice(0, 240)
+      const summaries = (conceptUnits.get(concept.id) ?? [])
+        .map((id) => units.value.find((unit) => unit.id === id)?.summary?.trim())
+        .filter(Boolean) as string[]
+      return summaries.slice(0, 2).join('；').slice(0, 240) || `关联 ${conceptUnits.get(concept.id)?.length ?? 0} 个知识单元`
+    }
+    const conceptRef = (concept: Concept) => ({ refID: concept.id, title: `知识主题：${concept.name}`, summary: conceptSummary(concept) })
+    const unitRef = (unit: KnowledgeUnit) => ({ refID: unit.id, title: `知识单元：${unit.title || '未命名知识单元'}`, summary: (unit.summary || '').replace(/\s+/g, ' ').slice(0, 240) })
+    const messageRef = (message: Message) => ({
+      refID: message.id,
+      title: `消息：${message.role} #${message.orderInSession + 1}`,
+      summary: message.content.trim().replace(/\s+/g, ' ').slice(0, 240),
+    })
+
+    const selectedUnitIds = [...new Set((options.unitIds ?? []).filter((id) => units.value.some((unit) => unit.id === id)))]
+    const selectedMessageIds = [...new Set((options.messageIds ?? []).filter((id) => messages.value.some((message) => message.id === id)))]
+    const scoped = selectedUnitIds.length > 0 || selectedMessageIds.length > 0
+    // For a scoped task expose only the hierarchy roots that can reach one of
+    // its selected units/messages. An unscoped task (origin extraction) gets
+    // all roots, but never all descendants up front.
+    const relevantConceptIds = new Set<string>()
+    selectedUnitIds.forEach((unitId) => unitConcepts.value.filter((link) => link.unitId === unitId).forEach((link) => relevantConceptIds.add(link.conceptId)))
+    selectedMessageIds.forEach((messageId) => {
+      const message = messages.value.find((item) => item.id === messageId)
+      if (message?.unitId) unitConcepts.value.filter((link) => link.unitId === message.unitId).forEach((link) => relevantConceptIds.add(link.conceptId))
+      const declared = message?.metadata?.concept_ids
+      if (Array.isArray(declared)) declared.filter((id): id is string => typeof id === 'string').forEach((id) => { if (activeIds.has(id)) relevantConceptIds.add(id) })
+    })
+    const queue = [...relevantConceptIds]
+    while (queue.length) {
+      const childId = queue.shift()!
+      ;(byChild.get(childId) ?? []).forEach((parentId) => {
+        if (relevantConceptIds.has(parentId)) return
+        relevantConceptIds.add(parentId)
+        queue.push(parentId)
+      })
+    }
+    const rootItems = active.filter((concept) => !byChild.has(concept.id) && (!scoped || relevantConceptIds.has(concept.id)))
+    const conceptRoots = rootItems.map(conceptRef)
+    const unitRoots = selectedUnitIds.map((id) => units.value.find((unit) => unit.id === id)).filter(Boolean).map((unit) => unitRef(unit as KnowledgeUnit))
+    const messageRoots = selectedMessageIds.map((id) => messages.value.find((message) => message.id === id)).filter(Boolean).map((message) => messageRef(message as Message))
+    const roots = [...conceptRoots, ...unitRoots, ...messageRoots]
+
+    const unitExpansion = (item: KnowledgeUnit, revealContent = Boolean(options.includeFullContent)) => {
+      const children = unitMessages(item.id).map(messageRef)
+      const content = revealContent ? unitMessages(item.id).map((message) => `${message.role}: ${message.content}`).join('\n') : undefined
+      return { refID: item.id, children, ...(content ? { content } : {}) }
+    }
+    const conceptExpansion = (concept: Concept) => {
+      const childRefs = (byParent.get(concept.id) ?? [])
+        .map((id) => active.find((item) => item.id === id))
+        .filter(Boolean)
+        .map((child) => conceptRef(child as Concept))
+      const unitRefs = (conceptUnits.get(concept.id) ?? [])
+        .map((id) => units.value.find((unit) => unit.id === id))
+        .filter(Boolean)
+        .map((unit) => unitRef(unit as KnowledgeUnit))
+      const seen = new Set<string>()
+      return { refID: concept.id, children: [...childRefs, ...unitRefs].filter((reference) => !seen.has(reference.refID) && (seen.add(reference.refID), true)) }
+    }
+    const expandedIds = [...new Set(options.expandedRefIds ?? [])]
+    const expansionMap = new Map<string, NonNullable<DisclosureContext['expansions']>[number]>()
+    // Explicitly selected full-content units/messages are already authorized
+    // by the caller and can be revealed in the initial prompt.
+    selectedUnitIds.forEach((id) => {
+      if (options.includeFullContent) {
+        const unit = units.value.find((item) => item.id === id)
+        if (unit) expansionMap.set(id, unitExpansion(unit, true))
+      }
+    })
+    selectedMessageIds.forEach((id) => {
+      const message = messages.value.find((item) => item.id === id)
+      if (message) expansionMap.set(id, { refID: id, content: message.content })
+    })
+    expandedIds.forEach((refID) => {
+      const concept = active.find((item) => item.id === refID)
+      if (concept) expansionMap.set(refID, conceptExpansion(concept))
+      const unit = units.value.find((item) => item.id === refID)
+      if (unit) expansionMap.set(refID, unitExpansion(unit, true))
+      const message = messages.value.find((item) => item.id === refID)
+      if (message) expansionMap.set(refID, { refID, content: message.content })
+    })
+    return { roots, expansions: [...expansionMap.values()], round: Number.isInteger(options.round) ? Math.max(0, options.round as number) : 0 }
+  }
+
+
   function createTask(task: Omit<LLMTask, 'id' | 'createdAt' | 'updatedAt' | 'retryCount'>): string {
     const id = createId('task')
     const now = isoNow()
     db.run(
       `INSERT INTO llm_tasks(id, type, mode, provider_id, model, prompt_version, input_revision, prompt, response, parsed_result, validation_errors, status, retry_count, error_message, created_at, updated_at, scope_label)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
-      [id, task.type, task.mode, task.providerId ?? null, task.model ?? null, task.promptVersion, task.inputRevision, task.prompt, task.response ?? null, task.parsedResult ?? null, task.validationErrors ?? null, task.status, task.errorMessage ?? null, now, now, task.scopeLabel ?? null],
+      [id, task.type, task.mode, task.providerId ?? null, task.model ?? null, task.promptVersion, task.inputRevision, ensureHarnessPrompt(task.prompt), task.response ?? null, task.parsedResult ?? null, task.validationErrors ?? null, task.status, task.errorMessage ?? null, now, now, task.scopeLabel ?? null],
     )
     return id
   }
@@ -523,7 +753,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       records.nav_nodes.forEach((item: NavTreeNode) => db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [item.id, item.sessionId, item.parentId ?? null, item.triggerConceptId ?? null, item.label, item.depth, item.createdAt]))
       records.nav_node_units.forEach((item: NavTreeNodeUnit) => db.run('INSERT INTO nav_tree_node_units(node_id, unit_id, order_in_node) VALUES (?, ?, ?)', [item.nodeId, item.unitId, item.orderInNode]))
       records.context_references.forEach((item: ContextReference) => db.run('INSERT INTO context_references(id, target_session_id, source_session_id, source_unit_id, source_message_id, order_in_context, include_full_content) VALUES (?, ?, ?, ?, ?, ?, ?)', [item.id, item.targetSessionId, item.sourceSessionId, item.sourceUnitId ?? null, item.sourceMessageId ?? null, item.orderInContext, item.includeFullContent ? 1 : 0]))
-      records.tasks.forEach((item: LLMTask) => db.run('INSERT INTO llm_tasks(id, type, mode, provider_id, model, prompt_version, input_revision, prompt, response, parsed_result, validation_errors, status, retry_count, error_message, created_at, updated_at, scope_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.type, item.mode, item.providerId ?? null, item.model ?? null, item.promptVersion, item.inputRevision, item.prompt, item.response ?? null, item.parsedResult ?? null, item.validationErrors ?? null, item.status, item.retryCount, item.errorMessage ?? null, item.createdAt, item.updatedAt, item.scopeLabel ?? null]))
+      records.tasks.forEach((item: LLMTask) => db.run('INSERT INTO llm_tasks(id, type, mode, provider_id, model, prompt_version, input_revision, prompt, response, parsed_result, validation_errors, status, retry_count, error_message, created_at, updated_at, scope_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.type, item.mode, item.providerId ?? null, item.model ?? null, item.promptVersion, item.inputRevision, ensureHarnessPrompt(item.prompt), item.response ?? null, item.parsedResult ?? null, item.validationErrors ?? null, item.status, item.retryCount, item.errorMessage ?? null, item.createdAt, item.updatedAt, item.scopeLabel ?? null]))
       records.manual_edges.forEach((item: ManualGraphEdge) => db.run('INSERT INTO manual_graph_edges(id, source_type, source_ref_id, target_type, target_ref_id, label, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [item.id, item.sourceType, item.sourceRefId, item.targetType, item.targetRefId, item.label ?? null, item.createdAt]))
       if (Array.isArray(records.graph_layout)) records.graph_layout.forEach((item: GraphLayoutEntry) => db.run('INSERT INTO graph_layout(node_type, ref_id, x, y, fixed, layout_version) VALUES (?, ?, ?, ?, ?, ?)', [item.nodeType, item.refId, item.x, item.y, item.fixed ? 1 : 0, item.layoutVersion ?? 1]))
       if (records.graph_viewport && typeof records.graph_viewport === 'object') {
@@ -607,7 +837,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           model: null,
           promptVersion: PROMPT_VERSION,
           inputRevision: `${session.id}:${session.revision}`,
-          prompt: `请从下面的 Session 中提取 1～8 个核心 Concept，并给出有明确证据的 Concept 关系。探讨或流程内容也可以提取其中稳定的知识；不要为了凑数建立关系。关系必须有消息中的直接证据，不能因为两个主题共同出现或“看起来有关”就连接；最多返回 0～2 条最强关系。hierarchy 使用 source 作为父主题、target 作为子主题；related 是无向关联，不存在父子顺序。只返回 JSON：{"concepts":[{"name":"...","aliases":[]}],"relations":[{"source":"Concept 名称","target":"Concept 名称","type":"hierarchy|related"}]}\n\n${importedMessages.map((message) => `${message.role}: ${message.content}`).join('\n')}`,
+          prompt: buildOriginConceptPrompt(session, importedMessages, promptDisclosureContext()),
           status: 'pending',
           scopeLabel: `${session.title} · 起始知识主题`,
         })
@@ -787,6 +1017,60 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     })
   }
 
+  /**
+   * Set one hierarchy parent for a Concept. Existing parents are preserved by
+   * default because the domain permits a multi-parent DAG; pass
+   * `replaceExisting=true` when an editor explicitly wants a single parent.
+   */
+  function setConceptParent(
+    childId: string,
+    parentId: string | null,
+    options: { replaceExisting?: boolean; status?: 'confirmed' | 'proposed' } = {},
+  ): void {
+    const child = activeConcepts.value.find((concept) => concept.id === childId)
+    if (!child) throw new Error('找不到子知识主题')
+    if (parentId != null && !activeConcepts.value.some((concept) => concept.id === parentId)) throw new Error('找不到父知识主题')
+    if (parentId === childId) throw new Error('不能将知识主题设置为自身的父主题')
+    if (parentId != null && wouldCreateHierarchyCycle(parentId, childId, relations.value)) throw new Error('这个父子关系会形成环，无法建立')
+    const before = captureConceptOperationSnapshot()
+    mutate(() => {
+      const now = isoNow()
+      if (options.replaceExisting || parentId == null) {
+        db.run('DELETE FROM concept_relations WHERE child_concept_id = ? AND relation_type = \'hierarchy\'', [childId])
+      }
+      if (parentId != null) {
+        const status = options.status ?? 'confirmed'
+        db.run('INSERT OR IGNORE INTO concept_relations(id, parent_concept_id, child_concept_id, relation_type, source, status, created_at, updated_at) VALUES (?, ?, ?, \'hierarchy\', ?, ?, ?, ?)', [createId('relation'), parentId, childId, status === 'confirmed' ? 'manual' : 'llm', status, now, now])
+      }
+      recordOperation(parentId == null ? '提升知识主题层级' : '设置知识主题父级', before, captureConceptOperationSnapshot())
+    })
+  }
+
+  /** Add a hierarchy edge while retaining any other valid parent edges. */
+  function addConceptChild(parentId: string, childId: string, status: 'confirmed' | 'proposed' = 'confirmed'): void {
+    createRelation(parentId, childId, 'hierarchy', status)
+  }
+
+  /**
+   * Promote a child to the level above its selected parent. This removes only
+   * the hierarchy reference, never the Concept or its descendants. Omitting
+   * `parentId` removes all hierarchy parents and makes the Concept a root.
+   */
+  function promoteConcept(childId: string, parentId?: string): void {
+    if (!activeConcepts.value.some((concept) => concept.id === childId)) throw new Error('找不到要提升的知识主题')
+    const before = captureConceptOperationSnapshot()
+    mutate(() => {
+      if (parentId) db.run('DELETE FROM concept_relations WHERE parent_concept_id = ? AND child_concept_id = ? AND relation_type = \'hierarchy\'', [parentId, childId])
+      else db.run('DELETE FROM concept_relations WHERE child_concept_id = ? AND relation_type = \'hierarchy\'', [childId])
+      recordOperation('提升知识主题层级', before, captureConceptOperationSnapshot())
+    })
+  }
+
+  /** Alias used by detail editors when removing a child reference. */
+  function removeConceptFromParent(parentId: string, childId: string): void {
+    promoteConcept(childId, parentId)
+  }
+
   function confirmRelation(relationId: string, status: 'confirmed' | 'rejected'): void {
     const before = captureConceptOperationSnapshot()
     mutate(() => {
@@ -880,7 +1164,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     mutate(() => {
       const task = tasks.value.find((item) => item.id === taskId)
       if (!task) return
-      const nextPrompt = status === 'needs_review' && response ? buildRepairPrompt(response, errors ?? []) : task.prompt
+      // Keep the current disclosure catalog in a repair prompt so a user can
+      // correct an invalid response without losing the IDs they were shown.
+      const disclosure = status === 'needs_review' && response ? parseDisclosureContext(task.prompt) : null
+      const nextPrompt = status === 'needs_review' && response ? buildRepairPrompt(response, errors ?? [], disclosure ?? undefined) : task.prompt
       db.run('UPDATE llm_tasks SET status = ?, response = COALESCE(?, response), validation_errors = ?, error_message = ?, prompt = ?, retry_count = retry_count + ?, updated_at = ? WHERE id = ?', [status, response ?? null, errors ? JSON.stringify(errors) : null, errors?.[0] ?? null, nextPrompt, status === 'failed' || status === 'needs_review' ? 1 : 0, isoNow(), taskId])
     })
   }
@@ -900,6 +1187,70 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
     if (!value || typeof value !== 'object' || Array.isArray(value)) return { error: '响应必须是 JSON 对象' }
     return { data: value as Record<string, unknown> }
+  }
+
+  function promptConceptIds(task: LLMTask): Set<string> {
+    const context = parseDisclosureContext(task.prompt)
+    if (!context) return new Set()
+    const activeIds = new Set(activeConcepts.value.map((concept) => concept.id))
+    return new Set([...listedDisclosureRefIds(context)].filter((id) => activeIds.has(id)))
+  }
+
+  function validateConceptMembershipPayload(
+    task: LLMTask,
+    data: Record<string, unknown>,
+    targetIds: Iterable<string>,
+    conceptIds = promptConceptIds(task),
+  ): string[] {
+    const issues = [
+      ...validateConceptIdList(data.concept_ids, conceptIds).map((issue) => `${issue.path}: ${issue.message}`),
+      ...validateConceptMemberships(data.memberships, { targetIds, conceptIds }).map((issue) => `${issue.path}: ${issue.message}`),
+    ]
+    if (Object.prototype.hasOwnProperty.call(data, 'concept_id')) issues.push('concept_id: 归属必须使用 concept_ids 数组，不能使用单个 concept_id')
+    return issues
+  }
+
+  /** Persist a multi-membership declaration using the existing many-to-many
+   * UnitConcept table. Message/session declarations are projected onto their
+   * owning units; unassigned messages retain IDs in metadata until a unit is
+   * created by segmentation. */
+  function persistConceptMemberships(memberships: unknown, now: string): void {
+    if (!Array.isArray(memberships)) return
+    memberships.forEach((raw) => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return
+      const item = raw as Record<string, unknown>
+      const targetType = item.target_type
+      const targetId = typeof item.target_id === 'string' ? item.target_id : ''
+      const ids = Array.isArray(item.concept_ids) ? item.concept_ids.filter((id): id is string => typeof id === 'string' && id.trim().length > 0).map((id) => id.trim()) : []
+      if (!targetId || !ids.length) return
+      const addToUnit = (unitId: string): void => ids.forEach((conceptId) => db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [unitId, conceptId, 'llm', now]))
+      if (targetType === 'unit') {
+        addToUnit(targetId)
+      } else if (targetType === 'message') {
+        const messageRow = db.query<Row>('SELECT unit_id, metadata FROM messages WHERE id = ?', [targetId])[0]
+        if (!messageRow) return
+        const unitId = messageRow.unit_id == null ? '' : text(messageRow.unit_id)
+        if (unitId) addToUnit(unitId)
+        else {
+          let metadata: Record<string, unknown> = {}
+          try { metadata = messageRow.metadata ? JSON.parse(text(messageRow.metadata)) as Record<string, unknown> : {} } catch { metadata = {} }
+          const current = Array.isArray(metadata.concept_ids) ? metadata.concept_ids.filter((id): id is string => typeof id === 'string') : []
+          metadata.concept_ids = [...new Set([...current, ...ids])]
+          db.run('UPDATE messages SET metadata = ? WHERE id = ?', [JSON.stringify(metadata), targetId])
+        }
+      } else if (targetType === 'session') {
+        db.query<Row>('SELECT id FROM knowledge_units WHERE session_id = ?', [targetId]).forEach((row) => addToUnit(text(row.id)))
+        db.query<Row>('SELECT id, unit_id, metadata FROM messages WHERE session_id = ?', [targetId]).forEach((row) => {
+          const unitId = row.unit_id == null ? '' : text(row.unit_id)
+          if (unitId) return
+          let metadata: Record<string, unknown> = {}
+          try { metadata = row.metadata ? JSON.parse(text(row.metadata)) as Record<string, unknown> : {} } catch { metadata = {} }
+          const current = Array.isArray(metadata.concept_ids) ? metadata.concept_ids.filter((id): id is string => typeof id === 'string') : []
+          metadata.concept_ids = [...new Set([...current, ...ids])]
+          db.run('UPDATE messages SET metadata = ? WHERE id = ?', [JSON.stringify(metadata), text(row.id)])
+        })
+      }
+    })
   }
 
   function createMaintenanceTask(input: { conceptIds?: string[]; unitIds?: string[]; includeFullContent?: boolean } = {}): string {
@@ -925,6 +1276,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       relations: relations.value.filter((relation) => conceptIds.has(relation.parentConceptId) || conceptIds.has(relation.childConceptId)).map((relation) => ({ sourceId: relation.parentConceptId, targetId: relation.childConceptId, type: relation.relationType, status: relation.status })),
       units: unitScope.map((unit) => ({ id: unit.id, title: unit.title ?? '', summary: unit.summary ?? '', session: sessions.value.find((session) => session.id === unit.sessionId)?.title ?? '', conceptIds: unitConcepts.value.filter((link) => link.unitId === unit.id).map((link) => link.conceptId) })),
       includeMessages: input.includeFullContent ? unitScope.map((unit) => `## ${unit.id}\n${unitMessages(unit.id).map((message) => `${message.role}: ${message.content}`).join('\n')}`).join('\n\n') : undefined,
+      disclosure: promptDisclosureContext({ unitIds: unitScope.map((unit) => unit.id), includeFullContent: input.includeFullContent ?? false }),
     })
     let taskId = ''
     mutate(() => {
@@ -960,7 +1312,19 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       }
       if (suggestion.type === 'unit_relink') {
         if (!units.value.some((unit) => unit.id === suggestion.unit_id)) errors.push(`suggestions.${index} 的知识单元不存在`)
-        if (!concepts.value.some((concept) => concept.id === suggestion.concept_id)) errors.push(`suggestions.${index} 的知识主题不存在`)
+        if (!Array.isArray(suggestion.concept_ids)) errors.push(`suggestions.${index}.concept_ids 必须是数组（可选择多个知识主题）`)
+        else {
+          const listIssues = validateConceptIdList(suggestion.concept_ids, concepts.value.map((concept) => concept.id))
+          listIssues.forEach((issue) => errors.push(`suggestions.${index}.${issue.path}: ${issue.message}`))
+          const seen = new Set<string>()
+          suggestion.concept_ids.forEach((conceptId) => {
+            if (typeof conceptId === 'string') {
+              if (!concepts.value.some((concept) => concept.id === conceptId)) errors.push(`suggestions.${index} 的知识主题 ${conceptId} 不存在`)
+              if (seen.has(conceptId)) errors.push(`suggestions.${index}.concept_ids 不能重复`)
+              seen.add(conceptId)
+            }
+          })
+        }
       }
       if (suggestion.type === 'unit_revision') {
         if (!units.value.some((unit) => unit.id === suggestion.unit_id)) errors.push(`suggestions.${index} 的知识单元不存在`)
@@ -999,7 +1363,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
             : [rawSourceId, rawTargetId]
           db.run('INSERT OR IGNORE INTO concept_relations(id, parent_concept_id, child_concept_id, relation_type, source, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [createId('relation'), sourceId, targetId, suggestion.relation_type, 'maintenance', 'proposed', now, now])
         } else if (suggestion.type === 'unit_relink') {
-          db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [suggestion.unit_id, suggestion.concept_id, 'maintenance', now])
+          ;(suggestion.concept_ids ?? []).forEach((conceptId) => {
+            db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [suggestion.unit_id, conceptId, 'maintenance', now])
+          })
         } else if (suggestion.type === 'unit_revision') {
           const unit = units.value.find((item) => item.id === suggestion.unit_id)
           if (!unit) throw new Error('知识单元不存在')
@@ -1016,10 +1382,84 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
-  function applyTaskResult(taskId: string, responseText: string): { ok: boolean; errors: string[] } {
+  type TaskApplyResult = { ok: boolean; errors: string[]; continued?: boolean }
+
+  const disclosureTaskTypes = new Set<LLMTask['type']>(['concept_extraction', 'origin_concepts', 'conversation', 'maintenance'])
+
+  /** Queue a follow-up turn when the model asks to inspect known references. */
+  function continueDisclosureTask(task: LLMTask, responseText: string, data: Record<string, unknown>): TaskApplyResult | null {
+    // Tasks without a disclosure field must ignore an extra model key. This
+    // keeps legacy contracts (triage, segmentation, metadata) strict without
+    // accidentally turning arbitrary JSON into a continuation.
+    if (!disclosureTaskTypes.has(task.type)) return null
+    if (!Array.isArray(data.disclosure_requests) || data.disclosure_requests.length === 0) return null
+    const current = parseDisclosureContext(task.prompt)
+    if (!current) {
+      const errors = ['响应请求展开引用，但当前 Prompt 没有可用的 DISCLOSURE_INDEX']
+      markTask(task.id, 'needs_review', responseText, errors)
+      return { ok: false, errors }
+    }
+    const currentRound = current.round ?? 0
+    if (currentRound >= 8) {
+      const errors = ['渐进式披露超过 8 轮，已暂停任务供检查']
+      markTask(task.id, 'needs_review', responseText, errors)
+      return { ok: false, errors }
+    }
+    const available = listedDisclosureRefIds(current)
+    const requestErrors = validateDisclosureRequests(data.disclosure_requests, available).map((issue) => `${issue.path}: ${issue.message}`)
+    if (requestErrors.length) {
+      markTask(task.id, 'needs_review', responseText, requestErrors)
+      return { ok: false, errors: requestErrors }
+    }
+    const requests = data.disclosure_requests as Array<{ refID: string; depth: number }>
+    const requested = requests.map((item) => item.refID.trim())
+    const expansionMap = new Map<string, NonNullable<DisclosureContext['expansions']>[number]>()
+    ;(current.expansions ?? []).forEach((expansion) => expansionMap.set(expansion.refID, expansion))
+    const expandedThisTurn = new Set<string>()
+    let changedExpansion = false
+
+    // Expand the returned directory, rather than reconstructing edges from
+    // only one parent. This preserves multi-parent Concepts and follows the
+    // exact Concept -> Unit -> Message shape shown to the model.
+    for (const request of requests) {
+      let frontier = [request.refID.trim()]
+      const seenAtRequest = new Set<string>()
+      for (let level = 0; level < request.depth && frontier.length; level += 1) {
+        const generated = promptDisclosureContext({ includeFullContent: true, expandedRefIds: frontier, round: currentRound + 1 })
+        const generatedById = new Map((generated.expansions ?? []).map((expansion) => [expansion.refID, expansion]))
+        const next: string[] = []
+        frontier.forEach((refID) => {
+          if (seenAtRequest.has(refID)) return
+          seenAtRequest.add(refID)
+          const expansion = generatedById.get(refID) ?? expansionMap.get(refID)
+          if (!expansion) return
+          expandedThisTurn.add(refID)
+          const previous = expansionMap.get(refID)
+          if (!previous || JSON.stringify(previous) !== JSON.stringify(expansion)) changedExpansion = true
+          expansionMap.set(refID, expansion)
+          expansion.children?.forEach((child) => {
+            if (!seenAtRequest.has(child.refID)) next.push(child.refID)
+          })
+        })
+        frontier = [...new Set(next)]
+      }
+    }
+    const nextContext: DisclosureContext = { roots: current.roots, expansions: [...expansionMap.values()], round: currentRound + 1 }
+    const nextPrompt = replaceDisclosureContext(task.prompt, nextContext)
+    if (expandedThisTurn.size === 0 || !changedExpansion || nextPrompt === task.prompt) {
+      const errors = ['请求的引用没有产生新的可披露内容，请检查 refID 或改用已有目录']
+      markTask(task.id, 'needs_review', responseText, errors)
+      return { ok: false, errors }
+    }
+    mutate(() => db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = NULL, validation_errors = NULL, error_message = NULL, prompt = ?, updated_at = ? WHERE id = ?', ['pending', responseText, nextPrompt, isoNow(), task.id]))
+    return { ok: false, errors: [`已展开 ${requested.length} 个引用，任务已重新排队`], continued: true }
+  }
+
+  function applyTaskResult(taskId: string, responseText: string): TaskApplyResult {
     const task = tasks.value.find((item) => item.id === taskId)
     if (!task) return { ok: false, errors: ['找不到任务'] }
     if (task.type === 'segmentation') return applySegmentationTask(taskId, responseText)
+
     const parsed = parseStructuredResponse(responseText)
     if (!parsed.data) {
       const errors = [parsed.error ?? '响应格式错误']
@@ -1028,12 +1468,32 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
     const data = parsed.data
     const errors: string[] = []
+    const disclosureContinuation = continueDisclosureTask(task, responseText, data)
+    if (disclosureContinuation) return disclosureContinuation
+    if (disclosureTaskTypes.has(task.type)) {
+      const disclosure = parseDisclosureContext(task.prompt)
+      errors.push(...validateDisclosureRequests(data.disclosure_requests, disclosure ? listedDisclosureRefIds(disclosure) : undefined).map((issue) => `${issue.path}: ${issue.message}`))
+    }
     const inputParts = task.inputRevision.split(':')
     const targetId = inputParts[0]
     const targetRevision = inputParts[1]
+    if (errors.length) {
+      markTask(taskId, 'needs_review', responseText, errors)
+      return { ok: false, errors }
+    }
 
     if (task.type === 'maintenance') {
+      const maintenanceTargetIds = [
+        ...units.value.map((unit) => unit.id),
+        ...sessions.value.map((session) => session.id),
+        ...messages.value.map((message) => message.id),
+      ]
+      errors.push(...validateConceptMembershipPayload(task, data, maintenanceTargetIds, new Set(activeConcepts.value.map((concept) => concept.id))))
       const validation = maintenanceSuggestionErrors(data)
+      if (errors.length) {
+        markTask(taskId, 'needs_review', responseText, errors)
+        return { ok: false, errors }
+      }
       if (validation.errors.length) {
         markTask(taskId, 'needs_review', responseText, validation.errors)
         return { ok: false, errors: validation.errors }
@@ -1113,8 +1573,27 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
 
     if (task.type === 'concept_extraction' || task.type === 'origin_concepts') {
+      const membershipTargets = task.type === 'concept_extraction'
+        ? [
+            ...(unit ? [unit.id] : []),
+            ...messages.value.filter((message) => unit && message.unitId === unit.id).map((message) => message.id),
+            ...(session ? [session.id] : []),
+          ]
+        : [
+            ...(session ? [session.id] : []),
+            ...units.value.filter((item) => session && item.sessionId === session.id).map((item) => item.id),
+            ...messages.value.filter((message) => session && message.sessionId === session.id).map((message) => message.id),
+          ]
+      errors.push(...validateConceptMembershipPayload(task, data, membershipTargets))
       const rawConcepts = data.concepts
-      if (!Array.isArray(rawConcepts) || rawConcepts.length === 0) errors.push('concepts 必须是非空数组')
+      const declaredConceptIds = Array.isArray(data.concept_ids) ? data.concept_ids.filter((value): value is string => typeof value === 'string' && value.trim().length > 0).map((value) => value.trim()) : []
+      const membershipConceptIds = Array.isArray(data.memberships)
+        ? data.memberships.flatMap((item) => item && typeof item === 'object' && !Array.isArray(item) && Array.isArray((item as Record<string, unknown>).concept_ids)
+          ? ((item as Record<string, unknown>).concept_ids as unknown[]).filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+          : [])
+        : []
+      if (!Array.isArray(rawConcepts)) errors.push('concepts 必须是数组')
+      else if (rawConcepts.length === 0 && declaredConceptIds.length === 0 && membershipConceptIds.length === 0) errors.push('concepts 或 concept_ids 至少需要一项')
       const candidates = Array.isArray(rawConcepts) ? rawConcepts.map((candidate) => {
         if (typeof candidate === 'string') return { name: candidate, aliases: [] as string[] }
         if (!candidate || typeof candidate !== 'object') return { name: '', aliases: [] as string[] }
@@ -1146,12 +1625,23 @@ export const useWorkspaceStore = defineStore('workspace', () => {
             db.run('INSERT OR IGNORE INTO concept_aliases(id, concept_id, alias, normalized_alias, source, created_at) VALUES (?, ?, ?, ?, ?, ?)', [createId('alias'), conceptId, alias.trim(), normalizedAlias, 'llm', now])
           })
         })
+        const membershipDeclaredIds = Array.isArray(data.memberships)
+          ? data.memberships.flatMap((item) => item && typeof item === 'object' && !Array.isArray(item) && Array.isArray((item as Record<string, unknown>).concept_ids)
+            ? ((item as Record<string, unknown>).concept_ids as unknown[]).filter((value): value is string => typeof value === 'string').map((value) => value.trim())
+            : [])
+          : []
+        const allConceptIds = [...new Set([...conceptIds, ...declaredConceptIds])]
+        ;[...declaredConceptIds, ...membershipDeclaredIds].forEach((conceptId) => {
+          const existing = activeConcepts.value.find((concept) => concept.id === conceptId)
+          if (existing) conceptIdsByName.set(normalizeText(existing.name), conceptId)
+        })
         if (task.type === 'concept_extraction' && unit) {
-          conceptIds.forEach((conceptId) => db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [unit.id, conceptId, 'llm', now]))
+          allConceptIds.forEach((conceptId) => db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [unit.id, conceptId, 'llm', now]))
         }
         if (task.type === 'origin_concepts' && session) {
-          units.value.filter((item) => item.sessionId === session.id).forEach((sessionUnit) => conceptIds.forEach((conceptId) => db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [sessionUnit.id, conceptId, 'llm', now])))
+          units.value.filter((item) => item.sessionId === session.id).forEach((sessionUnit) => allConceptIds.forEach((conceptId) => db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [sessionUnit.id, conceptId, 'llm', now])))
         }
+        persistConceptMemberships(data.memberships, now)
         const pendingRelations: ConceptRelation[] = []
         const relationKeys = new Set<string>(relations.value.map((relation) => {
           const pair = relation.relationType === 'related'
@@ -1202,6 +1692,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         return {
           title: typeof value.title === 'string' ? value.title.trim() : '',
           summary: typeof value.summary === 'string' ? value.summary.trim() : '',
+          conceptIds: Array.isArray(value.concept_ids) ? value.concept_ids.filter((id): id is string => typeof id === 'string').map((id) => id.trim()) : [],
+          conceptIdsRaw: value.concept_ids,
+          conceptIdsProvided: Object.prototype.hasOwnProperty.call(value, 'concept_ids'),
           concepts: concepts.map((concept) => typeof concept === 'string' ? { name: concept, aliases: [] as string[] } : concept && typeof concept === 'object' ? { name: typeof (concept as Record<string, unknown>).name === 'string' ? String((concept as Record<string, unknown>).name) : '', aliases: Array.isArray((concept as Record<string, unknown>).aliases) ? ((concept as Record<string, unknown>).aliases as unknown[]).filter((alias): alias is string => typeof alias === 'string') : [] } : { name: '', aliases: [] as string[] }),
         }
       }) : []
@@ -1209,7 +1702,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         if (!unit.title) errors.push('对话知识单元标题不能为空')
         if (validateUnitText(unit.title, unit.summary).length) errors.push('对话知识单元标题或摘要超出长度限制')
         unit.concepts.forEach((concept) => { if (!normalizeText(concept.name)) errors.push('对话返回的知识主题名称不能为空') })
+        if (unit.conceptIdsProvided) {
+          errors.push(...validateConceptIdList(unit.conceptIdsRaw, promptConceptIds(task)).map((issue) => `${issue.path}: ${issue.message}`))
+        }
       })
+      errors.push(...validateConceptMembershipPayload(task, data, [
+        targetId,
+        ...messages.value.filter((message) => message.sessionId === targetId).map((message) => message.id),
+        ...units.value.filter((unit) => unit.sessionId === targetId).map((unit) => unit.id),
+      ]))
       if (errors.length) {
         markTask(taskId, errors.some((error) => error.includes('版本')) ? 'stale' : 'needs_review', responseText, errors)
         return { ok: false, errors }
@@ -1244,11 +1745,16 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         const assistantMessageId = createId('message')
         db.run('INSERT INTO messages(id, session_id, unit_id, role, content, order_in_session, timestamp, metadata) VALUES (?, ?, NULL, ?, ?, ?, ?, ?)', [assistantMessageId, targetId, 'assistant', String(answer).trim(), assistantOrder, now, JSON.stringify({ taskId })])
         const unitOffset = units.value.filter((unit) => unit.sessionId === targetId).length
+        const declaredTopLevelConceptIds = Array.isArray(data.concept_ids)
+          ? data.concept_ids.filter((value): value is string => typeof value === 'string').map((value) => value.trim())
+          : []
         normalizedUnits.forEach((item, index) => {
           const unitId = createId('unit')
           db.run('INSERT INTO knowledge_units(id, session_id, title, summary, order_in_session, status, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)', [unitId, targetId, item.title, item.summary || null, unitOffset + index, item.summary ? 'ready' : 'pending', now, now])
           if (index === 0 && userMessage) db.run('UPDATE messages SET unit_id = ? WHERE id IN (?, ?)', [unitId, userMessage.id, assistantMessageId])
           db.run('INSERT INTO nav_tree_node_units(node_id, unit_id, order_in_node) VALUES (?, ?, ?)', [branchNodeId, unitId, index])
+          const explicitIds = [...new Set([...declaredTopLevelConceptIds, ...item.conceptIds])]
+          explicitIds.forEach((conceptId) => db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [unitId, conceptId, 'llm', now]))
           item.concepts.forEach((candidate) => {
             const conceptId = ensureConcept(candidate.name, 'llm')
             db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [unitId, conceptId, 'llm', now])
@@ -1258,6 +1764,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
             })
           })
         })
+        persistConceptMemberships(data.memberships, now)
         if (followUp) {
           db.run('UPDATE sessions SET unit_count = unit_count + ?, revision = revision + 1, updated_at = ? WHERE id = ?', [normalizedUnits.length, now, targetId])
         } else {
@@ -1313,6 +1820,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           const content = payload.choices?.[0]?.message?.content
           if (!content) throw new Error('Provider 没有返回可用内容')
           const result = applyTaskResult(taskId, content)
+          if (result.continued) {
+            return await executeTask(taskId)
+          }
           return result.ok ? { ok: true } : { ok: false, error: result.errors[0] }
         } catch (error) {
           const current = tasks.value.find((item) => item.id === taskId)
@@ -1409,19 +1919,37 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         const unitId = createId('unit')
         const unitMessages = unitResult.message_indices.map((messageIndex) => sessionMessages[messageIndex]).filter(Boolean)
         db.run('INSERT INTO knowledge_units(id, session_id, title, summary, order_in_session, status, revision, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?, 1, ?, ?)', [unitId, session.id, unitResult.title_hint || null, index, unitResult.title_hint ? 'ready' : 'pending', now, now])
-        unitMessages.forEach((message) => db.run('UPDATE messages SET unit_id = ? WHERE id = ?', [unitId, message.id]))
+        unitMessages.forEach((message) => {
+          db.run('UPDATE messages SET unit_id = ? WHERE id = ?', [unitId, message.id])
+          const metadataRow = db.query<Row>('SELECT metadata FROM messages WHERE id = ?', [message.id])[0]
+          let metadata: Record<string, unknown> | null = null
+          try { metadata = metadataRow?.metadata ? JSON.parse(text(metadataRow.metadata)) as Record<string, unknown> : null } catch { metadata = null }
+          const declared = metadata?.concept_ids
+          if (Array.isArray(declared)) declared.filter((id): id is string => typeof id === 'string' && id.trim().length > 0).forEach((conceptId) => {
+            db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [unitId, conceptId.trim(), 'llm', now])
+          })
+        })
         const nodeId = createId('nav')
         db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, ?, NULL, ?, 1, ?)', [nodeId, session.id, rootId, unitResult.title_hint || '待命名知识单元', now])
         db.run('INSERT INTO nav_tree_node_units(node_id, unit_id, order_in_node) VALUES (?, ?, 0)', [nodeId, unitId])
         const createdUnit = unitFromRow(db.query<Row>('SELECT * FROM knowledge_units WHERE id = ?', [unitId])[0])
         createTask({ type: 'unit_metadata', mode: task.mode, providerId: task.providerId, model: task.model, promptVersion: PROMPT_VERSION, inputRevision: `${unitId}:1`, prompt: buildTitleSummaryPrompt(session, createdUnit, unitMessages, []), status: 'pending', scopeLabel: `${session.title} · 标题与摘要` })
-        createTask({ type: 'concept_extraction', mode: task.mode, providerId: task.providerId, model: task.model, promptVersion: PROMPT_VERSION, inputRevision: `${unitId}:1`, prompt: buildConceptPrompt(session, createdUnit, unitMessages, []), status: 'pending', scopeLabel: `${session.title} · 知识主题` })
+        createTask({ type: 'concept_extraction', mode: task.mode, providerId: task.providerId, model: task.model, promptVersion: PROMPT_VERSION, inputRevision: `${unitId}:1`, prompt: buildConceptPrompt(session, createdUnit, unitMessages, [], promptDisclosureContext()), status: 'pending', scopeLabel: `${session.title} · 知识主题` })
       })
       db.run('UPDATE sessions SET message_count = ?, unit_count = ?, revision = revision + 1, updated_at = ? WHERE id = ?', [sessionMessages.length, segmentation.units.length, now, session.id])
       const refreshedSession = sessionFromRow(db.query<Row>('SELECT * FROM sessions WHERE id = ?', [session.id])[0])
       db.run("UPDATE llm_tasks SET status = 'pending', input_revision = ?, validation_errors = NULL, error_message = NULL, updated_at = ? WHERE type = 'origin_concepts' AND scope_label LIKE ? AND status = 'stale'", [`${session.id}:${refreshedSession.revision}`, now, `${session.title} · 起始知识主题%`])
       segmentationTaskIds.forEach((id) => db.run('UPDATE llm_tasks SET status = ?, response = CASE WHEN id = ? THEN ? ELSE response END, parsed_result = COALESCE(parsed_result, ?), validation_errors = NULL, error_message = NULL, updated_at = ? WHERE id = ?', ['success', id, responseText, JSON.stringify(segmentation), now, id]))
     })
+    // The first transaction creates the new units and refreshes reactive
+    // arrays. Rebuild the requeued origin prompt afterwards so its disclosure
+    // catalog sees those units and any metadata-derived memberships.
+    const refreshedSession = sessions.value.find((item) => item.id === session.id)
+    const originTasks = tasks.value.filter((item) => item.type === 'origin_concepts' && item.status === 'pending' && item.inputRevision.startsWith(`${session.id}:`))
+    if (refreshedSession && originTasks.length) {
+      const originPrompt = buildOriginConceptPrompt(refreshedSession, messages.value.filter((message) => message.sessionId === session.id).sort((left, right) => left.orderInSession - right.orderInSession), promptDisclosureContext())
+      mutate(() => originTasks.forEach((originTask) => db.run('UPDATE llm_tasks SET prompt = ?, prompt_version = ?, updated_at = ? WHERE id = ?', [originPrompt, PROMPT_VERSION, isoNow(), originTask.id])))
+    }
   }
 
   function applySegmentationTask(taskId: string, responseText: string): { ok: boolean; errors: string[] } {
@@ -1600,7 +2128,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       db.run('INSERT INTO messages(id, session_id, unit_id, role, content, order_in_session, timestamp, metadata) VALUES (?, ?, NULL, ?, ?, 0, ?, ?)', [messageId, targetSessionId, 'user', question, now, JSON.stringify({ mode: 'new', topicId: input.topicId ?? null })])
       const rootId = createId('nav')
       db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [rootId, targetSessionId, null, input.topicId ?? null, topic ? `围绕 ${topic}` : '新的知识对话', 0, now])
-      const taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${targetSessionId}:1`, prompt: buildConversationPrompt({ question, topic, context }), status: 'pending', scopeLabel: `新对话 · ${topic || '知识探索'}` })
+      const taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${targetSessionId}:1`, prompt: buildConversationPrompt({ question, topic, context, targetSessionId, targetMessageId: messageId, disclosure: promptDisclosureContext({ unitIds: sourceUnitIds, messageIds: sourceMessageIds, includeFullContent: input.includeFullContent ?? false }) }), status: 'pending', scopeLabel: `新对话 · ${topic || '知识探索'}` })
       db.run('UPDATE messages SET metadata = ? WHERE id = ?', [JSON.stringify({ mode: 'new', topicId: input.topicId ?? null, parentNodeId: rootId, taskId, sourceSessionId: sourceSession ?? null }), messageId])
       writeSourceReferences(targetSessionId, sourceUnitIds, sourceMessageIds, input.includeFullContent ?? false)
     })
@@ -1642,7 +2170,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const messageId = createId('message')
       db.run('INSERT INTO messages(id, session_id, unit_id, role, content, order_in_session, timestamp, metadata) VALUES (?, ?, NULL, ?, ?, ?, ?, ?)', [messageId, session.id, 'user', question, nextOrder, now, JSON.stringify({ mode: 'follow_up', parentNodeId: parentNode.id })])
       db.run('UPDATE sessions SET message_count = message_count + 1, updated_at = ? WHERE id = ?', [now, session.id])
-      taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${session.id}:${revision}`, prompt: buildConversationPrompt({ question, topic, context }), status: 'pending', scopeLabel: `${session.title} · 追问` })
+      taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${session.id}:${revision}`, prompt: buildConversationPrompt({ question, topic, context, targetSessionId: session.id, targetMessageId: messageId, disclosure: promptDisclosureContext({ unitIds: input.sourceUnitIds ?? [], messageIds: input.sourceMessageIds ?? [], includeFullContent: input.includeFullContent ?? false }) }), status: 'pending', scopeLabel: `${session.title} · 追问` })
       db.run('UPDATE messages SET metadata = ? WHERE id = ?', [JSON.stringify({ mode: 'follow_up', topicId: input.topicId ?? null, parentNodeId: parentNode.id, taskId }), messageId])
       writeSourceReferences(session.id, input.sourceUnitIds ?? [], input.sourceMessageIds ?? [], input.includeFullContent ?? false)
     })
@@ -1735,6 +2263,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     graphStats,
     unitMessages,
     unitConceptNames,
+    promptDisclosureContext,
+    hierarchyRelations,
+    conceptParentIds,
+    conceptChildIds,
+    conceptParents,
+    conceptChildren,
+    conceptAncestors,
+    conceptDescendants,
+    rootConcepts,
+    conceptExpansionPath,
+    toggleConceptExpansion,
     importPayload,
     importJsonText,
     importJsonTextWithMode,
@@ -1744,6 +2283,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     addConceptToUnit,
     setUnitConcept,
     createRelation,
+    setConceptParent,
+    addConceptChild,
+    promoteConcept,
+    removeConceptFromParent,
     confirmRelation,
     mergeConcept,
     deleteConcept,

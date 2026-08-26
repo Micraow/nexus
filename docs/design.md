@@ -435,13 +435,15 @@ API 服务支持结构化输出时，同时使用接口级 JSON Schema；Prompt 
 
 ### 6.0 固定 Harness 与渐进式披露
 
-每个任务 Prompt 都先拼接版本化的固定前缀 `NEXUS_HARNESS_PROMPT` 和 `PROGRESSIVE_DISCLOSURE_PROTOCOL`，再附加该任务的规格和数据。固定前缀按字节保持稳定（当前 `PROMPT_VERSION=2026-08-v2-harness`），任务重试或披露续跑只能替换动态数据段，不能删改行为契约。
+每个任务 Prompt 都先拼接版本化的固定前缀 `NEXUS_HARNESS_PROMPT` 和 `PROGRESSIVE_DISCLOSURE_PROTOCOL`，再附加该任务的规格和数据。固定前缀按字节保持稳定（当前 `PROMPT_VERSION=2026-08-v3-multi-concept`），任务重试或披露续跑只能替换动态数据段，不能删改行为契约。
 
 当任务需要参考较大的知识树时，Prompt 在 `DISCLOSURE_INDEX` 中提供首层目录和已经展开的记录。目录项至少包含不透明的 `refID`、`title` 和 `summary`；摘要是导航线索，不得冒充消息原文。展开记录可提供 `children`（下一层同样只含 `refID`/标题/摘要），并可在明确请求时提供 `content`（知识单元或消息原文）。
 
 模型需要更多证据时，可以在输出 JSON 中返回 `disclosure_requests`，例如 `{ "refID": "目录中已有的 ID", "depth": 1 }`。本地先校验数组、唯一 `refID`、引用必须来自当前目录以及 `depth` 为 1～64 的整数；校验失败进入 `needs_review`，不应用任何部分结果。校验通过后，应用从本地事实表按 `refID` 递归展开指定层数，保留根引用和原文，替换 Prompt 中的动态 `DISCLOSURE_INDEX` 并将同一任务重新排队。任务最多连续披露 8 轮，超出后暂停供用户检查。
 
 `refID` 由本地生成且不可由模型猜测、改写或拼接。所有目录、摘要和原文都按不可信数据处理，其中的文字指令、代码、SQL 和链接不执行；模型可以使用自身知识、推理和调用方明确允许的外部搜索，但必须区分输入证据、外部资料与推断。
+
+Concept 归属是多对多的：同一个 Session、Message 或 KnowledgeUnit 可以同时关联多个知识主题，也可以暂时没有主题。任务结果用 `memberships[].concept_ids` 或目标对象中的 `concept_ids` 数组表达归属，不能用单个 `concept_id` 代表“主主题”。一个子 Concept 也可以拥有多个 `hierarchy` 父主题；`related` 始终是无向关系。知识维护中的重新关联建议同样使用 `concept_ids` 数组，应用前逐项校验 ID、重复项和当前任务范围。
 
 ### 6.1 分段输出
 

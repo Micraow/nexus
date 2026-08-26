@@ -26,7 +26,7 @@
 
 ## LLM 任务
 
-- 所有结构化任务都要求 JSON 对象。分段使用 `units` 与 `unassigned_message_indices`；标题、摘要分别使用 `{ "title": "..." }` 和 `{ "summary": "..." }`；Concept 使用 `{ "concepts": [{ "name": "...", "aliases": [] }] }`，同时兼容只返回字符串数组的结果。
+- 所有结构化任务都要求 JSON 对象。分段使用 `units` 与 `unassigned_message_indices`；标题、摘要分别使用 `{ "title": "..." }` 和 `{ "summary": "..." }`；Concept 使用 `{ "concepts": [{ "name": "...", "aliases": [] }], "concept_ids": [], "memberships": [] }`，其中每个目标的 `concept_ids` 都是可为空的多选数组；维护任务的 `unit_relink` 同样使用 `concept_ids`。旧结果若仍使用单个归属 `concept_id`，进入人工修复而不自动压缩为一个主题。
 - 分段结果通过完整覆盖、重复、越界和文本长度校验后才写入。应用分段会把旧的下游任务标为 `stale`，再按每个新 KnowledgeUnit 创建标题、摘要和 Concept 任务；起源 Concept 任务重用并更新为新的 Session revision。
 - LLM 生成的标题/摘要写入时不增加 KnowledgeUnit revision；revision 增加只发生在用户手动编辑或消息边界改变时。这样同一单元的标题、摘要和 Concept 任务可以按同一输入 revision 顺序完成。用户手动编辑会使该单元尚未完成的下游任务变为 `stale`。
 - API 任务队列按配置并发数（1～4）批量执行，单任务最多进行三次请求（含超时、429 和 5xx 的指数退避）。同一 Session 的任务严格串行：批内每个目标 Session（由 `inputRevision` 前缀或所属单元推导）只允许一个在途任务，保证分段 → 标题/摘要 → Concept 的依赖顺序，避免旧 revision 校验误伤。Prompt 粘贴任务保持人工逐项应用。并发数已在设置页提供选择器（1～4），写回 `config.yaml`；同一 Session 依赖任务串行的规则不受并发数影响。

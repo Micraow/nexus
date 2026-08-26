@@ -58,6 +58,14 @@ export interface Message {
   metadata?: Record<string, unknown> | null
 }
 
+/** A many-to-many Concept assignment emitted by structured LLM tasks. */
+export type ConceptMembershipTarget = 'session' | 'message' | 'unit'
+export interface ConceptMembership {
+  target_type: ConceptMembershipTarget
+  target_id: string
+  concept_ids: string[]
+}
+
 export interface KnowledgeUnit {
   id: string
   sessionId: string
@@ -178,6 +186,8 @@ export interface MaintenanceSuggestion {
   child_concept_id?: string
   relation_type?: RelationType
   unit_id?: string
+  /** Many-to-many replacement/addition set for a unit_relink suggestion. */
+  concept_ids?: string[]
   title?: string
   summary?: string
 }

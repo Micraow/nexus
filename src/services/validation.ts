@@ -42,6 +42,107 @@ export interface ValidationIssue {
   path: string
   message: string
 }
+export interface DisclosureRequest {
+  refID: string
+  depth: number
+}
+
+export type ConceptMembershipTarget = 'session' | 'message' | 'unit'
+
+export interface ConceptMembership {
+  target_type: ConceptMembershipTarget
+  target_id: string
+  concept_ids: string[]
+}
+
+/**
+ * Validate many-to-many Concept membership declarations emitted by an LLM.
+ * Membership is deliberately separate from the Concept definitions: a task
+ * may introduce new definitions while reusing existing IDs from its catalog.
+ */
+export function validateConceptMemberships(
+  value: unknown,
+  options: { targetIds?: Iterable<string>; conceptIds?: Iterable<string> } = {},
+): ValidationIssue[] {
+  if (value == null) return []
+  if (!Array.isArray(value)) return [{ path: 'memberships', message: '必须是数组' }]
+  const targetIds = options.targetIds ? new Set(options.targetIds) : null
+  const conceptIds = options.conceptIds ? new Set(options.conceptIds) : null
+  const issues: ValidationIssue[] = []
+  value.forEach((raw, index) => {
+    const path = `memberships.${index}`
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      issues.push({ path, message: '归属声明必须是对象' })
+      return
+    }
+    const item = raw as Record<string, unknown>
+    const targetType = item.target_type
+    const targetId = typeof item.target_id === 'string' ? item.target_id.trim() : ''
+    if (targetType !== 'session' && targetType !== 'message' && targetType !== 'unit') {
+      issues.push({ path: `${path}.target_type`, message: 'target_type 必须是 session、message 或 unit' })
+    }
+    if (!targetId) issues.push({ path: `${path}.target_id`, message: 'target_id 必须是非空字符串' })
+    else if (targetIds && !targetIds.has(targetId)) issues.push({ path: `${path}.target_id`, message: 'target_id 不在当前任务范围中' })
+    if (Object.prototype.hasOwnProperty.call(item, 'concept_id')) {
+      issues.push({ path: `${path}.concept_id`, message: '归属必须使用 concept_ids 数组，不能使用单个 concept_id' })
+    }
+    if (!Array.isArray(item.concept_ids)) {
+      issues.push({ path: `${path}.concept_ids`, message: 'concept_ids 必须是数组（可包含多个 Concept）' })
+      return
+    }
+    const seen = new Set<string>()
+    item.concept_ids.forEach((rawConceptId, conceptIndex) => {
+      const conceptId = typeof rawConceptId === 'string' ? rawConceptId.trim() : ''
+      if (!conceptId) issues.push({ path: `${path}.concept_ids.${conceptIndex}`, message: 'Concept ID 必须是非空字符串' })
+      else if (seen.has(conceptId)) issues.push({ path: `${path}.concept_ids.${conceptIndex}`, message: '同一归属声明中不能重复 Concept ID' })
+      else if (conceptIds && !conceptIds.has(conceptId)) issues.push({ path: `${path}.concept_ids.${conceptIndex}`, message: 'Concept ID 不在当前目录中' })
+      if (conceptId) seen.add(conceptId)
+    })
+  })
+  return issues
+}
+
+/** Backward-compatible name for callers that describe these as assignments. */
+export const validateConceptAssignments = validateConceptMemberships
+
+/** Validate a top-level many-to-many Concept ID list. */
+export function validateConceptIdList(value: unknown, availableConceptIds?: Iterable<string>): ValidationIssue[] {
+  if (value == null) return []
+  if (!Array.isArray(value)) return [{ path: 'concept_ids', message: 'concept_ids 必须是数组（可包含多个 Concept）' }]
+  const available = availableConceptIds ? new Set(availableConceptIds) : null
+  const seen = new Set<string>()
+  const issues: ValidationIssue[] = []
+  value.forEach((raw, index) => {
+    const id = typeof raw === 'string' ? raw.trim() : ''
+    if (!id) issues.push({ path: `concept_ids.${index}`, message: 'Concept ID 必须是非空字符串' })
+    else if (seen.has(id)) issues.push({ path: `concept_ids.${index}`, message: 'concept_ids 不能重复' })
+    else if (available && !available.has(id)) issues.push({ path: `concept_ids.${index}`, message: 'Concept ID 不在当前目录中' })
+    if (id) seen.add(id)
+  })
+  return issues
+}
+
+/** Validate optional progressive-disclosure continuation requests. */
+export function validateDisclosureRequests(value: unknown, availableRefIds?: Iterable<string>): ValidationIssue[] {
+  if (value == null) return []
+  if (!Array.isArray(value)) return [{ path: 'disclosure_requests', message: '必须是数组' }]
+  const available = availableRefIds ? new Set(availableRefIds) : null
+  const seen = new Set<string>()
+  const issues: ValidationIssue[] = []
+  value.forEach((raw, index) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { issues.push({ path: 'disclosure_requests.' + index, message: '引用请求必须是对象' }); return }
+    const item = raw as Record<string, unknown>
+    const refID = typeof item.refID === 'string' ? item.refID.trim() : ''
+    const depth = item.depth
+    if (!refID) issues.push({ path: 'disclosure_requests.' + index + '.refID', message: 'refID 必须是非空字符串' })
+    if (!Number.isInteger(depth) || Number(depth) < 1 || Number(depth) > 64) issues.push({ path: 'disclosure_requests.' + index + '.depth', message: 'depth 必须是 1 到 64 的整数' })
+    if (refID && seen.has(refID)) issues.push({ path: 'disclosure_requests.' + index + '.refID', message: '不能重复请求同一 refID' })
+    if (refID) seen.add(refID)
+    if (refID && available && !available.has(refID)) issues.push({ path: 'disclosure_requests.' + index + '.refID', message: 'refID 不在当前目录中' })
+  })
+  return issues
+}
+
 
 export function validateUnitText(title: string | null | undefined, summary: string | null | undefined): ValidationIssue[] {
   const issues: ValidationIssue[] = []

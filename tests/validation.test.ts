@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseImportPayload, validateSegmentationResult, validateUnitText } from '@/services/validation'
+import { parseImportPayload, validateConceptIdList, validateConceptMemberships, validateDisclosureRequests, validateSegmentationResult, validateUnitText } from '@/services/validation'
 
 describe('import validation', () => {
   it('accepts the documented DeepSeek payload and rejects unsupported roles', () => {
@@ -35,5 +35,34 @@ describe('import validation', () => {
   it('enforces title and summary limits without silently truncating', () => {
     expect(validateUnitText('a'.repeat(30), 'b'.repeat(120))).toHaveLength(0)
     expect(validateUnitText('a'.repeat(31), 'b'.repeat(121))).toHaveLength(2)
+  })
+
+  it('validates progressive-disclosure continuation requests against visible refs', () => {
+    expect(validateDisclosureRequests([{ refID: 'concept-1', depth: 2 }], ['concept-1'])).toHaveLength(0)
+
+    const invalid = validateDisclosureRequests([
+      { refID: 'missing', depth: 0 },
+      { refID: 'missing', depth: 1 },
+    ], ['concept-1'])
+    expect(invalid.some((issue) => issue.message.includes('不在当前目录'))).toBe(true)
+    expect(invalid.some((issue) => issue.message.includes('1 到 64'))).toBe(true)
+    expect(invalid.some((issue) => issue.message.includes('不能重复'))).toBe(true)
+  })
+
+  it('validates multi-Concept membership lists and keeps duplicate/unknown IDs visible', () => {
+    expect(validateConceptIdList(['c1', 'c2'], ['c1', 'c2'])).toHaveLength(0)
+    const listIssues = validateConceptIdList(['c1', 'c1', 'missing'], ['c1', 'c2'])
+    expect(listIssues.some((issue) => issue.message.includes('不能重复'))).toBe(true)
+    expect(listIssues.some((issue) => issue.message.includes('不在当前目录'))).toBe(true)
+
+    const valid = validateConceptMemberships([
+      { target_type: 'message', target_id: 'm1', concept_ids: ['c1', 'c2'] },
+      { target_type: 'session', target_id: 's1', concept_ids: [] },
+    ], { targetIds: ['m1', 's1'], conceptIds: ['c1', 'c2'] })
+    expect(valid).toHaveLength(0)
+    const invalid = validateConceptMemberships([{ target_type: 'message', target_id: 'm1', concept_ids: ['c1', 'c1', 'missing'] }], { targetIds: ['m1'], conceptIds: ['c1'] })
+    expect(invalid.some((issue) => issue.message.includes('不能重复'))).toBe(true)
+    expect(invalid.some((issue) => issue.message.includes('不在当前目录'))).toBe(true)
+    expect(validateConceptMemberships([{ target_type: 'message', target_id: 'm1', concept_id: 'c1' }], { targetIds: ['m1'], conceptIds: ['c1'] }).some((issue) => issue.message.includes('concept_ids'))).toBe(true)
   })
 })

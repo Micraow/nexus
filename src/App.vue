@@ -994,7 +994,9 @@ function applyTask(task: LLMTask): void {
     return
   }
   const result = store.applyTaskResult(task.id, response)
-  if (result.ok) {
+  if (result.continued) {
+    taskFeedback.value = { tone: 'info', text: result.errors.join('；') + '。请复制更新后的 Prompt，完成下一轮回复后再粘贴。' }
+  } else if (result.ok) {
     taskFeedback.value = null
     notify(task.type === 'segmentation' ? '分段结果已校验并写入知识库' : task.type === 'maintenance' ? '维护建议已校验，请逐条确认应用' : '结构化结果已校验并写入知识库')
     if (task.type !== 'maintenance') selectedTaskId.value = null
