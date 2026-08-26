@@ -229,7 +229,7 @@ LLMTask、QuickPhrase、ManualGraphEdge、GraphLayout 独立记录
 | concept_id | TEXT FK → Concept | |
 | alias | TEXT UNIQUE | 别名原文 |
 | normalized_alias | TEXT UNIQUE | 规范形式 |
-| source | TEXT | `llm` / `manual` / `merge` |
+| source | TEXT | `llm` / `manual` / `maintenance` / `merge` / `import` |
 | created_at | TEXT | |
 
 ### 3.7 UnitConcept
@@ -238,7 +238,7 @@ LLMTask、QuickPhrase、ManualGraphEdge、GraphLayout 独立记录
 |---|---|---|
 | unit_id | TEXT FK → KnowledgeUnit | |
 | concept_id | TEXT FK → Concept | |
-| source | TEXT | `llm` / `manual` / `maintenance` |
+| source | TEXT | `llm` / `manual` / `maintenance` / `merge` / `import` |
 | created_at | TEXT | |
 
 PRIMARY KEY 为 `(unit_id, concept_id)`。不设置强制的 `primary` 角色；一个 KnowledgeUnit 的多个 Concept 平等关联。
@@ -251,7 +251,7 @@ PRIMARY KEY 为 `(unit_id, concept_id)`。不设置强制的 `primary` 角色；
 | parent_concept_id | TEXT FK → Concept | `hierarchy` 时为父节点；`related` 时为关系一端 |
 | child_concept_id | TEXT FK → Concept | `hierarchy` 时为子节点；`related` 时为另一端 |
 | relation_type | TEXT | `hierarchy` / `related` |
-| source | TEXT | `llm` / `manual` / `maintenance` |
+| source | TEXT | `llm` / `manual` / `maintenance` / `merge` / `import` |
 | status | TEXT | `proposed` / `confirmed` / `rejected` |
 | created_at | TEXT | |
 | updated_at | TEXT | |

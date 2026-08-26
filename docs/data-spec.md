@@ -155,7 +155,7 @@
 | `concept_id` | TEXT | 是 | 外键 → Concept |
 | `alias` | TEXT | 是 | 全局唯一 |
 | `normalized_alias` | TEXT | 是 | 全局唯一 |
-| `source` | TEXT | 是 | `llm`、`manual`、`merge` |
+| `source` | TEXT | 是 | `llm`、`manual`、`maintenance`、`merge`、`import` |
 | `created_at` | TEXT | 是 | |
 
 别名不能与另一个 Concept 的主名称或别名产生规范化冲突。冲突必须进入人工确认。
