@@ -3,6 +3,7 @@ import {
   extractConversationSnapshots,
   mergeCapturedMessages,
   orderCapturedMessages,
+  selectConversationPath,
   type CapturedMessage,
 } from '../extension/src/message-extraction'
 
@@ -124,5 +125,55 @@ describe('DeepSeek message extraction', () => {
       captured('m-3', 'user', '追问', 2),
     ]
     expect(mergeCapturedMessages(partial, full).map((item) => item.content)).toEqual(['最早的问题', '回答', '追问'])
+  })
+
+  it('rebuilds the selected DeepSeek branch from parent ids when the API array is newest-page-first', () => {
+    const payload = {
+      data: {
+        chat_session: { id: 'clos-session', title: 'Spine Leaf与Clos关系', current_message_id: 'm-6' },
+        chat_messages: [
+          message('m-5', 'user', '为什么clos不阻塞', { parent_id: 'm-4' }),
+          message('m-6', 'assistant', '因为存在足够的中间级路径', { parent_id: 'm-5' }),
+          message('m-3', 'user', 'fat tree是不是也是clos？', { parent_id: 'm-2' }),
+          message('m-4', 'assistant', 'Fat Tree也是Clos的一种', { parent_id: 'm-3' }),
+          message('m-1', 'user', 'Spine Leaf是不是就是Clos?', { parent_id: null }),
+          message('m-2', 'assistant', 'Spine-Leaf是Clos的一种实现', { parent_id: 'm-1' }),
+        ],
+      },
+    }
+    const snapshot = extractConversationSnapshots(payload)[0]
+    expect(snapshot?.currentMessageId).toBe('m-6')
+    expect(selectConversationPath(snapshot?.messages ?? [], snapshot?.currentMessageId).map((item) => item.content)).toEqual([
+      'Spine Leaf是不是就是Clos?',
+      'Spine-Leaf是Clos的一种实现',
+      'fat tree是不是也是clos？',
+      'Fat Tree也是Clos的一种',
+      '为什么clos不阻塞',
+      '因为存在足够的中间级路径',
+    ])
+  })
+
+  it('exports only the branch selected by current_message_id after regeneration', () => {
+    const messages: CapturedMessage[] = [
+      { ...captured('m-1', 'user', '问题', 0), parentId: null },
+      { ...captured('m-2-old', 'assistant', '旧回答', 1), parentId: 'm-1' },
+      { ...captured('m-2-new', 'assistant', '重新生成的回答', 2), parentId: 'm-1' },
+      { ...captured('m-3', 'user', '基于新回答的追问', 3), parentId: 'm-2-new' },
+      { ...captured('m-4', 'assistant', '后续回答', 4), parentId: 'm-3' },
+    ]
+    expect(selectConversationPath(messages, 'm-4').map((item) => item.content)).toEqual([
+      '问题',
+      '重新生成的回答',
+      '基于新回答的追问',
+      '后续回答',
+    ])
+  })
+
+  it('preserves array order for providers that do not expose a parent chain', () => {
+    const messages = [
+      captured('m-2', 'assistant', '页面当前顺序第一条', 0),
+      captured('m-1', 'user', '页面当前顺序第二条', 1),
+    ]
+    expect(selectConversationPath(messages).map((item) => item.content)).toEqual(['页面当前顺序第一条', '页面当前顺序第二条'])
   })
 })

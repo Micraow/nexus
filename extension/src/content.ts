@@ -8,6 +8,8 @@ const NOISE_TEXTS = new Set(['复制', '重新生成', '编辑', '删除', '继�
 
 /** session id -> normalized messages captured from network responses. */
 const captureCache = new Map<string, CapturedMessage[]>()
+/** Current branch pointer returned by DeepSeek's chat_session metadata. */
+const currentMessageCache = new Map<string, string>()
 const sessionCache = new Map<string, SessionEntry>()
 let scrollAttempts = 0
 let scrollNoGrowthAttempts = 0
@@ -35,6 +37,7 @@ function storeCaptured(url: string, body: string): void {
   snapshots.forEach((snapshot) => {
     const existing = captureCache.get(snapshot.sessionId) ?? []
     captureCache.set(snapshot.sessionId, mergeCapturedMessages(existing, snapshot.messages))
+    if (snapshot.currentMessageId) currentMessageCache.set(snapshot.sessionId, snapshot.currentMessageId)
     const previous = sessionCache.get(snapshot.sessionId)
     if (snapshot.title || previous) {
       sessionCache.set(snapshot.sessionId, {
@@ -75,6 +78,7 @@ async function readIndexedDbSession(sessionId: string): Promise<boolean> {
             if (!snapshot) continue
             const existing = captureCache.get(sessionId) ?? []
             captureCache.set(sessionId, mergeCapturedMessages(existing, snapshot.messages))
+            if (snapshot.currentMessageId) currentMessageCache.set(sessionId, snapshot.currentMessageId)
             if (snapshot.title) sessionCache.set(sessionId, { externalSessionId: sessionId, title: snapshot.title })
             return true
           }
@@ -259,7 +263,7 @@ async function exportSession(externalSessionId: string | null): Promise<Exported
   } else {
     await waitForSession(targetId, 4_000)
   }
-  const messages = toExportedMessages(captureCache.get(targetId) ?? [])
+  const messages = toExportedMessages(captureCache.get(targetId) ?? [], currentMessageCache.get(targetId))
   const domMessages = messages.length ? [] : extractMessagesFromDom()
   const finalMessages = messages.length ? messages : domMessages
   if (!finalMessages.length) throw new Error('未能读取到消息内容：需要先完整打开该会话一次')

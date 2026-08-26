@@ -3,6 +3,8 @@ import type { ExportedMessage } from './types'
 /** Internal representation keeps the fields needed to merge network snapshots. */
 export interface CapturedMessage extends ExportedMessage {
   messageId?: string
+  /** DeepSeek stores the conversation as a message tree. */
+  parentId?: string | null
   sourceOrder: number
   orderHint?: number
 }
@@ -10,6 +12,8 @@ export interface CapturedMessage extends ExportedMessage {
 export interface ConversationSnapshot {
   sessionId: string
   title?: string
+  /** The branch currently selected in the DeepSeek UI. */
+  currentMessageId?: string
   messages: CapturedMessage[]
 }
 
@@ -20,6 +24,7 @@ interface RecordLike {
 interface SessionInfo {
   id: string
   title?: string
+  currentMessageId?: string
 }
 
 const SESSION_ID_KEYS = [
@@ -32,6 +37,8 @@ const SESSION_ID_KEYS = [
 ] as const
 const TITLE_KEYS = ['title', 'name', 'chat_title', 'session_title'] as const
 const MESSAGE_ID_KEYS = ['message_id', 'messageId', 'uuid', 'id'] as const
+const PARENT_ID_KEYS = ['parent_id', 'parentId', 'parent_message_id', 'parentMessageId'] as const
+const CURRENT_MESSAGE_ID_KEYS = ['current_message_id', 'currentMessageId'] as const
 const ORDER_KEYS = ['order_in_session', 'order', 'sequence', 'seq', 'index'] as const
 const MESSAGE_ARRAY_KEYS = ['chat_messages', 'messages'] as const
 
@@ -51,6 +58,17 @@ function recordValue(record: RecordLike, keys: readonly string[]): string {
     if (value) return value
   }
   return ''
+}
+
+function optionalRecordId(record: RecordLike, keys: readonly string[]): string | null | undefined {
+  for (const key of keys) {
+    if (!(key in record)) continue
+    const value = record[key]
+    if (value === null || value === undefined || value === '') return null
+    const normalized = scalarText(value)
+    if (normalized) return normalized
+  }
+  return undefined
 }
 
 function numericValue(value: unknown): number | undefined {
@@ -110,6 +128,7 @@ function normalizeMessageRecord(record: RecordLike, sourceOrder: number): Captur
   const content = messageContent(record, role)
   if (!content) return null
   const messageId = recordValue(record, MESSAGE_ID_KEYS) || undefined
+  const parentId = optionalRecordId(record, PARENT_ID_KEYS)
   const orderHint = ORDER_KEYS.map((key) => numericValue(record[key])).find((value) => value !== undefined)
   const timestamp = normalizeTimestamp(
     record.inserted_at ?? record.insert_time ?? record.created_at ?? record.createdAt ?? record.timestamp,
@@ -119,6 +138,7 @@ function normalizeMessageRecord(record: RecordLike, sourceOrder: number): Captur
     content,
     ...(timestamp ? { timestamp } : {}),
     ...(messageId ? { messageId } : {}),
+    ...(parentId !== undefined ? { parentId } : {}),
     sourceOrder,
     ...(orderHint !== undefined ? { orderHint } : {}),
   }
@@ -150,7 +170,10 @@ function nestedSessionInfo(record: RecordLike): SessionInfo | null {
     if (!nested || typeof nested !== 'object' || Array.isArray(nested)) continue
     const nestedRecord = nested as RecordLike
     const id = recordValue(nestedRecord, ['id', ...SESSION_ID_KEYS])
-    if (id) return { id, title: recordValue(nestedRecord, TITLE_KEYS) || undefined }
+    if (id) {
+      const currentMessageId = recordValue(nestedRecord, CURRENT_MESSAGE_ID_KEYS) || undefined
+      return { id, title: recordValue(nestedRecord, TITLE_KEYS) || undefined, ...(currentMessageId ? { currentMessageId } : {}) }
+    }
   }
   return null
 }
@@ -159,12 +182,17 @@ function sessionInfo(record: RecordLike): SessionInfo | null {
   const nested = nestedSessionInfo(record)
   if (nested) return nested
   const id = recordValue(record, SESSION_ID_KEYS)
-  return id ? { id, title: recordValue(record, TITLE_KEYS) || undefined } : null
+  if (!id) return null
+  const currentMessageId = recordValue(record, CURRENT_MESSAGE_ID_KEYS) || undefined
+  return { id, title: recordValue(record, TITLE_KEYS) || undefined, ...(currentMessageId ? { currentMessageId } : {}) }
 }
 
 function sessionInfoForMessageArray(record: RecordLike): SessionInfo | null {
   const nested = nestedSessionInfo(record)
-  if (nested) return nested
+  if (nested) {
+    const currentMessageId = nested.currentMessageId || recordValue(record, CURRENT_MESSAGE_ID_KEYS) || undefined
+    return { ...nested, ...(currentMessageId ? { currentMessageId } : {}) }
+  }
   const direct = sessionInfo(record)
   if (direct) return direct
   // A generic `id` is safe only on a titled record that directly owns the
@@ -194,6 +222,7 @@ function sessionIdFromUrl(url: string): string | null {
 interface Candidate {
   sessionId?: string
   title?: string
+  currentMessageId?: string
   messages: CapturedMessage[]
 }
 
@@ -221,7 +250,12 @@ function collectCandidates(
     collectMessageRecords(value, messages)
     if (!messages.length) continue
     const info = sessionInfoForMessageArray(record) ?? ownSession
-    const candidate: Candidate = { sessionId: info?.id, title: info?.title, messages: orderCapturedMessages(messages) }
+    const candidate: Candidate = {
+      sessionId: info?.id,
+      title: info?.title,
+      ...(info?.currentMessageId ? { currentMessageId: info.currentMessageId } : {}),
+      messages: orderCapturedMessages(messages),
+    }
     ;(candidate.sessionId ? explicit : unscoped).push(candidate)
   }
   Object.entries(record).forEach(([key, value]) => {
@@ -325,6 +359,7 @@ function mergeCandidate(existing: Candidate | undefined, incoming: Candidate): C
   return {
     sessionId: incoming.sessionId,
     title: incoming.title || existing.title,
+    currentMessageId: incoming.currentMessageId || existing.currentMessageId,
     messages: mergeCapturedMessages(existing.messages, incoming.messages),
   }
 }
@@ -352,10 +387,65 @@ export function extractConversationSnapshots(payload: unknown, url = ''): Conver
   return [...grouped.values()].map((candidate) => ({
     sessionId: candidate.sessionId as string,
     ...(candidate.title ? { title: candidate.title } : {}),
+    ...(candidate.currentMessageId ? { currentMessageId: candidate.currentMessageId } : {}),
     messages: orderCapturedMessages(candidate.messages),
   }))
 }
 
-export function toExportedMessages(messages: CapturedMessage[]): ExportedMessage[] {
-  return orderCapturedMessages(messages).map(({ role, content, timestamp }) => ({ role, content, ...(timestamp ? { timestamp } : {}) }))
+/**
+ * Select the branch visible in DeepSeek and return it from root to leaf.
+ *
+ * `chat_messages` is a set, not a transcript: lazy loading and cache merges
+ * are free to return it in any order and regenerated answers create siblings.
+ * The web client follows `current_message_id` through `parent_id`; mirroring
+ * that rule prevents a newest-page-first response from becoming a reversed
+ * export.  When the current pointer is absent, choose the longest available
+ * parent chain as a deterministic fallback.
+ */
+export function selectConversationPath(messages: CapturedMessage[], currentMessageId?: string): CapturedMessage[] {
+  if (!messages.length) return []
+  const ordered = orderCapturedMessages(messages)
+  const identified = ordered.filter((message) => Boolean(message.messageId))
+  const withParents = identified.filter((message) => message.parentId !== undefined)
+  // Do not discard data from providers that expose IDs but no usable tree.
+  // DeepSeek includes parent_id on every message (including null roots), so a
+  // small amount of coverage is a reliable signal that tree reconstruction is
+  // intended. A valid current pointer is enough to opt in for short snapshots.
+  if (withParents.length < 2 || (withParents.length / Math.max(identified.length, 1) < 0.5 && !currentMessageId)) return ordered
+
+  const byId = new Map<string, CapturedMessage>()
+  ordered.forEach((message) => {
+    if (message.messageId) byId.set(message.messageId, message)
+  })
+  const childIds = new Set<string>()
+  ordered.forEach((message) => {
+    if (message.parentId && byId.has(message.parentId)) childIds.add(message.parentId)
+  })
+  const candidateLeaves = identified.filter((message) => message.messageId && !childIds.has(message.messageId))
+  const pathFromLeaf = (leaf: CapturedMessage | undefined): CapturedMessage[] => {
+    if (!leaf?.messageId) return []
+    const path: CapturedMessage[] = []
+    const visited = new Set<string>()
+    let cursor: CapturedMessage | undefined = leaf
+    while (cursor?.messageId && !visited.has(cursor.messageId)) {
+      visited.add(cursor.messageId)
+      path.push(cursor)
+      if (!cursor.parentId) break
+      cursor = byId.get(cursor.parentId)
+      if (!cursor) break
+    }
+    path.reverse()
+    return path
+  }
+
+  const selectedPath = currentMessageId && byId.has(currentMessageId)
+    ? pathFromLeaf(byId.get(currentMessageId))
+    : candidateLeaves
+      .map((leaf) => ({ path: pathFromLeaf(leaf), position: ordered.indexOf(leaf) }))
+      .sort((left, right) => right.path.length - left.path.length || right.position - left.position)[0]?.path ?? []
+  return selectedPath.length ? selectedPath : ordered
+}
+
+export function toExportedMessages(messages: CapturedMessage[], currentMessageId?: string): ExportedMessage[] {
+  return selectConversationPath(messages, currentMessageId).map(({ role, content, timestamp }) => ({ role, content, ...(timestamp ? { timestamp } : {}) }))
 }
