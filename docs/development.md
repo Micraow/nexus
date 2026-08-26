@@ -21,8 +21,10 @@ sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
 Arch Linux：
 
 ```bash
-sudo pacman -S --needed webkit2gtk-4.1 base-devel curl wget file xdotool openssl appmenu-gtk-module librsvg
+sudo pacman -S --needed webkit2gtk-4.1 base-devel curl wget file xdotool openssl appmenu-gtk-module librsvg wl-clipboard xclip
 ```
+
+`wl-clipboard`（Wayland）和 `xclip`（X11/XWayland）用于桌面端剪贴板的可靠回退；如果系统不使用它们，应用仍会尝试 Tauri 原生剪贴板插件。
 
 Windows 10/11 自带 WebView2 运行时，另需安装 Visual Studio Build Tools（C++ 工作负载）即可。
 

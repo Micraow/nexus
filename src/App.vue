@@ -49,7 +49,7 @@ import { serializeConfig } from '@/services/config'
 import { saveTextFile } from '@/services/files'
 import type { SaveFileRequest } from '@/services/files'
 import { renderMarkdown } from '@/services/markdown'
-import { writeText } from '@tauri-apps/plugin-clipboard-manager'
+import { copyToClipboard } from '@/services/clipboard'
 import { invokeTauri, isTauriRuntime } from '@/services/tauri'
 import { useWorkspaceStore } from '@/stores/workspace'
 import type { AppConfig, Concept, GraphNodeType, KnowledgeUnit, LLMTask, MaintenanceSuggestion, Message, NavTreeNode, Session, TaskType } from '@/types/domain'
@@ -851,16 +851,8 @@ function removePhrase(id: string): void {
 }
 
 async function copyText(value: string, message = '已复制到剪贴板'): Promise<void> {
-  if (isTauriRuntime()) {
-    try {
-      await writeText(value)
-      notify(message)
-    } catch {
-      notify('复制失败，请手动选择文本')
-    }
-    return
-  }
-  navigator.clipboard?.writeText(value).then(() => notify(message)).catch(() => notify('复制失败，请手动选择文本'))
+  const copied = await copyToClipboard(value)
+  notify(copied ? message : '复制失败，请手动选择文本')
 }
 
 function renderedMessageContent(content: string): string {

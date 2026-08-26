@@ -2,7 +2,11 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::fs;
+#[cfg(target_os = "linux")]
+use std::io::Write;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 
@@ -170,6 +174,83 @@ fn list_system_fonts() -> Result<Vec<String>, String> {
     Ok(families.into_iter().collect())
 }
 
+/// Use the desktop clipboard utilities when available. This is a fallback for
+/// Linux WebKit/Wayland sessions where a native clipboard provider can accept
+/// data but not keep ownership after the Tauri command returns.
+#[tauri::command]
+fn system_copy_text(text: String) -> Result<bool, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+        let candidates: &[(&str, &[&str])] = if wayland {
+            &[
+                ("wl-copy", &["--type", "text/plain"]),
+                ("xclip", &["-selection", "clipboard"]),
+                ("xsel", &["--clipboard", "--input"]),
+            ]
+        } else {
+            &[
+                ("xclip", &["-selection", "clipboard"]),
+                ("xsel", &["--clipboard", "--input"]),
+                ("wl-copy", &["--type", "text/plain"]),
+            ]
+        };
+        let mut errors = Vec::new();
+        for (program, args) in candidates {
+            let mut child = match Command::new(program).args(*args).stdin(Stdio::piped()).spawn() {
+                Ok(child) => child,
+                Err(error) => {
+                    errors.push(format!("{program}: {error}"));
+                    continue;
+                }
+            };
+            let write_result = child
+                .stdin
+                .take()
+                .ok_or_else(|| format!("{program} 没有可写入的 stdin"))
+                .and_then(|mut stdin| stdin.write_all(text.as_bytes()).map_err(|error| error.to_string()));
+            if let Err(error) = write_result {
+                let _ = child.kill();
+                errors.push(format!("{program}: 写入失败：{error}"));
+                continue;
+            }
+
+            // wl-copy forks a small provider and exits; waiting here confirms
+            // that the provider accepted the bytes. xclip/xsel stay alive as
+            // the selection owner, so leave a running child detached.
+            if *program == "wl-copy" {
+                match child.wait() {
+                    Ok(status) if status.success() => return Ok(true),
+                    Ok(status) => errors.push(format!("{program} 退出码 {status}")),
+                    Err(error) => errors.push(format!("{program}: 等待失败：{error}")),
+                }
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+                match child.try_wait() {
+                    Ok(None) => return Ok(true),
+                    Ok(Some(status)) if status.success() => return Ok(true),
+                    Ok(Some(status)) => errors.push(format!("{program} 退出码 {status}")),
+                    Err(error) => errors.push(format!("{program}: 检查进程失败：{error}")),
+                }
+            }
+        }
+        if errors.is_empty() {
+            return Ok(false);
+        }
+        // Returning false lets the frontend try the Tauri plugin and WebKit
+        // paths. Keep command diagnostics out of the user-facing clipboard
+        // message, but preserve them for a developer console if needed.
+        eprintln!("[nexus] system clipboard helpers unavailable: {}", errors.join("; "));
+        Ok(false)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = text;
+        Ok(false)
+    }
+}
+
 fn main() {
     configure_input_method();
     tauri::Builder::default()
@@ -185,7 +266,8 @@ fn main() {
             restore_database_backup,
             read_config,
             write_config,
-            list_system_fonts
+            list_system_fonts,
+            system_copy_text
         ])
         .run(tauri::generate_context!())
         .expect("error while running Nexus Weave");
