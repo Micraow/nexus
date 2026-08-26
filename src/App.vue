@@ -292,11 +292,16 @@ const filteredConcepts = computed(() => {
 })
 const selectedConceptRelations = computed(() => selectedConcept.value ? store.relations.filter((relation) => relation.parentConceptId === selectedConcept.value?.id || relation.childConceptId === selectedConcept.value?.id) : [])
 const selectedSession = computed(() => store.sessions.find((session) => session.id === store.selectedSessionId) ?? null)
-const linkedUnitCount = (conceptId: string): number => store.unitConcepts.filter((link) => link.conceptId === conceptId).length
+const linkedUnitCount = (conceptId: string): number => {
+  const sessionIds = new Set(store.sessionConcepts.filter((link) => link.conceptId === conceptId).map((link) => link.sessionId))
+  return store.units.filter((unit) => sessionIds.has(unit.sessionId) || store.unitConcepts.some((link) => link.unitId === unit.id && link.conceptId === conceptId)).length
+}
 const conceptUnitCollator = new Intl.Collator('zh-Hans-CN')
 const selectedConceptUnits = computed(() => {
   if (!selectedConcept.value) return []
-  const units = store.units.filter((unit) => store.unitConcepts.some((link) => link.unitId === unit.id && link.conceptId === selectedConcept.value?.id))
+  const conceptId = selectedConcept.value.id
+  const sessionIds = new Set(store.sessionConcepts.filter((link) => link.conceptId === conceptId).map((link) => link.sessionId))
+  const units = store.units.filter((unit) => sessionIds.has(unit.sessionId) || store.unitConcepts.some((link) => link.unitId === unit.id && link.conceptId === conceptId))
   return units.sort((left, right) => {
     if (conceptUnitSort.value === 'title') return conceptUnitCollator.compare(left.title ?? '', right.title ?? '')
     if (conceptUnitSort.value === 'created') return right.createdAt.localeCompare(left.createdAt)
