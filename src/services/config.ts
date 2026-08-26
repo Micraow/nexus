@@ -21,6 +21,10 @@ type YamlConfig = {
     theme?: AppConfig['ui']['theme']
     reduced_motion?: boolean
     reducedMotion?: boolean
+    font_family?: AppConfig['ui']['fontFamily']
+    fontFamily?: AppConfig['ui']['fontFamily']
+    font_size?: number
+    fontSize?: number
     graph?: {
       show_units?: boolean
       showUnits?: boolean
@@ -55,6 +59,8 @@ export function serializeConfig(config: AppConfig): string {
     ui: {
       theme: config.ui.theme,
       reduced_motion: config.ui.reducedMotion,
+      font_family: config.ui.fontFamily,
+      font_size: config.ui.fontSize,
       graph: {
         show_units: config.ui.graph.showUnits,
         show_messages: config.ui.graph.showMessages,
@@ -89,6 +95,12 @@ export function parseConfig(value: unknown): Partial<AppConfig> {
     ui: {
       theme: raw.ui?.theme ?? 'system',
       reducedMotion: raw.ui?.reduced_motion ?? raw.ui?.reducedMotion ?? false,
+      fontFamily: ['system-sans', 'chinese-sans', 'system-serif', 'system-mono'].includes(raw.ui?.font_family ?? raw.ui?.fontFamily ?? '')
+        ? raw.ui?.font_family ?? raw.ui?.fontFamily as AppConfig['ui']['fontFamily']
+        : 'system-sans',
+      fontSize: Number.isFinite(Number(raw.ui?.font_size ?? raw.ui?.fontSize))
+        ? Math.min(20, Math.max(13, Number(raw.ui?.font_size ?? raw.ui?.fontSize)))
+        : 15,
       graph: {
         showUnits: raw.ui?.graph?.show_units ?? raw.ui?.graph?.showUnits ?? false,
         showMessages: raw.ui?.graph?.show_messages ?? raw.ui?.graph?.showMessages ?? false,

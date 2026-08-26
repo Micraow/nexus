@@ -1,6 +1,8 @@
 :root {
   color-scheme: light;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --app-font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --app-font-size: 15px;
+  font-family: var(--app-font-family);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   --bg: #f3f6f9;
@@ -63,7 +65,7 @@
 * { box-sizing: border-box; }
 html, body, #app { margin: 0; min-width: 320px; min-height: 100%; width: 100%; }
 html { overflow-y: scroll; }
-body { background: var(--bg); color: var(--text); font-size: 15px; line-height: 1.55; }
+body { background: var(--bg); color: var(--text); font-size: var(--app-font-size); line-height: 1.55; }
 button, input, textarea, select { font: inherit; }
 button { border: 0; cursor: pointer; color: inherit; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 3px solid color-mix(in srgb, var(--primary) 30%, transparent); outline-offset: 2px; }
@@ -303,6 +305,13 @@ textarea { resize: vertical; }
   .topbar { display: grid; gap: 13px; }.topbar-actions { justify-content: flex-start; }.content-shell { padding: 18px 14px 32px; }.metric-grid { gap: 8px; }.metric-card { min-height: 125px; padding: 13px; }.metric-card strong { font-size: 26px; }.hero-band { padding: 21px; }.hero-band h2 { font-size: 25px; }.hero-actions { flex-wrap: wrap; }.workflow-track { overflow-x: auto; padding-bottom: 9px; }.workflow-step { min-width: 95px; }.new-chat-panel.surface-section { padding-top: 46px; }.chat-welcome h2 { font-size: 28px; }.chat-welcome p { max-width: 280px; }.chat-composer { margin-top: 24px; }.chat-composer textarea { min-height: 120px; }.chat-composer-topbar { flex-wrap: wrap; }.chat-select select { max-width: 130px; }.chat-local-note { display: none; }.overview-support-grid .support-actions { grid-template-columns: 1fr; }.graph-main, .graph-canvas { min-height: 500px; height: 500px; }.graph-layout { min-height: 560px; height: 560px; }.graph-controls { right: 10px; bottom: 10px; width: min(300px, calc(100% - 20px)); max-height: calc(100% - 20px); }.graph-controls { display: block; }.graph-controls .toggle-row { border-bottom: 1px solid var(--line); }.graph-mini-stats { padding-top: 15px; margin-top: 5px; border-top: 1px solid var(--line); }.graph-control-note { margin-top: 12px; }.page-toolbar { align-items: flex-start; flex-direction: column; }.toolbar-actions { width: 100%; flex-wrap: wrap; }.compact-search { flex: 1; }.compact-search input { width: 100%; }.session-expanded { padding-left: 18px; }.settings-actions, .response-actions { align-items: stretch; flex-direction: column; }.form-grid { grid-template-columns: 1fr; }.form-grid .span-two { grid-column: auto; }.task-meta-grid { grid-template-columns: 1fr; }.detail-drawer { top: 126px; }.context-drawer { left: 0; width: 100%; }.toast { right: 14px; bottom: 14px; left: 14px; justify-content: center; }.topbar-title h1 { font-size: 20px; }
 }
 
+.font-settings { display: grid; gap: 12px; margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--line); }
+.font-settings label { display: grid; gap: 6px; color: var(--muted); font-size: 11px; }
+.font-settings label > span { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.font-settings output { color: var(--primary-strong); font-variant-numeric: tabular-nums; }
+.font-settings select { width: 100%; height: 37px; padding: 0 9px; font-size: 12px; }
+.font-settings input[type="range"] { width: 100%; accent-color: var(--primary); }
+
 /* Readable Markdown and task text: keep code visibly distinct without tiny serif fallbacks. */
 .md-body a { text-decoration-line: underline; text-decoration-style: solid; text-decoration-color: var(--primary); text-decoration-thickness: 2px; text-underline-offset: 3px; }
 .md-body code { color: var(--text); font-family: var(--app-mono-font-family, ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace); font-size: .92em; font-weight: 500; font-variant-ligatures: none; }
@@ -460,3 +469,7 @@ body.fullscreen-active { overflow: hidden; }
   .graph-controls, .graph-controls-launcher { right: 10px; bottom: 10px; }
   .graph-controls { width: min(300px, calc(100% - 20px)); max-height: calc(100% - 20px); }
 }
+
+/* Final reading scale override so responsive defaults do not replace the user's setting. */
+.md-body { font-size: clamp(12px, calc(var(--app-font-size, 15px) * .8), 20px); }
+.fullscreen-message .md-body { font-size: clamp(14px, calc(var(--app-font-size, 15px) * 1.07), 24px); }

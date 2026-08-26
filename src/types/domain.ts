@@ -269,6 +269,8 @@ export interface AppConfig {
   ui: {
     theme: 'light' | 'dark' | 'system'
     reducedMotion: boolean
+    fontFamily: 'system-sans' | 'chinese-sans' | 'system-serif' | 'system-mono'
+    fontSize: number
     graph: { showUnits: boolean; showMessages: boolean; showProposed: boolean; showRetainedSessions: boolean }
   }
   storage: { databasePath: string }

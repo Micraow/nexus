@@ -43,7 +43,7 @@ type Row = Record<string, unknown>
 const DEFAULT_CONFIG: AppConfig = {
   llm: { mode: null, defaultProvider: null, concurrency: 2, tokenBudget: 8000, providers: [], taskOverrides: {} },
   prompts: { overrideDir: '' },
-  ui: { theme: 'system', reducedMotion: false, graph: { showUnits: false, showMessages: false, showProposed: false, showRetainedSessions: false } },
+  ui: { theme: 'system', reducedMotion: false, fontFamily: 'system-sans', fontSize: 15, graph: { showUnits: false, showMessages: false, showProposed: false, showRetainedSessions: false } },
   storage: { databasePath: '' },
 }
 
