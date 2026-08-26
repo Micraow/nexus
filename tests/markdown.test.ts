@@ -20,6 +20,15 @@ describe('renderMarkdown', () => {
     expect(html).toContain('<blockquote>')
   })
 
+  it('renders pipe tables and keeps cell markdown interactive', () => {
+    const html = renderMarkdown('| 项目 | 说明 |\n| --- | :---: |\n| `code` | [文档](https://example.com) |')
+    expect(html).toContain('<table>')
+    expect(html).toContain('<thead>')
+    expect(html).toContain('<th>项目</th>')
+    expect(html).toContain('<code>code</code>')
+    expect(html).toContain('href="https://example.com"')
+  })
+
   it('renders fenced code blocks with escaped content', () => {
     const html = renderMarkdown('```js\nconst a = "<b>";\n```')
     expect(html).toContain('<pre><code>')

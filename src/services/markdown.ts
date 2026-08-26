@@ -116,6 +116,36 @@ function renderInline(tokens: InlineToken[]): string {
   return tokens.map((token) => token.type === 'text' ? applyEmphasis(token.value) : token.value).join('')
 }
 
+function tableCells(line: string): string[] {
+  let value = line.trim()
+  if (value.startsWith('|')) value = value.slice(1)
+  if (value.endsWith('|') && !value.endsWith('\\|')) value = value.slice(0, -1)
+  const cells: string[] = []
+  let current = ''
+  let escaped = false
+  for (const character of value) {
+    if (character === '|' && !escaped) {
+      cells.push(current.trim())
+      current = ''
+      continue
+    }
+    if (character === '\\' && !escaped) {
+      escaped = true
+      current += character
+      continue
+    }
+    escaped = false
+    current += character
+  }
+  cells.push(current.trim())
+  return cells.map((cell) => cell.replace(/\\\|/g, '|'))
+}
+
+function isTableSeparator(line: string): boolean {
+  const cells = tableCells(line)
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell))
+}
+
 /**
  * Render untrusted conversation content as presentation-only Markdown.
  * Every character is escaped before any markup is produced, so content can
@@ -144,6 +174,7 @@ function renderBlocks(text: string, matcher: ConceptMatcher | null): string {
   let paragraph: string[] = []
   let list: { ordered: boolean; items: string[] } | null = null
   let quote: string[] = []
+  let skippedTableLines = 0
 
   const flushParagraph = () => {
     if (paragraph.length) {
@@ -171,7 +202,11 @@ function renderBlocks(text: string, matcher: ConceptMatcher | null): string {
     flushQuote()
   }
 
-  lines.forEach((rawLine) => {
+  lines.forEach((rawLine, lineIndex) => {
+    if (skippedTableLines > 0) {
+      skippedTableLines -= 1
+      return
+    }
     const trimmed = rawLine.trim()
     if (!trimmed) {
       flushAll()
@@ -186,6 +221,27 @@ function renderBlocks(text: string, matcher: ConceptMatcher | null): string {
     if (displayPlaceholder) {
       flushAll()
       blocks.push(displayPlaceholder.html)
+      return
+    }
+    const separator = lines[lineIndex + 1]?.trim() ?? ''
+    if (tableCells(trimmed).length > 1 && isTableSeparator(separator)) {
+      flushAll()
+      const headers = tableCells(trimmed)
+      const rows: string[][] = []
+      let nextIndex = lineIndex + 2
+      while (nextIndex < lines.length) {
+        const candidate = lines[nextIndex].trim()
+        if (!candidate || tableCells(candidate).length < 1 || !candidate.includes('|')) break
+        rows.push(tableCells(candidate))
+        nextIndex += 1
+      }
+      const headerHtml = headers.map((cell) => `<th>${renderInline(tokenizeInline(cell, matcher))}</th>`).join('')
+      const rowHtml = rows.map((row) => {
+        const cells = headers.map((_, index) => row[index] ?? '')
+        return `<tr>${cells.map((cell) => `<td>${renderInline(tokenizeInline(cell, matcher))}</td>`).join('')}</tr>`
+      }).join('')
+      blocks.push(`<table><thead><tr>${headerHtml}</tr></thead><tbody>${rowHtml}</tbody></table>`)
+      skippedTableLines = nextIndex - lineIndex - 1
       return
     }
     const heading = trimmed.match(/^(#{1,6})\s+(.*)$/)
