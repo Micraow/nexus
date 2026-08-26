@@ -1,20 +1,13 @@
 import { collectSessionEntries, mergeSessionEntries, sessionEntryFromUrl } from './session-discovery'
+import { extractConversationSnapshots, mergeCapturedMessages, toExportedMessages, type CapturedMessage } from './message-extraction'
 import type { ExportedConversation, ExportedMessage, ListProgress, SessionEntry, WorkbenchRequest } from './types'
-
-interface CapturedMessage {
-  role?: unknown
-  sender?: unknown
-  content?: unknown
-  insert_time?: unknown
-  created_at?: unknown
-}
 
 const SESSION_HREF_PATTERN = /\/(?:a\/)?chat\/s\/([A-Za-z0-9_-]+)/
 const CAPTURE_EVENT = 'nexus:captured-json'
 const NOISE_TEXTS = new Set(['复制', '重新生成', '编辑', '删除', '继续生成'])
 
 /** session id -> normalized messages captured from network responses. */
-const captureCache = new Map<string, ExportedMessage[]>()
+const captureCache = new Map<string, CapturedMessage[]>()
 const sessionCache = new Map<string, SessionEntry>()
 let scrollAttempts = 0
 let scrollNoGrowthAttempts = 0
@@ -24,54 +17,6 @@ function resetListScan(): void {
   scrollNoGrowthAttempts = 0
   const container = sidebarScrollContainer()
   if (container) container.scrollTop = 0
-}
-
-function normalizeRole(value: unknown): ExportedMessage['role'] | null {
-  const role = String(value ?? '').toLowerCase()
-  if (role === 'user' || role === 'human') return 'user'
-  if (role === 'assistant' || role === 'ai' || role === 'bot' || role === 'model') return 'assistant'
-  if (role === 'system') return 'system'
-  return null
-}
-
-function normalizeTimestamp(value: unknown): string | undefined {
-  if (typeof value !== 'string' && typeof value !== 'number') return undefined
-  const numeric = typeof value === 'number' && value < 1_000_000_000_000 ? value * 1000 : value
-  const date = new Date(numeric)
-  return Number.isNaN(date.getTime()) ? undefined : date.toISOString()
-}
-
-function collectMessages(node: unknown, out: Array<{ message: ExportedMessage; at?: string; order: number }>): number {
-  if (Array.isArray(node)) {
-    node.forEach((item) => collectMessages(item, out))
-    return out.length
-  }
-  if (!node || typeof node !== 'object') return out.length
-  const record = node as Record<string, unknown>
-  const role = normalizeRole(record.role ?? record.sender)
-  let content = typeof record.content === 'string' ? record.content : ''
-  if (role && Array.isArray(record.fragments)) {
-    const expectedType = role === 'user' ? 'REQUEST' : 'RESPONSE'
-    const fragmentContent = record.fragments
-      .filter((fragment): fragment is Record<string, unknown> => Boolean(fragment && typeof fragment === 'object'))
-      .filter((fragment) => String(fragment.type ?? '').toUpperCase() === expectedType)
-      .map((fragment) => typeof fragment.content === 'string' ? fragment.content : '')
-      .filter(Boolean)
-      .join('\n\n')
-    if (fragmentContent) content = fragmentContent
-  }
-  if (role && content.trim()) {
-    out.push({
-      message: { role, content: content.trim() },
-      at: normalizeTimestamp(record.insert_time ?? record.created_at),
-      order: out.length,
-    })
-    return out.length
-  }
-  Object.values(record).forEach((value) => {
-    if (value && typeof value === 'object') collectMessages(value, out)
-  })
-  return out.length
 }
 
 function storeCaptured(url: string, body: string): void {
@@ -86,56 +31,18 @@ function storeCaptured(url: string, body: string): void {
     const existing = sessionCache.get(entry.externalSessionId)
     sessionCache.set(entry.externalSessionId, { externalSessionId: entry.externalSessionId, title: entry.title || existing?.title || '' })
   })
-  const collected: Array<{ message: ExportedMessage; at?: string; order: number }> = []
-  collectMessages(parsed, collected)
-  if (!collected.length) return
-  const sessionIds = new Set<string>()
-  const urlMatch = url.match(SESSION_HREF_PATTERN)
-  if (urlMatch) sessionIds.add(urlMatch[1])
-  try {
-    const querySessionId = new URL(url, window.location.href).searchParams.get('chat_session_id')
-    if (querySessionId) sessionIds.add(querySessionId)
-  } catch {
-    // Ignore malformed response URLs.
-  }
-  const huntIds = (node: unknown): void => {
-    if (Array.isArray(node)) return void node.forEach(huntIds)
-    if (!node || typeof node !== 'object') return
-    Object.entries(node as Record<string, unknown>).forEach(([key, value]) => {
-      if ((key === 'chat_session_id' || key === 'session_id') && typeof value === 'string' && value.length >= 8) sessionIds.add(value)
-      if (value && typeof value === 'object') huntIds(value)
-    })
-  }
-  huntIds(parsed)
-  if (!sessionIds.size) discovered.forEach((entry) => sessionIds.add(entry.externalSessionId))
-  if (!sessionIds.size) return
-  const messages = collected
-    .sort((left, right) => {
-      if (left.at && right.at) return left.at.localeCompare(right.at)
-      return left.order - right.order
-    })
-    .map((entry) => ({ role: entry.message.role, content: entry.message.content, ...(entry.at ? { timestamp: entry.at } : {}) }))
-  sessionIds.forEach((id) => captureCache.set(id, messages))
-}
-
-function findConversationPayload(node: unknown, sessionId: string, depth = 0): Record<string, unknown> | null {
-  if (!node || typeof node !== 'object' || depth > 10) return null
-  if (Array.isArray(node)) {
-    for (const item of node) {
-      const found = findConversationPayload(item, sessionId, depth + 1)
-      if (found) return found
+  const snapshots = extractConversationSnapshots(parsed, url)
+  snapshots.forEach((snapshot) => {
+    const existing = captureCache.get(snapshot.sessionId) ?? []
+    captureCache.set(snapshot.sessionId, mergeCapturedMessages(existing, snapshot.messages))
+    const previous = sessionCache.get(snapshot.sessionId)
+    if (snapshot.title || previous) {
+      sessionCache.set(snapshot.sessionId, {
+        externalSessionId: snapshot.sessionId,
+        title: snapshot.title || previous?.title || '',
+      })
     }
-    return null
-  }
-  const record = node as Record<string, unknown>
-  const session = record.chat_session
-  const messages = record.chat_messages
-  if (session && typeof session === 'object' && (session as Record<string, unknown>).id === sessionId && Array.isArray(messages) && messages.length) return record
-  for (const value of Object.values(record)) {
-    const found = findConversationPayload(value, sessionId, depth + 1)
-    if (found) return found
-  }
-  return null
+  })
 }
 
 async function readIndexedDbSession(sessionId: string): Promise<boolean> {
@@ -164,17 +71,11 @@ async function readIndexedDbSession(sessionId: string): Promise<boolean> {
             request.onerror = () => resolve(values)
           })
           for (const value of records) {
-            const payload = findConversationPayload(value, sessionId)
-            if (!payload) continue
-            const messages: Array<{ message: ExportedMessage; at?: string; order: number }> = []
-            collectMessages(payload.chat_messages, messages)
-            if (!messages.length) continue
-            const session = payload.chat_session as Record<string, unknown>
-            captureCache.set(sessionId, messages.sort((left, right) => {
-              if (left.at && right.at) return left.at.localeCompare(right.at)
-              return left.order - right.order
-            }).map((entry) => ({ role: entry.message.role, content: entry.message.content, ...(entry.at ? { timestamp: entry.at } : {}) })))
-            sessionCache.set(sessionId, { externalSessionId: sessionId, title: typeof session.title === 'string' ? session.title.trim().slice(0, 120) : '' })
+            const snapshot = extractConversationSnapshots(value, `https://chat.deepseek.com/a/chat/s/${sessionId}`).find((item) => item.sessionId === sessionId)
+            if (!snapshot) continue
+            const existing = captureCache.get(sessionId) ?? []
+            captureCache.set(sessionId, mergeCapturedMessages(existing, snapshot.messages))
+            if (snapshot.title) sessionCache.set(sessionId, { externalSessionId: sessionId, title: snapshot.title })
             return true
           }
         }
@@ -197,6 +98,20 @@ window.addEventListener(CAPTURE_EVENT, (event) => {
 
 function currentSessionId(): string | null {
   return document.location.pathname.match(SESSION_HREF_PATTERN)?.[1] ?? null
+}
+
+function captureFingerprint(messages: CapturedMessage[]): string {
+  if (!messages.length) return ''
+  const first = messages[0]
+  const last = messages[messages.length - 1]
+  return [
+    messages.length,
+    first.messageId ?? '',
+    first.content.length,
+    last.messageId ?? '',
+    last.content.length,
+    last.timestamp ?? '',
+  ].join('|')
 }
 
 function sidebarAnchors(): HTMLAnchorElement[] {
@@ -266,17 +181,37 @@ function isSessionReady(sessionId: string | null, baselineMarkdownCount = 0): bo
 async function waitForSession(sessionId: string | null, timeoutMs = 20_000): Promise<boolean> {
   if (sessionId && !captureCache.has(sessionId)) await readIndexedDbSession(sessionId)
   const deadline = Date.now() + timeoutMs
-  let idbRetried = false
+  let lastFingerprint = ''
+  let stableSince = 0
+  let finalIdbRead = false
   while (Date.now() < deadline) {
-    if (sessionId && captureCache.has(sessionId)) return true
-    if (!idbRetried && Date.now() + 10_000 < deadline) {
-      idbRetried = true
-      await readIndexedDbSession(sessionId as string)
-      if (captureCache.has(sessionId as string)) return true
+    if (sessionId) {
+      const captured = captureCache.get(sessionId)
+      if (captured?.length) {
+        const fingerprint = captureFingerprint(captured)
+        if (fingerprint !== lastFingerprint) {
+          lastFingerprint = fingerprint
+          stableSince = Date.now()
+        }
+        // A history response can arrive in several windows. Wait for a quiet
+        // period so a short first window is not exported as the full session.
+        if (stableSince && Date.now() - stableSince >= 900) {
+          if (!finalIdbRead) {
+            finalIdbRead = true
+            await readIndexedDbSession(sessionId)
+            continue
+          }
+          return true
+        }
+      }
     }
     if (currentSessionId() === sessionId && document.querySelectorAll('.ds-markdown').length > 0) {
-      await wait(500)
-      return currentSessionId() === sessionId && (Boolean(sessionId && captureCache.has(sessionId)) || document.querySelectorAll('.ds-markdown').length > 0)
+      // DOM content is the fallback only when no network/IDB snapshot exists;
+      // a partial cache must continue settling instead of masking later data.
+      if (!(sessionId && captureCache.has(sessionId))) {
+        await wait(500)
+        return currentSessionId() === sessionId && (Boolean(sessionId && captureCache.has(sessionId)) || document.querySelectorAll('.ds-markdown').length > 0)
+      }
     }
     await wait(350)
   }
@@ -324,7 +259,7 @@ async function exportSession(externalSessionId: string | null): Promise<Exported
   } else {
     await waitForSession(targetId, 4_000)
   }
-  const messages = captureCache.get(targetId) ?? []
+  const messages = toExportedMessages(captureCache.get(targetId) ?? [])
   const domMessages = messages.length ? [] : extractMessagesFromDom()
   const finalMessages = messages.length ? messages : domMessages
   if (!finalMessages.length) throw new Error('未能读取到消息内容：需要先完整打开该会话一次')

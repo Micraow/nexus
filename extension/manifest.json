@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Nexus 织知导出",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "把 DeepSeek 网页端的历史会话导出为 Nexus 织知桌面版可导入的标准 JSON。",
   "minimum_chrome_version": "111",
   "background": {
