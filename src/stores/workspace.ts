@@ -2199,6 +2199,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           if (!content) throw new Error('Provider 没有返回可用内容')
           const result = applyTaskResult(taskId, content)
           if (result.continued) {
+            // Disclosure continuation re-queues the same task. Release this
+            // request's guard before immediately starting the next round.
+            executingTaskIds.delete(taskId)
             return await executeTask(taskId)
           }
           return result.ok ? { ok: true } : { ok: false, error: result.errors[0] }

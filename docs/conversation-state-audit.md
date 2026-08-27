@@ -9,6 +9,7 @@
 - conversation 结果先校验 `answer`、可选 `units`、Session/Message 归属、Concept ID、标题/摘要和版本；成功后在同一事务中写入 assistant Message、导航树分支、可选 KnowledgeUnit、多主题归属、Session 标题/滚动摘要和准确计数。`units: []` 合法。
 - `applyTaskResult()` 拒绝对 `success`、`cancelled`、`stale` 等终态任务重复应用；需要再次处理时必须先重新排队。任务详情仅对 `pending`、`running`、`needs_review` 显示“校验并应用”。
 - API 任务只在明确执行或启动队列时发出请求；Prompt 粘贴任务保持待处理，需人工粘贴并应用结果。导入提示使用“创建待处理任务”，不暗示已经发起网络请求。
+- API task 从任务中心和队列同时启动时由单 task in-flight 护栏合并为一次请求；`pending → running` 使用条件更新，取消不会被并发启动覆盖。
 - 同一 Session 同时只允许一个未完成 conversation task；页面和 store 都拦截 `pending`、`running`、`needs_review` 状态下的重复追问。追问 Prompt 携带当前导航路径、Session 标题/摘要和最近历史消息。
 - `[[nexus:existing:...]]` 与 `[[nexus:suggested:...]]` 标记由 Prompt 约定并由 Markdown renderer 渲染为蓝色/黄色下划线；已有主题点击打开详情，建议主题点击会把安全的探索问题填入当前会话输入，不会静默写入事实。
 - 探索树节点点击会定位到带有 `data-conversation-message` 的回答；活动对话只有顶部“全屏”入口，主题消息列表只有顶部“全屏查看全部对话”入口，并支持跨 Session 分页。
@@ -27,6 +28,6 @@
 
 ## Verification
 
-自动化测试覆盖主题跨 Session 证据范围、消息分页、旧 segmentation 迁移/恢复及无摘要阅读片段状态。2026-08-28 已通过 115 项测试、主应用与扩展类型检查、主应用与扩展构建及 `git diff --check`。
+自动化测试覆盖主题跨 Session 证据范围、消息分页、旧 segmentation 迁移/恢复、无摘要阅读片段状态及 API 任务重复启动护栏。2026-08-28 已通过 116 项测试、主应用与扩展类型检查、主应用与扩展构建及 `git diff --check`。
 
 隔离浏览器 fixture 已在 375×812、768×1024、1024×768、1440×900 四档视口完成渐进展开、递归收起、拖拽抑制、键盘操作、详情跳转、跨 Session 分页、建议主题预填和输入清空验收；无横向溢出、控制台错误或失败资源请求。`data/99-deepseek-export-2026-08-25.json` 只读解析为 99 个 Session、797 条 Message、1,433,985 个内容字符（按当前规则约 358,497 tokens）和 0 个导出错误，未导入业务数据库。
