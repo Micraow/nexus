@@ -46,7 +46,7 @@ describe('direct concept extraction import pipeline', () => {
   })
 
   it('uses chunk message IDs as targets and keeps chunk concepts out of session/unit links', () => {
-    store.updateConfig({ llm: { tokenBudget: 1000 } })
+    store.updateConfig({ llm: { ...store.config.llm, tokenBudget: 1000 } })
     const report = store.importJsonText(JSON.stringify(payload(8)))
     const originTasks = store.tasks.filter((task) => report.taskIds.includes(task.id) && task.type === 'origin_concepts')
     expect(originTasks.length).toBeGreaterThan(1)
