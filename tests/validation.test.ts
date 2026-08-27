@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseImportPayload, validateConceptIdList, validateConceptMemberships, validateDisclosureRequests, validateSegmentationResult, validateUnitText } from '@/services/validation'
+import { parseImportPayload, validateConceptIdList, validateConceptMemberships, validateDisclosureRequests, validateOriginConceptResult, validateSegmentationResult, validateUnitText } from '@/services/validation'
 
 describe('import validation', () => {
   it('accepts the documented DeepSeek payload and rejects unsupported roles', () => {
@@ -64,5 +64,30 @@ describe('import validation', () => {
     expect(invalid.some((issue) => issue.message.includes('不能重复'))).toBe(true)
     expect(invalid.some((issue) => issue.message.includes('不在当前目录'))).toBe(true)
     expect(validateConceptMemberships([{ target_type: 'message', target_id: 'm1', concept_id: 'c1' }], { targetIds: ['m1'], conceptIds: ['c1'] }).some((issue) => issue.message.includes('concept_ids'))).toBe(true)
+  })
+})
+
+describe('direct origin Concept response validation', () => {
+  it('validates response-local refs and Session/Message-only memberships', () => {
+    const valid = validateOriginConceptResult({
+      concepts: [{ client_ref: 'new:1', name: 'Clos 网络', summary: '多级、可扩展的互连拓扑', aliases: [] }],
+      memberships: [
+        { target_type: 'message', target_id: 'm1', concept_ids: ['new:1', 'existing-clos'] },
+        { target_type: 'session', target_id: 's1', concept_ids: ['existing-clos'] },
+      ],
+      relations: [{ source: 'existing-clos', target: 'new:1', type: 'hierarchy' }],
+    }, { targetIds: ['m1', 's1'], conceptIds: ['existing-clos'] })
+    expect(valid).toHaveLength(0)
+
+    const invalid = validateOriginConceptResult({
+      concepts: [{ client_ref: 'new:1', name: 'Clos 网络', summary: '' }],
+      memberships: [
+        { target_type: 'unit', target_id: 'u1', concept_ids: ['new:1'] },
+      ],
+      relations: [{ source: 'new:1', target: 'missing', type: 'related' }],
+    }, { targetIds: ['u1'], conceptIds: [] })
+    expect(invalid.some((issue) => issue.message.includes('当前任务不允许 unit'))).toBe(true)
+    expect(invalid.some((issue) => issue.message.includes('关系 target'))).toBe(true)
+    expect(invalid.some((issue) => issue.message.includes('至少归属于一条 Message'))).toBe(true)
   })
 })

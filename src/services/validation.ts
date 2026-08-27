@@ -62,12 +62,13 @@ export interface ConceptMembership {
  */
 export function validateConceptMemberships(
   value: unknown,
-  options: { targetIds?: Iterable<string>; conceptIds?: Iterable<string> } = {},
+  options: { targetIds?: Iterable<string>; conceptIds?: Iterable<string>; targetTypes?: Iterable<ConceptMembershipTarget> } = {},
 ): ValidationIssue[] {
   if (value == null) return []
   if (!Array.isArray(value)) return [{ path: 'memberships', message: '必须是数组' }]
   const targetIds = options.targetIds ? new Set(options.targetIds) : null
   const conceptIds = options.conceptIds ? new Set(options.conceptIds) : null
+  const targetTypes = options.targetTypes ? new Set(options.targetTypes) : null
   const issues: ValidationIssue[] = []
   value.forEach((raw, index) => {
     const path = `memberships.${index}`
@@ -80,6 +81,8 @@ export function validateConceptMemberships(
     const targetId = typeof item.target_id === 'string' ? item.target_id.trim() : ''
     if (targetType !== 'session' && targetType !== 'message' && targetType !== 'unit') {
       issues.push({ path: `${path}.target_type`, message: 'target_type 必须是 session、message 或 unit' })
+    } else if (targetTypes && !targetTypes.has(targetType as ConceptMembershipTarget)) {
+      issues.push({ path: `${path}.target_type`, message: `当前任务不允许 ${targetType} 归属` })
     }
     if (!targetId) issues.push({ path: `${path}.target_id`, message: 'target_id 必须是非空字符串' })
     else if (targetIds && !targetIds.has(targetId)) issues.push({ path: `${path}.target_id`, message: 'target_id 不在当前任务范围中' })
@@ -104,6 +107,126 @@ export function validateConceptMemberships(
 
 /** Backward-compatible name for callers that describe these as assignments. */
 export const validateConceptAssignments = validateConceptMemberships
+
+export interface OriginConceptValidationOptions {
+  targetIds?: Iterable<string>
+  conceptIds?: Iterable<string>
+}
+
+/**
+ * Validate the direct Session/Message Concept extraction response.
+ *
+ * `client_ref` is deliberately scoped to one response: it lets memberships
+ * and relations refer to a newly proposed Concept before persistence assigns
+ * the database id. Existing task formats continue to use the generic
+ * membership validator above.
+ */
+export function validateOriginConceptResult(
+  value: unknown,
+  options: OriginConceptValidationOptions = {},
+): ValidationIssue[] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return [{ path: 'result', message: 'Concept 提取结果必须是 JSON 对象' }]
+  }
+
+  const result = value as Record<string, unknown>
+  const rawConcepts = result.concepts
+  const issues: ValidationIssue[] = []
+  const candidateRefs = new Set<string>()
+  const candidateNames = new Set<string>()
+
+  if (!Array.isArray(rawConcepts)) {
+    issues.push({ path: 'concepts', message: 'concepts 必须是数组' })
+  } else {
+    if (rawConcepts.length > 8) {
+      issues.push({ path: 'concepts', message: '一次最多提取 8 个 Concept' })
+    }
+    rawConcepts.forEach((raw, index) => {
+      const path = `concepts.${index}`
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        issues.push({ path, message: 'Concept 候选必须是对象' })
+        return
+      }
+      const candidate = raw as Record<string, unknown>
+      const clientRef = typeof candidate.client_ref === 'string' ? candidate.client_ref.trim() : ''
+      const name = typeof candidate.name === 'string' ? candidate.name.trim() : ''
+      const summary = typeof candidate.summary === 'string' ? candidate.summary.trim() : ''
+      if (!/^new:[1-8]$/.test(clientRef)) {
+        issues.push({ path: `${path}.client_ref`, message: 'client_ref 必须是 new:1 到 new:8' })
+      } else if (candidateRefs.has(clientRef)) {
+        issues.push({ path: `${path}.client_ref`, message: 'client_ref 不能重复' })
+      } else {
+        candidateRefs.add(clientRef)
+      }
+      if (!name) {
+        issues.push({ path: `${path}.name`, message: 'Concept 名称不能为空' })
+      } else {
+        const normalizedName = name.toLocaleLowerCase()
+        if (candidateNames.has(normalizedName)) {
+          issues.push({ path: `${path}.name`, message: '同一响应中不能重复 Concept 名称' })
+        }
+        candidateNames.add(normalizedName)
+      }
+      if (summary.length > 120) {
+        issues.push({ path: `${path}.summary`, message: 'Concept 摘要不能超过 120 个字符' })
+      }
+      if (candidate.aliases != null && (!Array.isArray(candidate.aliases) || candidate.aliases.some((alias) => typeof alias !== 'string'))) {
+        issues.push({ path: `${path}.aliases`, message: 'aliases 必须是字符串数组' })
+      }
+    })
+  }
+
+  const conceptIds = new Set<string>(options.conceptIds ?? [])
+  candidateRefs.forEach((clientRef) => conceptIds.add(clientRef))
+  issues.push(...validateConceptMemberships(result.memberships, {
+    targetIds: options.targetIds,
+    targetTypes: ['session', 'message'],
+    conceptIds,
+  }))
+
+  const referencedCandidates = new Set<string>()
+  if (Array.isArray(result.memberships)) {
+    result.memberships.forEach((raw) => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return
+      const membership = raw as Record<string, unknown>
+      if (membership.target_type !== 'message' || !Array.isArray(membership.concept_ids)) return
+      membership.concept_ids.forEach((ref) => {
+        if (typeof ref === 'string' && candidateRefs.has(ref.trim())) referencedCandidates.add(ref.trim())
+      })
+    })
+  }
+  candidateRefs.forEach((clientRef) => {
+    if (!referencedCandidates.has(clientRef)) {
+      issues.push({ path: 'memberships', message: `${clientRef} 必须至少归属于一条 Message` })
+    }
+  })
+
+  const rawRelations = result.relations
+  if (rawRelations != null && !Array.isArray(rawRelations)) {
+    issues.push({ path: 'relations', message: 'relations 必须是数组' })
+  } else if (Array.isArray(rawRelations)) {
+    rawRelations.forEach((raw, index) => {
+      const path = `relations.${index}`
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        issues.push({ path, message: '关系必须是对象' })
+        return
+      }
+      const relation = raw as Record<string, unknown>
+      const source = typeof relation.source === 'string' ? relation.source.trim() : ''
+      const target = typeof relation.target === 'string' ? relation.target.trim() : ''
+      const type = relation.type
+      if (!source || !conceptIds.has(source)) issues.push({ path: `${path}.source`, message: '关系 source 必须引用已披露 Concept 或 client_ref' })
+      if (!target || !conceptIds.has(target)) issues.push({ path: `${path}.target`, message: '关系 target 必须引用已披露 Concept 或 client_ref' })
+      if (source && source === target) issues.push({ path, message: '关系两端不能是同一个 Concept' })
+      if (type !== 'hierarchy' && type !== 'related') issues.push({ path: `${path}.type`, message: '关系 type 必须是 hierarchy 或 related' })
+    })
+  }
+
+  if (candidateRefs.size === 0 && !Array.isArray(result.memberships)) {
+    issues.push({ path: 'memberships', message: '至少需要声明 Concept 归属' })
+  }
+  return issues
+}
 
 /** Validate a top-level many-to-many Concept ID list. */
 export function validateConceptIdList(value: unknown, availableConceptIds?: Iterable<string>): ValidationIssue[] {
