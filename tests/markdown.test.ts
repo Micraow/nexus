@@ -75,6 +75,8 @@ describe('renderMarkdown', () => {
     expect(html).toContain('md-concept-existing')
     expect(html).toContain('data-concept-id="c1"')
     expect(html).toContain('md-concept-suggested')
+    expect(html).toContain('data-suggested-concept="量子纠错"')
+    expect(html).toContain('tabindex="0"')
     expect(html).not.toContain('nexus:existing')
     expect(html).not.toContain('nexus:suggested')
   })

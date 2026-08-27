@@ -382,6 +382,7 @@ export function buildConversationPrompt(input: {
   disclosure?: DisclosureContext
   targetSessionId?: string
   targetMessageId?: string
+  targetAssistantMessageId?: string
   sessionTitle?: string
   sessionSummary?: string
 }): string {
@@ -395,6 +396,7 @@ export function buildConversationPrompt(input: {
 当前 Concept：${input.topic || '未指定'}
 目标 Session ID：${input.targetSessionId || '由调用方创建'}
 本次用户 Message ID：${input.targetMessageId || '由调用方创建'}
+本次 assistant Message ID：${input.targetAssistantMessageId || '由调用方创建'}
 当前 Session 标题：${input.sessionTitle || '尚未生成'}
 当前 Session 摘要：${input.sessionSummary || '尚未生成'}
 
@@ -408,8 +410,15 @@ ${input.conversationHistory || '（这是本 Session 的第一轮问题）'}
 ${input.context || '（没有额外上下文）'}
 ${disclosureText}
 
+知识主题与事实归属同步：
+- 顶层 concepts 用于本轮回答中新识别出的稳定知识主题；每个候选必须提供本响应唯一的 client_ref（new:1 到 new:8）。只是值得继续探索、证据尚不足的黄色建议不要创建为 Concept。
+- 顶层 memberships 只能使用上面给出的 Session ID、用户 Message ID 或 assistant Message ID，target_type 只能是 session 或 message。引用已有主题时使用 DISCLOSURE_INDEX 已列出的 Concept refID；引用本轮新主题时使用 client_ref。
+- 每个新主题必须至少归属于用户或 assistant Message；只有主题确实概括整个会话时才同时归属于 Session。不要把 Session 归属隐式复制给所有 Message。
+- 即使 units 为空，也要通过顶层 concepts 与 memberships 写明本轮确有证据的新主题或复用主题。没有新的稳定主题时 concepts 可以为空；没有直接归属时 memberships 可以为空。
+- units 只表示可选阅读片段。units[].concept_ids 只能引用已披露的已有主题；units[].concepts 可以定义只属于该阅读片段的新主题，但不能替代 Message/Session 的直接证据归属。
+
 请只返回 JSON，格式如下：
-{"answer":"完整回答（可包含 Markdown）","session_title":"不超过 60 个字符的 Session 标题","session_summary":"不超过 120 个字符的 Session 滚动摘要","units":[{"title":"本轮问答的可选阅读片段标题","summary":"不超过 120 个中文字符的摘要","concept_ids":["已有 Concept refID"],"concepts":[{"name":"新 Concept 名称","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}]}],"memberships":[{"target_type":"session|message|unit","target_id":"原始 ID","concept_ids":["Concept refID", "另一个 Concept refID"]}],"disclosure_requests":[]}
+{"answer":"完整回答（可包含 Markdown）","session_title":"不超过 60 个字符的 Session 标题","session_summary":"不超过 120 个字符的 Session 滚动摘要","concepts":[{"client_ref":"new:1","name":"新 Concept 名称","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"memberships":[{"target_type":"session|message","target_id":"上面给出的 Session 或 Message ID","concept_ids":["已有 Concept refID 或 new:1"]}],"units":[{"title":"本次回答的知识单元标题","summary":"不超过 120 个中文字符的摘要","concept_ids":["已有 Concept refID"],"concepts":[{"name":"仅属于该阅读片段的新 Concept 名称","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}]}],"disclosure_requests":[]}
 
 session_title 和 session_summary 概括当前完整 Session，而不只是本轮问题；已有标题合适时原样返回。旧任务可以省略这两个字段，应用会保留已有值。units 是可选的阅读片段数组；它们打包本轮用户问题和回答，不表示知识主题层级。如果回答没有稳定、可复用的证据片段，返回空数组。不要返回解释文字。`)
 }

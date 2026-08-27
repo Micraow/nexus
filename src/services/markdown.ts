@@ -86,9 +86,11 @@ function fencedCodeHtml(language: string, code: string): string {
   return `<pre><code${className}>${highlightedCode(code, normalized)}</code></pre>`
 }
 
-function conceptMentionHtml(label: string, id: string, kind: 'existing' | 'suggested'): string {
-  const interactive = Boolean(id)
-  return `<span class="md-concept md-concept-${kind}"${interactive ? ` role="link" tabindex="0" data-concept-id="${escapeHtml(id)}"` : ''}>${label}</span>`
+function conceptMentionHtml(label: string, id: string, kind: 'existing' | 'suggested', name = label): string {
+  if (kind === 'suggested') {
+    return `<span class="md-concept md-concept-suggested" role="link" tabindex="0" data-suggested-concept="${name}" aria-label="继续探索 ${name}" title="继续探索">${label}</span>`
+  }
+  return `<span class="md-concept md-concept-existing"${id ? ` role="link" tabindex="0" data-concept-id="${escapeHtml(id)}"` : ''}>${label}</span>`
 }
 
 function linkifyConcepts(raw: string, matcher: ConceptMatcher | null): InlineToken[] {
@@ -122,7 +124,7 @@ function linkifyMarkedConcepts(raw: string, matcher: ConceptMatcher | null): Inl
     const kind = match[1].toLowerCase() as 'existing' | 'suggested'
     const label = match[3] || match[2]
     const id = matcher?.ids.get(match[2].trim()) ?? matcher?.ids.get(label.trim()) ?? ''
-    tokens.push({ type: 'mention', value: conceptMentionHtml(label, id, kind) })
+    tokens.push({ type: 'mention', value: conceptMentionHtml(label, id, kind, match[2].trim()) })
     cursor = match.index + match[0].length
   }
   if (cursor < raw.length) tokens.push(...linkifyConcepts(raw.slice(cursor), matcher))

@@ -446,8 +446,9 @@ textarea { resize: vertical; }
 .md-body a:not(.md-concept) { color: var(--primary-strong); text-decoration-line: underline; text-decoration-style: solid; text-decoration-color: var(--primary) !important; text-decoration-thickness: 3px; text-underline-offset: 4px; text-decoration-skip-ink: none; }
 .md-concept { padding: 0 3px; color: var(--text); border-radius: 4px; text-decoration-line: underline; text-decoration-style: solid !important; text-decoration-thickness: 3px; text-underline-offset: 4px; text-decoration-skip-ink: none; }
 .md-concept-existing { cursor: pointer; color: var(--primary-strong); background: var(--primary-soft); text-decoration-color: var(--primary) !important; }
-.md-concept-suggested { color: var(--text); background: var(--amber-soft); text-decoration-color: var(--amber) !important; }
+.md-concept-suggested { cursor: pointer; color: var(--text); background: var(--amber-soft); text-decoration-color: var(--amber) !important; }
 .md-concept:hover, .md-concept:focus-visible { outline: 1px solid color-mix(in srgb, var(--primary) 60%, transparent); }
+.md-concept-suggested:hover, .md-concept-suggested:focus-visible { outline-color: color-mix(in srgb, var(--amber) 75%, transparent); }
 .md-body pre code.hljs { display: block; overflow-x: auto; padding: 0; background: transparent; color: inherit; font: inherit; }
 .md-body pre code.hljs .hljs-keyword, .md-body pre code.hljs .hljs-selector-tag, .md-body pre code.hljs .hljs-title, .md-body pre code.hljs .hljs-section { color: #9d7bff; }
 .md-body pre code.hljs .hljs-string, .md-body pre code.hljs .hljs-attr, .md-body pre code.hljs .hljs-template-variable { color: #8bd5ca; }

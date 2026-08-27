@@ -36,11 +36,18 @@ describe('conversation prompt', () => {
       context: '',
       navigationPath: '1. 网络\n2. Clos',
       conversationHistory: '消息 #1 [assistant]\n先前回答',
+      targetSessionId: 'session-1',
+      targetMessageId: 'question-1',
+      targetAssistantMessageId: 'answer-1',
     })
     expect(prompt).toContain('session_title')
     expect(prompt).toContain('session_summary')
     expect(prompt).toContain('1. 网络\n2. Clos')
     expect(prompt).toContain('先前回答')
+    expect(prompt).toContain('本次 assistant Message ID：answer-1')
+    expect(prompt).toContain('"client_ref":"new:1"')
+    expect(prompt).toContain('即使 units 为空')
+    expect(prompt).toContain('黄色建议不要创建为 Concept')
   })
 })
 

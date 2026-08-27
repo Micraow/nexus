@@ -158,6 +158,57 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.tasks.some((item) => item.type === 'unit_metadata' && item.status === 'pending')).toBe(false)
   })
 
+  it('creates and reuses direct Message/Session Concepts without a KnowledgeUnit', () => {
+    const existingConceptId = store.createConcept('已有网络主题')
+    const sessionId = store.createConversationTask({ question: '解释一种新的网络拓扑' })
+    const task = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
+    const question = store.messages.find((message) => message.sessionId === sessionId && message.role === 'user')!
+    const answerMessageId = String(question.metadata?.answerMessageId)
+
+    const result = store.applyTaskResult(task.id, JSON.stringify({
+      answer: '这种拓扑复用了已有网络主题，并形成一个更具体的新主题。',
+      session_title: '网络拓扑探索',
+      session_summary: '讨论已有网络主题和一种新的具体拓扑。',
+      concepts: [{ client_ref: 'new:1', name: '新型叶脊拓扑', summary: '一种更具体的网络拓扑主题。', aliases: ['叶脊拓扑'] }],
+      memberships: [
+        { target_type: 'message', target_id: answerMessageId, concept_ids: ['new:1', existingConceptId] },
+        { target_type: 'session', target_id: sessionId, concept_ids: ['new:1', existingConceptId] },
+      ],
+      units: [],
+      disclosure_requests: [],
+    }))
+
+    expect(result.ok, result.errors.join('; ')).toBe(true)
+    const created = store.concepts.find((concept) => concept.name === '新型叶脊拓扑')!
+    const answer = store.messages.find((message) => message.id === answerMessageId)
+    expect(answer?.role).toBe('assistant')
+    expect(store.units).toHaveLength(0)
+    expect(store.messageConcepts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ messageId: answerMessageId, conceptId: created.id }),
+      expect.objectContaining({ messageId: answerMessageId, conceptId: existingConceptId }),
+    ]))
+    expect(store.sessionConcepts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sessionId, conceptId: created.id }),
+      expect.objectContaining({ sessionId, conceptId: existingConceptId }),
+    ]))
+    expect(store.viewGraph().nodes.map((node) => node.refId)).toEqual(expect.arrayContaining([created.id, existingConceptId]))
+  })
+
+  it('rejects a new conversation Concept without direct Message evidence', () => {
+    const sessionId = store.createConversationTask({ question: '测试无证据主题' })
+    const task = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
+    const result = store.applyTaskResult(task.id, JSON.stringify({
+      answer: '回答',
+      concepts: [{ client_ref: 'new:1', name: '无消息证据主题', summary: '', aliases: [] }],
+      memberships: [{ target_type: 'session', target_id: sessionId, concept_ids: ['new:1'] }],
+      units: [],
+      disclosure_requests: [],
+    }))
+
+    expect(result.ok).toBe(false)
+    expect(result.errors.some((error) => error.includes('至少归属于一条 Message'))).toBe(true)
+    expect(store.concepts.some((concept) => concept.name === '无消息证据主题')).toBe(false)
+  })
 
   it('rejects unknown top-level conversation Concept IDs without writing an answer', () => {
     store.createConcept('已有主题')

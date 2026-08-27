@@ -50,6 +50,7 @@ import nexusLogo from '../src-tauri/icons/icon.svg'
 import { MIN_TOKEN_BUDGET, normalizeTokenBudget, serializeConfig } from '@/services/config'
 import { saveTextFile } from '@/services/files'
 import type { SaveFileRequest } from '@/services/files'
+import { conversationTaskForNode, suggestedExplorationQuestion, unfinishedConversationTask } from '@/services/conversation'
 import { renderMarkdown } from '@/services/markdown'
 import { copyToClipboard } from '@/services/clipboard'
 import { parseMetadata } from '@/utils/metadata'
@@ -262,12 +263,16 @@ const conversationNavTrail = computed(() => {
   }
   return trail
 })
-const activeConversationTask = computed(() => {
-  if (!activeConversationSessionId.value) return null
-  const conversationTasks = store.tasks
-    .filter((task) => task.type === 'conversation' && task.inputRevision.startsWith(`${activeConversationSessionId.value}:`))
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-  return conversationTasks.find((task) => ['pending', 'running', 'needs_review'].includes(task.status)) ?? conversationTasks[0] ?? null
+const activeConversationUnfinishedTask = computed(() => activeConversationSessionId.value
+  ? unfinishedConversationTask(store.tasks, activeConversationSessionId.value)
+  : null)
+const activeConversationTask = computed(() => activeConversationSessionId.value
+  ? conversationTaskForNode(store.tasks, store.messages, activeConversationSessionId.value, selectedNavNodeId.value)
+  : null)
+const activeConversationStatus = computed(() => {
+  const task = activeConversationTask.value
+  if (!task) return activeConversationUnfinishedTask.value ? '其他分支等待处理' : '本地会话'
+  return ({ pending: '等待处理', running: '正在思考…', success: '回答已整理', failed: '请求失败', needs_review: '结果需要检查', stale: '结果已过期', cancelled: '任务已取消' } as Record<LLMTask['status'], string>)[task.status]
 })
 const fullscreenSession = computed(() => {
   const target = fullscreenTarget.value
@@ -1213,10 +1218,43 @@ function renderedMessageContent(content: string): string {
   return renderMarkdown(content, { concepts: store.activeConcepts.map((concept) => ({ id: concept.id, name: concept.name })) })
 }
 
-function handleRenderedClick(event: Event): void {
+function handleRenderedClick(event: Event, message?: Message): void {
   const target = (event.target as HTMLElement).closest('[data-concept-id]')
   const conceptId = target?.getAttribute('data-concept-id')
-  if (conceptId) openConcept(conceptId)
+  if (conceptId) {
+    openConcept(conceptId)
+    return
+  }
+  const suggestedTarget = (event.target as HTMLElement).closest('[data-suggested-concept]')
+  const suggestedConcept = suggestedTarget?.getAttribute('data-suggested-concept')?.trim()
+  if (!suggestedConcept) return
+  const session = activeConversationSession.value
+  if (!session || !message || message.sessionId !== session.id) {
+    notify('请先打开这条消息所属的软件内会话，再继续探索建议主题')
+    return
+  }
+  if (activeConversationUnfinishedTask.value) {
+    notify('请先完成当前待处理的回答')
+    return
+  }
+  const metadata = parseMetadata(message.metadata)
+  const parentNodeId = typeof metadata.navNodeId === 'string' ? metadata.navNodeId : selectedNavNodeId.value
+  const parentNode = activeConversationNodes.value.find((node) => node.id === parentNodeId)
+  if (!parentNode) {
+    notify('找不到这条回答对应的探索节点')
+    return
+  }
+  selectedNavNodeId.value = parentNode.id
+  composerFollowUp.value = { sessionId: session.id, nodeId: parentNode.id, label: parentNode.label }
+  composerTopicId.value = parentNode.triggerConceptId ?? null
+  composerSourceUnitIds.value = []
+  composerSourceMessageIds.value = []
+  composerQuestion.value = suggestedExplorationQuestion(suggestedConcept)
+  void nextTick(() => {
+    const input = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="继续当前对话"]')
+    input?.focus()
+    input?.scrollIntoView({ behavior: store.config.ui.reducedMotion ? 'auto' : 'smooth', block: 'center' })
+  })
 }
 
 function buildContextPrompt(): string {
@@ -1322,6 +1360,17 @@ function setTaskDraft(taskId: string, value: string): void {
   taskDrafts.value[taskId] = value
 }
 
+function selectTaskAnswerNode(taskId: string): void {
+  const answer = store.messages.find((message) => message.role === 'assistant' && parseMetadata(message.metadata).taskId === taskId)
+  const navNodeId = parseMetadata(answer?.metadata).navNodeId
+  if (typeof navNodeId !== 'string') return
+  const node = store.navNodes.find((item) => item.id === navNodeId)
+  if (!node) return
+  activeConversationSessionId.value = node.sessionId
+  store.setSelectedSession(node.sessionId)
+  selectConversationNode(node)
+}
+
 function applyTask(task: LLMTask): void {
   const response = taskResponse(task)
   if (!response.trim()) {
@@ -1334,6 +1383,7 @@ function applyTask(task: LLMTask): void {
   } else if (result.ok) {
     taskFeedback.value = null
     notify(task.type === 'segmentation' ? '旧版对话分组结果已校验并写入知识库' : task.type === 'maintenance' ? '维护建议已校验，请逐条确认应用' : '结构化结果已校验并写入知识库')
+    if (task.type === 'conversation') selectTaskAnswerNode(task.id)
     if (task.type !== 'maintenance') selectedTaskId.value = null
   } else taskFeedback.value = { tone: 'error', text: result.errors.join('；') || '校验失败，请按提示修正后重试。' }
 }
@@ -1341,7 +1391,10 @@ function applyTask(task: LLMTask): void {
 async function executeApiTask(task: LLMTask): Promise<void> {
   taskFeedback.value = null
   const result = await store.executeTask(task.id)
-  if (result.ok) notify('API 任务已完成')
+  if (result.ok) {
+    if (task.type === 'conversation') selectTaskAnswerNode(task.id)
+    notify('API 任务已完成')
+  }
   else taskFeedback.value = { tone: 'error', text: result.error ?? 'API 任务失败，请检查连接配置后重试。' }
 }
 
@@ -1746,17 +1799,17 @@ onBeforeUnmount(() => {
           <section class="new-chat-panel surface-section">
             <div v-if="activeConversationSession" class="chat-conversation-workspace">
               <header class="conversation-workspace-header">
-                <div class="conversation-heading"><button class="icon-button" aria-label="返回上一级探索" title="返回上一级探索" @click="goConversationBack"><ArrowLeft :size="17" /></button><div><span class="eyebrow">ACTIVE CONVERSATION</span><h2>{{ activeConversationSession.title }}</h2><span>{{ activeConversationMessages.length }} 条消息 · {{ activeConversationTask?.status === 'running' ? '正在思考…' : activeConversationTask?.status === 'pending' ? '等待处理' : activeConversationTask?.status === 'needs_review' ? '结果需要检查' : '本地会话' }}</span></div></div>
+                <div class="conversation-heading"><button class="icon-button" aria-label="返回上一级探索" title="返回上一级探索" @click="goConversationBack"><ArrowLeft :size="17" /></button><div><span class="eyebrow">ACTIVE CONVERSATION</span><h2>{{ activeConversationSession.title }}</h2><span>{{ activeConversationMessages.length }} 条消息 · {{ activeConversationStatus }}</span></div></div>
                 <div class="conversation-header-actions"><button class="button secondary-button" @click="openFullscreenSession(activeConversationSession.id)"><Maximize2 :size="15" />全屏</button><button class="icon-button" aria-label="结束当前对话" title="回到新对话首页" @click="leaveConversationSession"><MessageSquarePlus :size="17" /></button></div>
               </header>
-              <nav v-if="conversationNavTrail.length" class="conversation-breadcrumbs" aria-label="探索路径"><button v-for="node in conversationNavTrail" :key="node.id" class="breadcrumb-node" :class="{ current: node.id === selectedNavNodeId }" @click="selectedNavNodeId = node.id">{{ node.label }}</button></nav>
+              <nav v-if="conversationNavTrail.length" class="conversation-breadcrumbs" aria-label="探索路径"><button v-for="node in conversationNavTrail" :key="node.id" class="breadcrumb-node" :class="{ current: node.id === selectedNavNodeId }" @click="selectConversationNode(node)">{{ node.label }}</button></nav>
               <div class="conversation-layout">
                 <aside class="conversation-minimap" aria-label="探索树小地图"><div class="minimap-heading"><GitBranch :size="14" /><span>探索树</span></div><NavTree :nodes="activeConversationNodes.filter((node) => !node.parentId)" :node-units="store.navNodeUnits" :units="store.units" :selected-node-id="selectedNavNodeId" @select-node="selectConversationNode" @ask="openNodeComposer" /></aside>
                 <div class="conversation-scroll" role="log" aria-live="polite">
-                  <article v-for="message in activeConversationMessages" :key="message.id" :data-conversation-message="message.id" class="conversation-message" :class="message.role"><div class="conversation-message-meta"><strong>{{ message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : '系统' }}</strong><span>消息 #{{ message.orderInSession + 1 }}</span></div><div class="md-body" v-html="renderedMessageContent(message.content)" @click="handleRenderedClick" @keydown.enter.prevent="handleRenderedClick" /></article>
+                  <article v-for="message in activeConversationMessages" :key="message.id" :data-conversation-message="message.id" class="conversation-message" :class="message.role"><div class="conversation-message-meta"><strong>{{ message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : '系统' }}</strong><span>消息 #{{ message.orderInSession + 1 }}</span></div><div class="md-body" v-html="renderedMessageContent(message.content)" @click="handleRenderedClick($event, message)" @keydown.enter.prevent="handleRenderedClick($event, message)" /></article>
                   <div v-if="activeConversationTask?.status === 'running'" class="conversation-thinking"><LoaderCircle class="spin" :size="16" />AI 正在处理这次提问…</div>
                   <div v-if="!activeConversationMessages.length" class="empty-state compact"><MessageSquare :size="26" /><strong>等待第一条回答</strong><span>回答完成后会显示在这里。</span></div>
-                  <div class="conversation-composer"><textarea v-model="composerQuestion" rows="3" aria-label="继续当前对话" placeholder="继续追问…" :disabled="Boolean(activeConversationTask && ['pending', 'running', 'needs_review'].includes(activeConversationTask.status))" @keydown.ctrl.enter.prevent="startConversationFollowUp" @keydown.meta.enter.prevent="startConversationFollowUp" /><div class="conversation-composer-footer"><span>{{ activeConversationTask && ['pending', 'running', 'needs_review'].includes(activeConversationTask.status) ? '请先完成上一轮回答' : store.config.llm.mode === 'api' ? 'API 会直接执行' : 'Prompt 会在右侧浮层中处理' }}</span><button class="send-button" aria-label="发送追问" :disabled="!composerQuestion.trim() || Boolean(activeConversationTask && ['pending', 'running', 'needs_review'].includes(activeConversationTask.status))" @click="startConversationFollowUp"><Send :size="17" /></button></div></div>
+                  <div class="conversation-composer"><textarea v-model="composerQuestion" rows="3" aria-label="继续当前对话" placeholder="继续追问…" :disabled="Boolean(activeConversationUnfinishedTask)" @keydown.ctrl.enter.prevent="startConversationFollowUp" @keydown.meta.enter.prevent="startConversationFollowUp" /><div class="conversation-composer-footer"><span>{{ activeConversationUnfinishedTask ? '请先完成上一轮回答' : store.config.llm.mode === 'api' ? 'API 会直接执行' : 'Prompt 会在右侧浮层中处理' }}</span><button class="send-button" aria-label="发送追问" :disabled="!composerQuestion.trim() || Boolean(activeConversationUnfinishedTask)" @click="startConversationFollowUp"><Send :size="17" /></button></div></div>
                 </div>
               </div>
             </div>
