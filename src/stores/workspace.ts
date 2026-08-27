@@ -211,6 +211,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const queuePaused = ref(false)
   const queueActiveCount = ref(0)
   const abortControllers = new Map<string, AbortController>()
+  // A task can be started from both the queue and the task detail view. Keep
+  // an in-process guard so those entry points cannot issue duplicate requests.
+  const executingTaskIds = new Set<string>()
 
   const activeSessions = computed(() => sessions.value.filter((session) => !session.deletedAt))
   const activeSessionIds = computed(() => new Set(activeSessions.value.map((session) => session.id)))
@@ -2153,6 +2156,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   async function executeTask(taskId: string): Promise<{ ok: boolean; error?: string }> {
     const task = tasks.value.find((item) => item.id === taskId)
     if (!task) return { ok: false, error: '找不到任务' }
+    if (executingTaskIds.has(taskId)) return { ok: false, error: '任务正在处理中' }
     if (task.type === 'segmentation') return { ok: false, error: LEGACY_SEGMENTATION_RETIRED_REASON }
     if (task.mode !== 'api') return { ok: false, error: 'Prompt 粘贴模式需要手动执行 Prompt' }
     const provider = config.value.llm.providers.find((item) => item.id === task.providerId) ?? config.value.llm.providers.find((item) => item.id === config.value.llm.defaultProvider)
@@ -2161,7 +2165,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const ownerUnit = units.value.find((item) => item.id === targetId)
     const session = sessions.value.find((item) => item.id === (ownerUnit?.sessionId ?? targetId))
     if (session?.localOnly) return { ok: false, error: '该会话已标记为仅本地，禁止 API 任务；可以改用 Prompt 粘贴模式' }
-    mutate(() => db.run("UPDATE llm_tasks SET status = 'running', updated_at = ? WHERE id = ?", [isoNow(), taskId]))
+    executingTaskIds.add(taskId)
+    try {
+      mutate(() => db.run("UPDATE llm_tasks SET status = 'running', updated_at = ? WHERE id = ? AND status = 'pending'", [isoNow(), taskId]))
+      const started = tasks.value.find((item) => item.id === taskId)
+      if (!started || started.status !== 'running') {
+        executingTaskIds.delete(taskId)
+        return { ok: false, error: `任务当前状态为${started?.status ?? '未知'}，无法执行` }
+      }
+    } catch (error) {
+      executingTaskIds.delete(taskId)
+      throw error
+    }
     let lastError: Error | null = null
     try {
       for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -2208,6 +2223,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const current = tasks.value.find((item) => item.id === taskId)
       if (current?.status !== 'cancelled') markTask(taskId, 'failed', undefined, [message])
       return { ok: false, error: message }
+    } finally {
+      executingTaskIds.delete(taskId)
     }
   }
 

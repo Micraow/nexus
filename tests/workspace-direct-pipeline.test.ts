@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useWorkspaceStore } from '@/stores/workspace'
 
@@ -33,6 +33,7 @@ describe('direct concept extraction import pipeline', () => {
 
   afterEach(() => {
     store.clearAllData()
+    vi.unstubAllGlobals()
   })
 
   it('creates triage and origin tasks without segmentation or KnowledgeUnits', () => {
@@ -248,5 +249,33 @@ describe('direct concept extraction import pipeline', () => {
     const root = store.navNodes.find((node) => node.sessionId === sessionId && !node.parentId)!
     store.createFollowUpTask({ sessionId, parentNodeId: root.id, question: '第一次追问' })
     expect(() => store.createFollowUpTask({ sessionId, parentNodeId: root.id, question: '重复追问' })).toThrow('待完成')
+  })
+
+  it('does not issue duplicate API requests when queue and detail start the same task', async () => {
+    let resolveFetch: ((response: Response) => void) | undefined
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { resolveFetch = resolve }))
+    vi.stubGlobal('fetch', fetchMock)
+    store.updateConfig({
+      llm: {
+        ...store.config.llm,
+        mode: 'api',
+        defaultProvider: 'test-provider',
+        providers: [{ id: 'test-provider', name: 'Test', baseUrl: 'https://example.test/v1', model: 'test-model', apiKey: 'test-key' }],
+      },
+    })
+    const sessionId = store.createConversationTask({ question: '测试重复 API 执行' })
+    const task = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
+
+    const first = store.executeTask(task.id)
+    await Promise.resolve()
+    expect(store.tasks.find((item) => item.id === task.id)?.status).toBe('running')
+    await expect(store.executeTask(task.id)).resolves.toEqual({ ok: false, error: '任务正在处理中' })
+
+    resolveFetch?.({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: JSON.stringify({ answer: '唯一回答', units: [], disclosure_requests: [] }) } }] }),
+    } as Response)
+    await expect(first).resolves.toEqual({ ok: true })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })
