@@ -573,7 +573,7 @@ function render(): void {
     }, largeGraph ? 2600 : 6000)
   }
 
-  // 框选多选：Shift+左键拖出选框，松开后把框内知识单元加入上下文选择。
+  // 框选多选：Shift+左键拖出选框，松开后把框内阅读片段加入上下文选择。
   let brushOrigin: [number, number] | null = null
   const brushRect = brushLayer
     .append('rect')
@@ -667,12 +667,12 @@ onBeforeUnmount(() => {
 <template>
   <div ref="host" class="graph-canvas">
     <svg ref="svg" role="group" />
-    <div v-if="brushSelectionCount" class="graph-selection-feedback" role="status">已选 {{ brushSelectionCount }} 个知识单元</div>
+    <div v-if="brushSelectionCount" class="graph-selection-feedback" role="status">已选 {{ brushSelectionCount }} 个阅读片段</div>
     <div class="graph-scale-hint">
       <span class="legend-dot concept-dot" /> 知识主题
-      <span class="legend-dot unit-dot" /> 知识单元
+      <span class="legend-dot unit-dot" /> 阅读片段
       <span class="legend-dot message-dot" /> 消息
-      <span class="graph-hint">滚轮缩放 · 拖拽平移/定位 · Shift+拖动框选知识单元 · 点击主题逐层展开</span>
+      <span class="graph-hint">滚轮缩放 · 拖拽平移/定位 · Shift+拖动框选阅读片段 · 点击主题逐层展开</span>
     </div>
   </div>
 </template>

@@ -41,7 +41,7 @@ function unitsOf(nodeId: string): KnowledgeUnit[] {
         </button>
       </div>
       <div v-if="unitsOf(node.id).length" class="nav-tree-units">
-        <span v-for="unit in unitsOf(node.id)" :key="unit.id" class="nav-tree-unit">{{ unit.title || '待命名知识单元' }}</span>
+        <span v-for="unit in unitsOf(node.id)" :key="unit.id" class="nav-tree-unit">{{ unit.title || '未命名阅读片段' }}</span>
       </div>
       <NavTree v-if="childrenOf(node.id).length" :nodes="childrenOf(node.id)" :node-units="nodeUnits" :units="units" :selected-node-id="selectedNodeId" @select-node="emit('select-node', $event)" @ask="emit('ask', $event)" />
     </div>

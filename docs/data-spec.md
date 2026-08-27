@@ -21,7 +21,7 @@
 
 ## 2. 命名与格式
 
-当前本地 SQLite schema 为 v6；v6 为 `sessions.summary` 增加会话级滚动摘要列，旧数据库迁移时默认空字符串，旧备份导入时缺少该字段也按空值兼容。
+当前本地 SQLite schema 为 v7。v6 为 `sessions.summary` 增加会话级滚动摘要列；v7 把仍处于 `pending`、`running` 或 `needs_review` 的旧 `segmentation` 任务统一迁移为 `cancelled`，保留 Prompt、响应和既有 KnowledgeUnit，但不再把废弃的分段流程呈现为当前待办。旧备份导入时执行同样的状态归一化。
 
 ### 2.1 ID
 
@@ -130,6 +130,7 @@
 - 修改消息边界时 `revision + 1`，只使该单元的可选标题、摘要和 UnitConcept 任务变为 `stale`；
 - KnowledgeUnit 可以没有任何 Concept，显示为待关联内容；
 - KnowledgeUnit 不跨 Session 合并；维护任务只能提出“重新关联”，不能把两个 Session 的单元合并成一个。
+- `pending` 只表示存在对应的活动标题/摘要任务；已经成功应用但没有摘要的可选阅读片段仍为 `ready`，界面显示“暂无摘要”，不能显示为无来源的待处理状态。
 
 KnowledgeUnit 的创建、标题、摘要或边界变化不得使 SessionConcept/MessageConcept 失效，也不得阻塞直接 Concept 提取。
 
@@ -302,7 +303,7 @@ Concept ID 导入 `message_concepts`，同时保留 metadata 原文以便回溯�
 
 长 Session 可以使用带重叠上下文的窗口分批提取候选。窗口必须携带全局 Message ID，最终在 Session 级完成去重、归一化、关系校验和归属合并；窗口边界是运行时机制，不得落库为 KnowledgeUnit 或被视为知识边界。
 
-旧版分段结果仍按兼容规则校验：索引必须在输入范围内，不能重复，且 `units` 与 `unassigned_message_indices` 覆盖全部消息。校验失败不得应用部分结果；旧任务可完成、取消或转人工，但新主流程不依赖它。
+旧版分段结果及其校验器只用于读取历史审计数据和回归旧格式。索引仍必须在输入范围内、不能重复，且 `units` 与 `unassigned_message_indices` 覆盖全部消息；但活动状态的旧 `segmentation` 任务在 v7 迁移和备份恢复时统一转为 `cancelled`，不能重新排队或执行。已有 KnowledgeUnit 和原始响应继续保留。
 
 ### 4.2 Concept 结果
 
@@ -391,7 +392,7 @@ Concept 提取结果必须包含 `concepts` 数组；全部复用目录中已有
 ### 6.3 缓存
 
 - 缓存键至少包含 `graph_revision`、筛选条件、`showUnits`、`showMessages`、`showProposed`、`showRetainedSessions`、排序后的 `expandedConceptIds` 和规范化的 `expandedConceptDepth`；
-- 导入、直接 Session/Message/Unit Concept 关联、按需 KnowledgeUnit 编辑、关系编辑、合并、删除和恢复成功后递增 `graph_revision`；旧分段任务应用也只在实际改变兼容单元投影时递增；
+- 导入、直接 Session/Message/Unit Concept 关联、按需 KnowledgeUnit 编辑、关系编辑、合并、删除和恢复成功后递增 `graph_revision`；旧分段任务只保留历史记录，不再产生新的单元投影；
 - 缓存失效不会影响业务数据；
 - 自动图谱不允许出现无法从业务表重建的事实。
 
@@ -456,4 +457,4 @@ Concept 提取结果必须包含 `concepts` 数组；全部复用目录中已有
 
 KnowledgeUnit 仍是合法的可选实体，用于用户选择的一组消息的阅读整理或证据打包。它可以晚于 Concept 提取创建，也可以不存在；其 `UnitConcept` 关联是对直接 Session/Message 归属的补充，不是替代。删除或重做 KnowledgeUnit 只解除其自身关联，不得删除原始内容或直接归属。
 
-旧 schema 和旧任务兼容规则：已有 KnowledgeUnit、`Message.unit_id`、`UnitConcept`、`NavTreeNodeUnit` 继续按原外键和校验规则读取；历史 `segmentation`、`title`、`summary` 任务可以恢复、完成、取消或标记 `stale`。旧分段结果不得自动覆盖手动归属，也不得阻塞新的直接 Concept 任务。导入迁移保留旧任务响应和原始 Prompt，任何无法安全转换的单一 `concept_id` 归属进入 `needs_review`，不能静默选择一个主题。
+旧 schema 和旧任务兼容规则：已有 KnowledgeUnit、`Message.unit_id`、`UnitConcept`、`NavTreeNodeUnit` 继续按原外键和校验规则读取。历史 `segmentation` 任务的 Prompt、响应和终态记录保留，但活动状态统一转为 `cancelled` 且不能重试；`title`、`summary` 任务仍按其实际状态兼容。旧分段结果不得自动覆盖手动归属，也不得阻塞新的直接 Concept 任务。导入迁移保留旧任务响应和原始 Prompt，任何无法安全转换的单一 `concept_id` 归属进入 `needs_review`，不能静默选择一个主题。

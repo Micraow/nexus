@@ -28,7 +28,7 @@
 
 - 所有结构化任务都要求 JSON 对象。主 Concept 任务直接使用 `{ "concepts": [{ "name": "...", "summary": "...", "aliases": [] }], "concept_ids": [], "memberships": [], "relations": [] }`；每个 `memberships` 目标的 `concept_ids` 都是可为空的多选数组，目标可以是 `session`、`message` 或兼容的 `unit`。标题/摘要任务和维护任务仍可使用 `{ "title": "..." }`、`{ "summary": "..." }` 与 `unit_relink.concept_ids`。旧结果若仍使用单个归属 `concept_id`，进入人工修复而不自动压缩为一个主题。
 - 新导入默认不创建 `segmentation` 任务。长 Session 可以在运行时用带重叠窗口的输入分批处理，但窗口必须携带全局 Message ID，最终在 Session 级完成去重、归一化、关系校验和多归属合并；窗口边界不落库为 KnowledgeUnit。
-- `segmentation`、标题和摘要任务仍作为旧数据库/按需阅读片段的兼容任务保留。旧分段结果通过完整覆盖、重复、越界和文本长度校验后才写入；应用旧分段只影响对应 KnowledgeUnit、Message.unit_id 和 UnitConcept 下游，不得清除或阻塞 SessionConcept/MessageConcept。
+- `segmentation`、标题和摘要任务仍作为旧数据库/按需阅读片段的兼容记录保留。旧分段结果通过完整覆盖、重复、越界和文本长度校验后才可人工审阅；活动状态的旧 `segmentation` 任务在 schema v7 统一转为 `cancelled`，不能重试或执行，也不再产生新的单元投影。按需阅读片段只影响对应 KnowledgeUnit、Message.unit_id 和 UnitConcept 下游，不得清除或阻塞 SessionConcept/MessageConcept。
 - LLM 生成的 Concept 名称、摘要和别名优先在同一结果中写入；可选 KnowledgeUnit 的标题/摘要写入时不增加其 revision。用户创建或编辑 KnowledgeUnit 只使该单元尚未完成的下游任务变为 `stale`，不使直接 Session/Message 归属失效。
 - API 任务队列按配置并发数（1～4）批量执行，单任务最多进行三次请求（含超时、429 和 5xx 的指数退避）。同一 Session 的直接 Concept 任务按输入 revision 串行，避免旧结果覆盖新归属；可选 KnowledgeUnit 元数据任务只在对应单元创建后串行。Prompt 粘贴任务保持人工逐项应用。并发数已在设置页提供选择器（1～4），写回 `config.yaml`；同一 Session 的 revision 规则不受并发数影响。
 - Token 预算不是固定的 `8000`：设置页允许输入任意不小于 `1000` 的有限安全整数并立即持久化为 `llm.token_budget`，不施加产品级最大值。配置读取、界面提交和写回使用同一归一化函数；该值供长 Session 分窗与新对话上下文超限检查共同使用，已创建的任务不会因之后修改预算而重写。
@@ -70,11 +70,11 @@
 ## 主动探索界面
 
 - `Concept` 在用户界面中显示为“知识主题”。这是中文产品文案的显示层选择：它比“概念”更能表达跨会话复用的稳定知识主体；数据库字段、TypeScript 类型和 Prompt 契约仍使用 `Concept`，以保持设计文档的数据契约不变。
-- 界面文案不暴露开发术语：面向用户统一使用“会话 / 知识单元 / 知识主题 / 任务”等词，`Session`、`Concept`、`schema` 等只出现在数据层与文档。
+- 界面文案不暴露开发术语：面向用户使用“会话 / 阅读片段 / 知识主题 / 任务”等词，`KnowledgeUnit` 作为可选证据包保留在数据层；`Session`、`Concept`、`schema` 等只出现在数据层与文档。
 - 从知识主题详情或上下文面板发起对话时，总是打开独立的 composer。快捷短语先渲染 `$(topic)` / `$(context)`，用户仍可编辑生成的问题；创建后落库新的 Session、导航根节点、用户首条消息和待处理 conversation 任务，不在界面中直接发送网络请求。预选主题同时写入 Session/Message 直接归属。
-- 导航树使用 `NavTreeNode` 的父子关系递归渲染；会话页同时保留按时间排列的知识单元列表，节点点击只定位已有单元，不复制或重建事实数据。
+- 导航树使用 `NavTreeNode` 的父子关系递归渲染；会话页按时间排列可选阅读片段，节点点击只定位已有片段或原始消息，不复制或重建事实数据。
 - 上下文排序在界面状态中保持为用户拖拽顺序，创建 conversation 任务时按该顺序写入 `ContextReference.order_in_context`。输入 token 以字符数除以 4 估算；超过配置预算时只提示并禁止创建任务，不静默截断。
-- 长列表使用分段加载而非虚拟滚动：会话每页 40、知识主题每页 60、历史任务每页 30，底部“加载更多”递增可见数。该阈值是界面常量，后续接入虚拟滚动时可整体替换。
+- 长列表使用分段加载而非虚拟滚动：会话每页 40、知识主题每页 60、历史任务每页 30；主题的“包含消息”全屏查看器跨 Session 固定每页 20 条，并在每条消息头部标记来源会话，使用上一页/下一页翻页。该阈值是界面常量，后续接入虚拟滚动时可整体替换。
 - 知识主题详情的关联单元列表支持三种排序：最近更新、创建时间、名称（中文 `Intl.Collator('zh-Hans-CN')` 排序）；父/子/相关主题行按对方主题关联的单元数量降序排列，常用主体靠前。
 - 首次启动不注入演示数据。空库直接显示导入引导，避免把示例内容误认为用户自己的知识。
 - 新对话主页直接提供问题输入、知识主题、快捷短语和上下文入口；创建动作复用同一 composer，仍只创建本地任务，不在点击时隐式发出网络请求。原有导入、最近会话和图谱入口降为辅助区域，确保首次打开应用即可开始提问。首页和普通工作页使用更宽的内容列，空列表也用占满面板的空状态承接主要空间。
@@ -99,7 +99,7 @@
 ## 验收覆盖说明（对应设计 15.1）
 
 - 单元测试（vitest，36 项）覆盖纯函数：Markdown 渲染与注入防护、分块切分与合并校验、图谱关系建环规则、中文搜索回退与排序、扩展会话发现与导出 payload。`services/db.ts` 与 store 的数据库耦合路径（导入、合并撤销、stale 防覆盖、备份恢复）依赖 sql.js WASM，未纳入 vitest 自动化。
-- 数据库耦合路径通过 headless Chromium + CDP 冒烟脚本人工验收：空态加载、图谱渲染、帮助弹窗、Provider 保存、导入 JSON → 任务中心 → Prompt 粘贴应用 Session/Message Concept 归属（旧数据另验分段/标题/摘要兼容）→ 图谱出现主题与直接证据节点 → 会话列表核对，全程断言无运行时异常。该脚本为临时验收工具，不随应用分发。
+- 数据库耦合路径通过 headless Chromium + CDP 冒烟脚本人工验收：空态加载、图谱渲染、帮助弹窗、Provider 保存、导入 JSON → 任务中心 → Prompt 粘贴应用 Session/Message Concept 归属（旧数据另验阅读片段兼容与废弃分段任务归档）→ 图谱出现主题与直接证据节点 → 主题目录右栏跨 Session 消息分页 → 会话列表核对，全程断言无运行时异常。该脚本为临时验收工具，不随应用分发。
 
 ## 直接 Concept 流程迁移约定
 
@@ -107,13 +107,13 @@
 - 长会话的重叠窗口只服务于请求大小和上下文管理。窗口携带全局 Message ID，窗口合并后才写入 SessionConcept/MessageConcept；禁止把窗口边界当作持久化 KnowledgeUnit。
 - `mixed`、`discussion` 和 `procedure` 仍然进入直接 Concept 提取。形态判断只影响默认筛选和展示，不影响原始内容保留、搜索、上下文选择或知识识别。
 - KnowledgeUnit 是可选阅读片段/证据包。创建、编辑和删除只影响它自己的 Message.unit_id、UnitConcept、标题和摘要；不应删除原始 Message，也不应覆盖直接 SessionConcept/MessageConcept。
-- 旧 schema 中的 KnowledgeUnit、`Message.unit_id`、`NavTreeNodeUnit` 和 `segmentation`/标题/摘要任务必须继续可读、可导出和可人工维护。迁移可以让旧任务完成、取消或标记为 stale，但不能用旧分段结果重写新的直接归属。
+- 旧 schema 中的 KnowledgeUnit、`Message.unit_id`、`NavTreeNodeUnit` 和 `segmentation`/标题/摘要任务必须继续可读、可导出和可人工维护。迁移会把活动状态的旧 `segmentation` 任务统一标记为 `cancelled`，保留审计字段但不再允许重试或执行；不能用旧分段结果重写新的直接归属。
 
 ## 当前概念层次与状态机（2026-08）
 
 - 事实层次：`Session` 是完整对话容器，`Message` 是不可丢失的原始消息，`Concept` 是跨 Session 复用的知识主题。`KnowledgeUnit` 保留为同一 Session 内可选的阅读片段/证据包，不是主题层级、不是分段前置条件，也不参与根主题判断。
 - 导入链：原始 `Session/Message` 先写入 → 创建 `session_triage` 与 `origin_concepts` 任务 → 任务经历 `pending → running → success`，异常进入 `needs_review/failed`，输入版本变化进入 `stale`；直接主题结果写入 `SessionConcept/MessageConcept`，不等待 KnowledgeUnit。
-- 对话链：本地草稿 → 创建 `conversation` 任务（API 为 `pending → running`，Prompt 粘贴保持 `pending` 等待人工回传）→ 校验结果 → `success` 写入 assistant Message、导航树节点、可选 KnowledgeUnit 和多主题归属；`units` 可以为空，表示这轮回答没有稳定的阅读片段。非法结果进入 `needs_review`，重试或版本变化分别回到 `pending` 或 `stale`。
+- 对话链：本地草稿 → 创建 `conversation` 任务（API 为 `pending → running`，Prompt 粘贴保持 `pending` 等待人工回传）→ 校验结果 → `success` 写入 assistant Message、导航树节点和多主题归属；`units` 可以为空或包含多个本轮可选阅读片段。非法结果进入 `needs_review`，重试或版本变化分别回到 `pending` 或 `stale`。没有摘要的已应用片段仍为 `ready`，不再伪装成等待分段。
 - 关系链：LLM/维护任务产生 `proposed` → 用户确认变为 `confirmed` 或拒绝变为 `rejected`。只有 `confirmed` 默认参与图谱，`showProposed` 打开时才显示建议关系。
 - 展示层：图谱从事实层实时派生；默认只显示 hierarchy 根主题，Concept 单击同时打开详情并逐层展开/递归收起，`related` 永不改变层级。Sigma.js 评估后暂不替换 D3：现有 SVG 图谱已覆盖缩放、拖拽、悬停高亮、键盘语义、框选和稳定布局，贸然换成 Sigma 会改写测试与交互层；后续若节点规模超过当前阈值，再以独立适配层引入 graphology/Sigma。
 - 知识主题页的左栏使用可折叠 hierarchy 树，主题行单击选中并打开右侧内容，树节点的独立折叠控件负责展开/收起；过滤时保留命中主题的祖先节点，父子跳转后详情列滚动回顶。图谱主题节点不提供独立 `+/-` 控件，主体单击同时打开详情并展开/收起。

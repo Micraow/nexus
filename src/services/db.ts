@@ -1,5 +1,6 @@
 import initSqlJs, { type Database, type SqlJsStatic } from 'sql.js'
 import { invokeTauri, isTauriRuntime } from '@/services/tauri'
+import { LEGACY_SEGMENTATION_RETIRED_REASON } from '@/services/task-state'
 import wasmUrl from 'sql.js/dist/sql-wasm.wasm?url'
 
 // Vite serves the imported asset URL in the browser. Vitest exposes the same
@@ -14,7 +15,7 @@ const STORAGE_KEY = 'nexus:sqlite:v1'
 const BROWSER_STORAGE_DB = 'nexus:storage'
 const BROWSER_STORAGE_STORE = 'kv'
 const BACKUP_STORAGE_PREFIX = 'nexus:sqlite:backup:'
-const CURRENT_SCHEMA_VERSION = 6
+const CURRENT_SCHEMA_VERSION = 7
 
 export interface DatabaseIntegrityReport {
   ok: boolean
@@ -314,6 +315,15 @@ const migrations: Array<{ version: number; apply: (database: Database) => void }
       if (!columns.includes('summary')) database.run("ALTER TABLE sessions ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
     },
   },
+  {
+    version: 7,
+    apply(database) {
+      database.run(
+        "UPDATE llm_tasks SET status = 'cancelled', error_message = COALESCE(NULLIF(error_message, ''), ?) WHERE type = 'segmentation' AND status IN ('pending', 'running', 'needs_review')",
+        [LEGACY_SEGMENTATION_RETIRED_REASON],
+      )
+    },
+  },
 ]
 
 export class SqliteStore {
@@ -502,6 +512,10 @@ export class SqliteStore {
       );
       CREATE INDEX IF NOT EXISTS idx_message_concepts_concept ON message_concepts(concept_id);
     `)
+    this.requireDb().run(
+      "UPDATE llm_tasks SET status = 'cancelled', error_message = COALESCE(NULLIF(error_message, ''), ?) WHERE type = 'segmentation' AND status IN ('pending', 'running', 'needs_review')",
+      [LEGACY_SEGMENTATION_RETIRED_REASON],
+    )
   }
 
   private requireDb(): Database {

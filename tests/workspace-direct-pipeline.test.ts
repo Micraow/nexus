@@ -76,9 +76,10 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.units).toHaveLength(0)
   })
 
-  it('keeps legacy segmentation task application available', () => {
+  it('retires legacy segmentation work instead of presenting it as pending', () => {
     const report = store.importJsonText(JSON.stringify(payload()))
     const session = store.sessions[0]
+    const pendingBefore = store.pendingTaskCount
     const taskId = store.createTask({
       type: 'segmentation',
       mode: 'prompt_paste',
@@ -91,15 +92,23 @@ describe('direct concept extraction import pipeline', () => {
       scopeLabel: 'legacy segmentation',
     })
     store.refreshFromDb()
+    expect(store.tasks.find((task) => task.id === taskId)).toMatchObject({ status: 'cancelled', errorMessage: expect.stringContaining('已停用') })
+    expect(store.pendingTaskCount).toBe(pendingBefore)
     const result = store.applyTaskResult(taskId, JSON.stringify({
       units: [{ message_indices: [0, 1], title_hint: '旧知识单元' }],
       unassigned_message_indices: [],
     }))
 
     expect(report.taskIds).toHaveLength(2)
-    expect(result.ok, result.errors.join('; ')).toBe(true)
-    expect(store.units).toHaveLength(1)
-    expect(store.units[0].title).toBe('旧知识单元')
+    expect(result.ok).toBe(false)
+    expect(store.units).toHaveLength(0)
+    store.retryTask(taskId)
+    expect(store.tasks.find((task) => task.id === taskId)?.status).toBe('cancelled')
+
+    const backup = JSON.parse(store.exportKnowledgeBase())
+    backup.tasks.find((task: { id: string }) => task.id === taskId).status = 'pending'
+    store.importKnowledgeBase(JSON.stringify(backup))
+    expect(store.tasks.find((task) => task.id === taskId)?.status).toBe('cancelled')
   })
 
   it('records the selected topic on a new conversation before an answer exists', () => {
@@ -133,6 +142,22 @@ describe('direct concept extraction import pipeline', () => {
     expect(conversationMessages.map((message) => message.role)).toEqual(['user', 'assistant'])
     expect(conversationMessages[1].metadata).toMatchObject({ navNodeId: expect.any(String) })
   })
+
+  it('treats an applied optional reading excerpt without a summary as ready', () => {
+    const sessionId = store.createConversationTask({ question: '保留一段可复用的阅读证据' })
+    const task = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
+    const result = store.applyTaskResult(task.id, JSON.stringify({
+      answer: '回答正文',
+      units: [{ title: '可选阅读片段', concept_ids: [], concepts: [] }],
+      memberships: [],
+      disclosure_requests: [],
+    }))
+
+    expect(result.ok, result.errors.join('; ')).toBe(true)
+    expect(store.units).toContainEqual(expect.objectContaining({ title: '可选阅读片段', summary: null, status: 'ready' }))
+    expect(store.tasks.some((item) => item.type === 'unit_metadata' && item.status === 'pending')).toBe(false)
+  })
+
 
   it('rejects unknown top-level conversation Concept IDs without writing an answer', () => {
     store.createConcept('已有主题')

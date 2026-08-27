@@ -12,6 +12,7 @@ import { combineSegmentationChunks, splitMessageChunks } from '@/utils/chunks'
 import { wouldCreateHierarchyCycle } from '@/utils/graph-rules'
 import { createId, isoNow, normalizeText, parseIsoTimestamp, stableHash } from '@/utils/id'
 import { parseMetadata } from '@/utils/metadata'
+import { isActiveTaskStatus, LEGACY_SEGMENTATION_RETIRED_REASON, normalizeTaskStatus } from '@/services/task-state'
 import type {
   AppConfig,
   Concept,
@@ -214,7 +215,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const activeSessions = computed(() => sessions.value.filter((session) => !session.deletedAt))
   const activeSessionIds = computed(() => new Set(activeSessions.value.map((session) => session.id)))
   const activeConcepts = computed(() => concepts.value.filter((concept) => concept.status === 'active'))
-  const pendingTaskCount = computed(() => tasks.value.filter((task) => ['pending', 'running', 'needs_review'].includes(task.status)).length)
+  const pendingTaskCount = computed(() => tasks.value.filter((task) => task.type !== 'segmentation' && isActiveTaskStatus(task.status)).length)
   const selectedUnits = computed(() => selectedContextIds.value.map((id) => units.value.find((unit) => unit.id === id)).filter(Boolean) as KnowledgeUnit[])
   const selectedContextMessages = computed(() => selectedContextMessageIds.value.map((id) => messages.value.find((message) => message.id === id)).filter(Boolean) as Message[])
   const stats = computed(() => ({
@@ -780,10 +781,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function createTask(task: Omit<LLMTask, 'id' | 'createdAt' | 'updatedAt' | 'retryCount'>): string {
     const id = createId('task')
     const now = isoNow()
+    const status = normalizeTaskStatus(task.type, task.status)
+    const errorMessage = status !== task.status ? LEGACY_SEGMENTATION_RETIRED_REASON : task.errorMessage ?? null
     db.run(
       `INSERT INTO llm_tasks(id, type, mode, provider_id, model, prompt_version, input_revision, prompt, response, parsed_result, validation_errors, status, retry_count, error_message, created_at, updated_at, scope_label)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
-      [id, task.type, task.mode, task.providerId ?? null, task.model ?? null, task.promptVersion, task.inputRevision, ensureHarnessPrompt(task.prompt), task.response ?? null, task.parsedResult ?? null, task.validationErrors ?? null, task.status, task.errorMessage ?? null, now, now, task.scopeLabel ?? null],
+      [id, task.type, task.mode, task.providerId ?? null, task.model ?? null, task.promptVersion, task.inputRevision, ensureHarnessPrompt(task.prompt), task.response ?? null, task.parsedResult ?? null, task.validationErrors ?? null, status, errorMessage, now, now, task.scopeLabel ?? null],
     )
     return id
   }
@@ -857,7 +860,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       records.nav_nodes.forEach((item: NavTreeNode) => db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [item.id, item.sessionId, item.parentId ?? null, item.triggerConceptId ?? null, item.label, item.depth, item.createdAt]))
       records.nav_node_units.forEach((item: NavTreeNodeUnit) => db.run('INSERT INTO nav_tree_node_units(node_id, unit_id, order_in_node) VALUES (?, ?, ?)', [item.nodeId, item.unitId, item.orderInNode]))
       records.context_references.forEach((item: ContextReference) => db.run('INSERT INTO context_references(id, target_session_id, source_session_id, source_unit_id, source_message_id, order_in_context, include_full_content) VALUES (?, ?, ?, ?, ?, ?, ?)', [item.id, item.targetSessionId, item.sourceSessionId, item.sourceUnitId ?? null, item.sourceMessageId ?? null, item.orderInContext, item.includeFullContent ? 1 : 0]))
-      records.tasks.forEach((item: LLMTask) => db.run('INSERT INTO llm_tasks(id, type, mode, provider_id, model, prompt_version, input_revision, prompt, response, parsed_result, validation_errors, status, retry_count, error_message, created_at, updated_at, scope_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.type, item.mode, item.providerId ?? null, item.model ?? null, item.promptVersion, item.inputRevision, ensureHarnessPrompt(item.prompt), item.response ?? null, item.parsedResult ?? null, item.validationErrors ?? null, item.status, item.retryCount, item.errorMessage ?? null, item.createdAt, item.updatedAt, item.scopeLabel ?? null]))
+      records.tasks.forEach((item: LLMTask) => {
+        const status = normalizeTaskStatus(item.type, item.status)
+        const errorMessage = status !== item.status ? LEGACY_SEGMENTATION_RETIRED_REASON : item.errorMessage ?? null
+        db.run('INSERT INTO llm_tasks(id, type, mode, provider_id, model, prompt_version, input_revision, prompt, response, parsed_result, validation_errors, status, retry_count, error_message, created_at, updated_at, scope_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.type, item.mode, item.providerId ?? null, item.model ?? null, item.promptVersion, item.inputRevision, ensureHarnessPrompt(item.prompt), item.response ?? null, item.parsedResult ?? null, item.validationErrors ?? null, status, item.retryCount, errorMessage, item.createdAt, item.updatedAt, item.scopeLabel ?? null])
+      })
       records.manual_edges.forEach((item: ManualGraphEdge) => db.run('INSERT INTO manual_graph_edges(id, source_type, source_ref_id, target_type, target_ref_id, label, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [item.id, item.sourceType, item.sourceRefId, item.targetType, item.targetRefId, item.label ?? null, item.createdAt]))
       if (Array.isArray(records.graph_layout)) records.graph_layout.forEach((item: GraphLayoutEntry) => db.run('INSERT INTO graph_layout(node_type, ref_id, x, y, fixed, layout_version) VALUES (?, ?, ?, ?, ?, ?)', [item.nodeType, item.refId, item.x, item.y, item.fixed ? 1 : 0, item.layoutVersion ?? 1]))
       if (records.graph_viewport && typeof records.graph_viewport === 'object') {
@@ -2045,7 +2052,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           : []
         normalizedUnits.forEach((item, index) => {
           const unitId = createId('unit')
-          db.run('INSERT INTO knowledge_units(id, session_id, title, summary, order_in_session, status, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)', [unitId, targetId, item.title, item.summary || null, unitOffset + index, item.summary ? 'ready' : 'pending', now, now])
+          db.run('INSERT INTO knowledge_units(id, session_id, title, summary, order_in_session, status, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)', [unitId, targetId, item.title, item.summary || null, unitOffset + index, 'ready', now, now])
           if (index === 0 && userMessage) db.run('UPDATE messages SET unit_id = ? WHERE id IN (?, ?)', [unitId, userMessage.id, assistantMessageId])
           db.run('INSERT INTO nav_tree_node_units(node_id, unit_id, order_in_node) VALUES (?, ?, ?)', [branchNodeId, unitId, index])
           const explicitIds = [...new Set([...declaredTopLevelConceptIds, ...item.conceptIds])]
@@ -2083,6 +2090,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   function retryTask(taskId: string): void {
+    if (tasks.value.find((task) => task.id === taskId)?.type === 'segmentation') return
     mutate(() => db.run("UPDATE llm_tasks SET status = 'pending', error_message = NULL, validation_errors = NULL, updated_at = ? WHERE id = ? AND status IN ('failed', 'needs_review', 'stale', 'cancelled')", [isoNow(), taskId]))
   }
 
@@ -2094,6 +2102,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   async function executeTask(taskId: string): Promise<{ ok: boolean; error?: string }> {
     const task = tasks.value.find((item) => item.id === taskId)
     if (!task) return { ok: false, error: '找不到任务' }
+    if (task.type === 'segmentation') return { ok: false, error: LEGACY_SEGMENTATION_RETIRED_REASON }
     if (task.mode !== 'api') return { ok: false, error: 'Prompt 粘贴模式需要手动执行 Prompt' }
     const provider = config.value.llm.providers.find((item) => item.id === task.providerId) ?? config.value.llm.providers.find((item) => item.id === config.value.llm.defaultProvider)
     if (!provider?.baseUrl || !provider.apiKey) return { ok: false, error: '请先在设置中填写 API Base URL 和 API Key' }
