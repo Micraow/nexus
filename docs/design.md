@@ -62,7 +62,7 @@ KnowledgeUnit 是辅助内容结构，不是 Concept 提取或建图的前置条
 - `summary` 不超过 120 个中文字符，概括主要结论、比较对象或关键问题；
 - 关联的多个 Concept 不区分强制的主次概念。
 
-当前版本不删除 KnowledgeUnit：它作为可选证据包承载标题、摘要、上下文选择和旧数据兼容；产品界面不把它呈现为“知识主题”的第二层。没有单元的 Message 仍可直接归属主题、检索、加入上下文和进入图谱，后续如需彻底移除必须先完成数据库导出/迁移及上下文选择替代方案。
+当前版本不删除 KnowledgeUnit：它作为可选证据包承载标题、摘要、上下文选择和旧数据兼容；产品界面统一称为“阅读片段”，不把它呈现为“知识主题”的第二层。没有片段的 Message 仍可直接归属主题、检索、加入上下文和进入图谱，后续如需彻底移除必须先完成数据库导出/迁移及上下文选择替代方案。
 
 例如：
 
@@ -564,9 +564,9 @@ LLM 只返回建议变更：合并、别名、父子关系、相关关系、重�
 
 读取一个 Session 及其 Message，先记录可修正的内容形态判断，再直接创建 Session/Message 级 Concept 提取任务。`knowledge`、`discussion`、`procedure` 和 `mixed` 都完整保留；`mixed` 必须继续识别其中稳定的知识。
 
-默认整理不创建 `segmentation` 任务，也不等待 KnowledgeUnit、标题或摘要任务。长会话只在任务执行时按带重叠的窗口处理，并在 Session 级合并候选；窗口不写入业务表。
+默认整理不创建 `segmentation` 任务，也不等待 KnowledgeUnit、标题或摘要任务。长会话只在任务执行时按带重叠的窗口处理，并在 Session 级合并候选；窗口不写入业务表。迁移或恢复时，历史活动 `segmentation` 任务统一标记为“已取消（旧版分组已停用）”，保留 Prompt 和响应供审计，但不得重新排队或执行。
 
-旧数据库中的 KnowledgeUnit、`Message.unit_id`、`NavTreeNodeUnit` 和历史 `segmentation`/标题/摘要任务继续可读、可编辑和导出。旧待处理分段任务可以完成、取消或转为人工处理，但新主流程不能依赖它们。
+旧数据库中的 KnowledgeUnit、`Message.unit_id`、`NavTreeNodeUnit` 和历史 `segmentation`/标题/摘要任务继续可读、可编辑和导出。旧待处理分段结果保留为历史记录但不能重新执行；需要整理时直接使用 Session/Message Concept 流程。
 
 ### M3 Concept 提取与塔式层级
 
@@ -622,7 +622,7 @@ LLM 只返回建议变更：合并、别名、父子关系、相关关系、重�
 
 ### M5 对话与追问
 
-点击 Concept 或导航树节点后，用户可以使用快捷短语或自定义问题。Prompt 可包含：相关 KnowledgeUnit 摘要、用户笔记、当前 Concept 层级、当前导航路径和用户问题。回复解析后创建新的 Session 内 KnowledgeUnit，并在当前 NavTreeNode 下创建一个新的探索子节点；一次回复若分成多个单元，全部通过 NavTreeNodeUnit 关联到同一个节点。
+点击 Concept 或导航树节点后，用户可以使用快捷短语或自定义问题。Prompt 可包含：相关 KnowledgeUnit 摘要、用户笔记、当前 Concept 层级、当前导航路径和用户问题。回复解析后在当前 NavTreeNode 下创建一个新的探索子节点；若本轮存在稳定且可复用的证据，可附带一个或多个 Session 内 KnowledgeUnit（界面称“阅读片段”）并通过 NavTreeNodeUnit 关联；没有稳定证据时 `units: []`，assistant Message 和导航节点仍然落库。
 
 回复中的 Concept 以可点击文本展示：已有 Concept 跳转详情，新 Concept 进入待确认/添加流程。内容按正常 Markdown、代码和链接形式显示，不执行其中的文字指令。
 
@@ -753,7 +753,7 @@ LLM 返回建议而不是直接修改，包括：
   → 刷新图谱派生缓存
 ```
 
-旧数据中已经存在的 KnowledgeUnit 和导航树关联照常参与浏览与图谱；迁移不会删除或重切旧单元。旧 `segmentation` 任务保留审计记录，但不再阻塞新的直接 Concept 提取流程。
+旧数据中已经存在的 KnowledgeUnit 和导航树关联照常参与浏览与图谱；迁移不会删除或重切旧片段。旧 `segmentation` 任务保留审计记录并统一归档为已取消，不再阻塞新的直接 Concept 提取流程。
 
 ### 10.2 追问分支
 
@@ -763,7 +763,7 @@ LLM 返回建议而不是直接修改，包括：
   → 构造上下文和 Prompt
   → API 或 Prompt 粘贴模式执行
   → 校验回复结构
-  → 在当前 Session 创建一个或多个 KnowledgeUnit
+  → 在当前 Session 按需创建零个或多个 KnowledgeUnit（阅读片段）
   → 创建一个 NavTreeNode 并关联这些单元
   → 提取 Concept、刷新图谱和高亮
 ```
