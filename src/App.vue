@@ -276,6 +276,7 @@ const activeConversationStatus = computed(() => {
   if (!task) return activeConversationUnfinishedTask.value ? '其他分支等待处理' : '本地会话'
   return ({ pending: '等待处理', running: '正在思考…', success: '回答已整理', failed: '请求失败', needs_review: '结果需要检查', stale: '结果已过期', cancelled: '任务已取消' } as Record<LLMTask['status'], string>)[task.status]
 })
+
 const fullscreenSession = computed(() => {
   const target = fullscreenTarget.value
   return target?.kind === 'session' ? store.sessions.find((session) => session.id === target.sessionId) ?? null : null
