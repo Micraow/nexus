@@ -5,7 +5,7 @@ import type { KnowledgeUnit, Message, Session } from '@/types/domain'
  * lets provider-side prompt caches reuse the behavioural contract while each
  * task appends its own spec and data below it.
  */
-export const PROMPT_VERSION = '2026-08-v3-multi-concept'
+export const PROMPT_VERSION = '2026-08-v4-direct-concepts'
 
 export interface DisclosureReference {
   /** Opaque internal id. The model must never invent or rewrite it. */
@@ -28,6 +28,17 @@ export interface DisclosureContext {
   expansions?: DisclosureExpansion[]
   /** Number of completed continuation turns, persisted inside the prompt. */
   round?: number
+}
+
+/**
+ * Optional technical window metadata for Session-level extraction. A window
+ * limits model input only; it must never become a persisted knowledge boundary.
+ */
+export interface OriginConceptWindow {
+  /** One-based position of this window in the caller's extraction pass. */
+  index: number
+  /** Total number of windows in the caller's extraction pass. */
+  total: number
 }
 
 /** Stable protocol text shared by every task prompt. */
@@ -313,21 +324,42 @@ export function buildOriginConceptPrompt(
   session: Session,
   messages: Message[],
   disclosure?: DisclosureContext,
+  inputWindow?: OriginConceptWindow,
 ): string {
   const disclosureText = formatDisclosureContext(disclosure)
-  return buildHarnessPrompt(`请从下面的完整 Session 提取 1～8 个稳定、可复用的核心 Concept，并给出有直接证据的关系。探讨或流程内容也可以提取其中稳定的知识；不要因为内容暂时没有单一主题就判为无效。
+  const validWindow = inputWindow
+    && Number.isInteger(inputWindow.index)
+    && Number.isInteger(inputWindow.total)
+    && inputWindow.index >= 1
+    && inputWindow.total >= inputWindow.index
+    ? inputWindow
+    : null
+  const inputScope = validWindow
+    ? `输入范围：这是长会话的技术窗口 ${validWindow.index}/${validWindow.total}。窗口只用于控制上下文长度，不是 KnowledgeUnit、知识边界或独立会话；不要按窗口边界命名 Concept，也不要仅凭局部窗口给整个 Session 建立归属。`
+    : '输入范围：完整 Session。'
+
+  return buildHarnessPrompt(`请直接从下面的 Session 和 Message 提取 1～8 个稳定、可复用的核心 Concept（包括复用已有 Concept 与新候选），并建立可追溯的多对多归属。探讨、比较或操作流程也可以包含稳定知识；不要为了生成主题而先把对话分段。
 
 Session：${session.title}
 Session ID：${session.id}
+${inputScope}
 消息：
 ${messages.map((message) => `${message.orderInSession}. ${message.id} · ${message.role}: ${message.content}`).join('\n')}
 ${disclosureText}
 
-优先复用 DISCLOSURE_INDEX 中已有一级父主题；只有当前内容确实不属于已有层级时才提出新主题。hierarchy 的 source 是父主题、target 是子主题；related 是无向关联。关系必须有消息中的直接证据，最多返回 0～2 条最强关系，宁可为空。
+Concept 与归属：
+- 优先复用 DISCLOSURE_INDEX 中语义范围确实吻合的 Concept；不要因为名称相似就强行复用，也不要只在一级父主题中选择。需要更多层级时按固定协议返回 disclosure_requests，不要自行创造已有 refID。
+- 新候选放入 concepts，并为每个候选声明本次响应内唯一的 client_ref，格式为 new:1、new:2……；client_ref 只用于本次 JSON 内交叉引用，不是数据库 ID。
+- memberships 必须显式声明证据归属。target_type 只能是 session 或 message，target_id 只能使用上面给出的 Session ID 或 Message ID。同一个 Session 或 Message 可以属于多个 Concept，必须使用 concept_ids 数组；数组元素只能是已披露的 Concept refID 或本次 concepts 中声明的 client_ref。
+- Message 可以不归属任何 Concept；不要为了覆盖全部消息而制造主题。每个新候选至少要被一条 Message membership 引用。只有输入是完整 Session，且主题确实概括整个会话时，才添加 Session membership。
+- 禁止返回 unit membership，禁止创建、推断或默认关联 KnowledgeUnit。线性消息顺序和技术窗口都不是知识边界。
 
-输出中的 memberships 是可选的细粒度归属声明；同一个 Session 或 Message 可以同时归属于多个 Concept，必须使用 concept_ids 数组。只能引用 DISCLOSURE_INDEX 中已经出现的 Concept refID；新提取的 Concept 由 concepts 数组定义，并默认关联到本 Session 中相关的所有 KnowledgeUnit。如果全部复用现有 Concept，concepts 可以返回空数组，但 concept_ids 不能同时为空。
+关系：
+- hierarchy 中 source 是直接父主题、target 是直接子主题。只有 target 的语义范围严格包含于 source，且二者是稳定的“上位概念/下位概念”关系时才能使用；因果、先后、组成步骤、同会话出现或一般相关都不是 hierarchy。不要同时返回可由其他边推导出的传递关系。
+- related 是无向、非层级的稳定语义关系，不存在父子顺序。仅共同出现或都属于本 Session 不足以建立 related；最多返回 2 条最强 related，宁可为空。
+- 关系端点使用已披露的 Concept refID 或本次 concepts 的 client_ref。不要为了把所有 Concept 连起来而补关系。
 
-只返回 JSON：{"concepts":[{"name":"...","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"concept_ids":["已列出的 Concept refID"],"memberships":[{"target_type":"session|message|unit","target_id":"原始 ID","concept_ids":["Concept refID", "另一个 Concept refID"]}],"relations":[{"source":"Concept 名称","target":"Concept 名称","type":"hierarchy|related"}],"disclosure_requests":[]}`)
+只返回 JSON：{"concepts":[{"client_ref":"new:1","name":"...","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"memberships":[{"target_type":"session|message","target_id":"原始 ID","concept_ids":["已披露的 Concept refID 或 new:1","另一个 Concept refID 或 client_ref"]}],"relations":[{"source":"Concept refID 或 client_ref","target":"Concept refID 或 client_ref","type":"hierarchy|related"}],"disclosure_requests":[]}`)
 }
 
 export function buildRepairPrompt(originalResponse: string, errors: string[], disclosure?: DisclosureContext): string {

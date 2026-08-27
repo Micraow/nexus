@@ -102,3 +102,46 @@ describe('prompt harness and progressive disclosure', () => {
     })
   })
 })
+
+describe('Session and Message Concept extraction contract', () => {
+  const closMessages = [
+    { id: 'clos-question-1', sessionId: 's', role: 'user' as const, content: 'Spine Leaf是不是就是Clos?', orderInSession: 0 },
+    { id: 'clos-question-2', sessionId: 's', role: 'user' as const, content: 'fat tree是不是也是clos？', orderInSession: 1 },
+    { id: 'clos-question-3', sessionId: 's', role: 'user' as const, content: '为什么clos不阻塞', orderInSession: 2 },
+  ]
+
+  it('extracts direct multi-memberships without making KnowledgeUnit a boundary', () => {
+    const prompt = buildOriginConceptPrompt({ ...session, title: 'Spine Leaf与Clos关系', messageCount: 3 }, closMessages)
+
+    expect(prompt).toContain('直接从下面的 Session 和 Message')
+    expect(prompt).toContain('client_ref')
+    expect(prompt).toContain('"target_type":"session|message"')
+    expect(prompt).toContain('同一个 Session 或 Message 可以属于多个 Concept')
+    expect(prompt).toContain('禁止返回 unit membership')
+    expect(prompt).toContain('不要为了生成主题而先把对话分段')
+    expect(prompt).not.toContain('默认关联到本 Session 中相关的所有 KnowledgeUnit')
+  })
+
+  it('defines sparse hierarchy and related semantics independently', () => {
+    const prompt = buildOriginConceptPrompt({ ...session, title: 'Spine Leaf与Clos关系', messageCount: 3 }, closMessages)
+
+    expect(prompt).toContain('source 是直接父主题、target 是直接子主题')
+    expect(prompt).toContain('上位概念/下位概念')
+    expect(prompt).toContain('related 是无向、非层级的稳定语义关系')
+    expect(prompt).toContain('最多返回 2 条最强 related')
+    expect(prompt).toContain('不要为了把所有 Concept 连起来而补关系')
+  })
+
+  it('treats caller windows as technical input limits instead of knowledge boundaries', () => {
+    const prompt = buildOriginConceptPrompt(
+      { ...session, title: 'Spine Leaf与Clos关系', messageCount: 3 },
+      closMessages,
+      undefined,
+      { index: 2, total: 4 },
+    )
+
+    expect(prompt).toContain('技术窗口 2/4')
+    expect(prompt).toContain('不是 KnowledgeUnit、知识边界或独立会话')
+    expect(prompt).toContain('不要仅凭局部窗口给整个 Session 建立归属')
+  })
+})
