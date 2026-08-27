@@ -85,7 +85,7 @@ const graphShowMessages = ref(false)
 const graphShowProposed = ref(false)
 const graphShowRetainedSessions = ref(false)
 const graphSearch = ref('')
-const graphControlsOpen = ref(true)
+const graphControlsOpen = ref(false)
 const conceptTreeExpandedIds = ref<string[]>([])
 // Concept disclosure is kept in the view. A body activation selects the
 // Concept and toggles its branch in one action; the store recursively clears
