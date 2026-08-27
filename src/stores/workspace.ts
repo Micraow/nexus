@@ -6,7 +6,7 @@ import { parseConfigText, readConfigText, writeConfig } from '@/services/config'
 import { buildGraph, graphStats } from '@/services/graph'
 import { buildSearchDocuments, searchKnowledge } from '@/services/search'
 import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildOriginConceptPrompt, buildRepairPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, ensureHarnessPrompt, listedDisclosureRefIds, parseDisclosureContext, PROMPT_VERSION, renderQuickPhrase, replaceDisclosureContext } from '@/services/prompts'
-import { importPayloadSchema, parseImportPayload, validateConceptIdList, validateConceptMemberships, validateDisclosureRequests, validateSegmentationResult, validateUnitText } from '@/services/validation'
+import { importPayloadSchema, parseImportPayload, validateConceptIdList, validateConceptMemberships, validateDisclosureRequests, validateOriginConceptResult, validateSegmentationResult, validateUnitText } from '@/services/validation'
 import type { DisclosureContext } from '@/services/prompts'
 import { combineSegmentationChunks, splitMessageChunks } from '@/utils/chunks'
 import { wouldCreateHierarchyCycle } from '@/utils/graph-rules'
@@ -905,7 +905,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
             model: null,
             promptVersion: PROMPT_VERSION,
             inputRevision: `${session.id}:${session.revision}${chunkSuffix}`,
-            prompt: buildOriginConceptPrompt(session, chunk.messages, promptDisclosureContext()),
+            prompt: buildOriginConceptPrompt(
+              session,
+              chunk.messages,
+              promptDisclosureContext(),
+              chunks.length > 1 ? { index: chunkIndex + 1, total: chunks.length } : undefined,
+            ),
             status: 'pending',
             scopeLabel: chunks.length > 1 ? `${session.title} · 起始知识主题 ${chunkIndex + 1}/${chunks.length}` : `${session.title} · 起始知识主题`,
           })
@@ -1427,14 +1432,24 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   /** Persist multi-membership declarations in exact join tables. Metadata is
    * still mirrored for backwards compatibility with pre-v4 databases and
    * segmentation imports that already know how to carry those IDs forward. */
-  function persistConceptMemberships(memberships: unknown, now: string): void {
+  function persistConceptMemberships(
+    memberships: unknown,
+    now: string,
+    resolveConceptId: (ref: string) => string | null = (ref) => ref,
+    mirrorMessageToUnit = true,
+  ): void {
     if (!Array.isArray(memberships)) return
     memberships.forEach((raw) => {
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return
       const item = raw as Record<string, unknown>
       const targetType = item.target_type
       const targetId = typeof item.target_id === 'string' ? item.target_id : ''
-      const ids = Array.isArray(item.concept_ids) ? item.concept_ids.filter((id): id is string => typeof id === 'string' && id.trim().length > 0).map((id) => id.trim()) : []
+      const ids = Array.isArray(item.concept_ids)
+        ? item.concept_ids
+          .filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+          .map((id) => resolveConceptId(id.trim()))
+          .filter((id): id is string => Boolean(id))
+        : []
       if (!targetId || !ids.length) return
       const addToUnit = (unitId: string): void => ids.forEach((conceptId) => db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [unitId, conceptId, 'llm', now]))
       const addToMessage = (messageId: string): void => ids.forEach((conceptId) => db.run('INSERT OR IGNORE INTO message_concepts(message_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [messageId, conceptId, 'llm', now]))
@@ -1445,7 +1460,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         if (!messageRow) return
         addToMessage(targetId)
         const unitId = messageRow.unit_id == null ? '' : text(messageRow.unit_id)
-        if (unitId) addToUnit(unitId)
+        if (mirrorMessageToUnit && unitId) addToUnit(unitId)
         let metadata: Record<string, unknown> = {}
         try { metadata = messageRow.metadata ? JSON.parse(text(messageRow.metadata)) as Record<string, unknown> : {} } catch { metadata = {} }
         const current = Array.isArray(metadata.concept_ids) ? metadata.concept_ids.filter((id): id is string => typeof id === 'string') : []
@@ -1790,7 +1805,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
             ...(session ? [session.id] : []),
             ...originMessages.map((message) => message.id),
           ]
-      errors.push(...validateConceptMembershipPayload(task, data, membershipTargets))
+      if (task.type === 'origin_concepts') {
+        errors.push(...validateOriginConceptResult(data, {
+          targetIds: membershipTargets,
+          conceptIds: promptConceptIds(task),
+        }).map((issue) => `${issue.path}: ${issue.message}`))
+      } else {
+        errors.push(...validateConceptMembershipPayload(task, data, membershipTargets))
+      }
       const rawConcepts = data.concepts
       const declaredConceptIds = Array.isArray(data.concept_ids) ? data.concept_ids.filter((value): value is string => typeof value === 'string' && value.trim().length > 0).map((value) => value.trim()) : []
       const membershipConceptIds = Array.isArray(data.memberships)
@@ -1801,10 +1823,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (!Array.isArray(rawConcepts)) errors.push('concepts 必须是数组')
       else if (rawConcepts.length === 0 && declaredConceptIds.length === 0 && membershipConceptIds.length === 0) errors.push('concepts 或 concept_ids 至少需要一项')
       const candidates = Array.isArray(rawConcepts) ? rawConcepts.map((candidate) => {
-        if (typeof candidate === 'string') return { name: candidate, summary: '', aliases: [] as string[] }
-        if (!candidate || typeof candidate !== 'object') return { name: '', summary: '', aliases: [] as string[] }
+        if (typeof candidate === 'string') return { clientRef: '', name: candidate, summary: '', aliases: [] as string[] }
+        if (!candidate || typeof candidate !== 'object') return { clientRef: '', name: '', summary: '', aliases: [] as string[] }
         const item = candidate as Record<string, unknown>
-        return { name: typeof item.name === 'string' ? item.name : '', summary: typeof item.summary === 'string' ? item.summary.trim() : '', aliases: Array.isArray(item.aliases) ? item.aliases.filter((alias): alias is string => typeof alias === 'string') : [] }
+        return {
+          clientRef: typeof item.client_ref === 'string' ? item.client_ref.trim() : '',
+          name: typeof item.name === 'string' ? item.name : '',
+          summary: typeof item.summary === 'string' ? item.summary.trim() : '',
+          aliases: Array.isArray(item.aliases) ? item.aliases.filter((alias): alias is string => typeof alias === 'string') : [],
+        }
       }) : []
       candidates.forEach((candidate) => {
         if (!normalizeText(candidate.name)) errors.push('Concept 名称不能为空')
@@ -1845,18 +1872,27 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           const existing = activeConcepts.value.find((concept) => concept.id === conceptId)
           if (existing) conceptIdsByName.set(normalizeText(existing.name), conceptId)
         })
-        if (task.type === 'concept_extraction' && unit) {
-          allConceptIds.forEach((conceptId) => db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [unit.id, conceptId, 'llm', now]))
+        const conceptIdsByClientRef = new Map<string, string>()
+        candidates.forEach((candidate, index) => {
+          if (candidate.clientRef) conceptIdsByClientRef.set(candidate.clientRef, conceptIds[index])
+        })
+        const resolveConceptRef = (ref: string): string | null => {
+          const normalized = ref.trim()
+          return conceptIdsByClientRef.get(normalized)
+            ?? (activeConcepts.value.some((concept) => concept.id === normalized) ? normalized : null)
+            ?? conceptIdsByName.get(normalizeText(normalized))
+            ?? null
         }
-        if (task.type === 'origin_concepts' && session) {
-          allConceptIds.forEach((conceptId) => {
-            db.run('INSERT OR IGNORE INTO session_concepts(session_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [session.id, conceptId, 'llm', now])
-          })
-          // Pending tasks created before direct extraction may still target
-          // KnowledgeUnits produced by the legacy segmentation pipeline.
-          units.value.filter((item) => item.sessionId === session.id).forEach((sessionUnit) => allConceptIds.forEach((conceptId) => db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [sessionUnit.id, conceptId, 'llm', now])))
+        if (task.type === 'concept_extraction') {
+          // Legacy unit extraction keeps its historical default association.
+          persistConceptMemberships(data.memberships, now, resolveConceptRef)
+          allConceptIds.forEach((conceptId) => db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [unit!.id, conceptId, 'llm', now]))
+        } else {
+          // Direct extraction only persists explicit Session/Message evidence.
+          // A technical window is not a KnowledgeUnit and never gets a
+          // default membership.
+          persistConceptMemberships(data.memberships, now, resolveConceptRef, false)
         }
-        persistConceptMemberships(data.memberships, now)
         const pendingRelations: ConceptRelation[] = []
         const relationKeys = new Set<string>(relations.value.map((relation) => {
           const pair = relation.relationType === 'related'
@@ -1869,8 +1905,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           const value = rawRelation as Record<string, unknown>
           const sourceName = typeof value.source === 'string' ? value.source : typeof value.parent === 'string' ? value.parent : typeof value.source_name === 'string' ? value.source_name : typeof value.parent_name === 'string' ? value.parent_name : ''
           const targetName = typeof value.target === 'string' ? value.target : typeof value.child === 'string' ? value.child : typeof value.target_name === 'string' ? value.target_name : typeof value.child_name === 'string' ? value.child_name : ''
-          const sourceRawId = conceptIdsByName.get(normalizeText(sourceName))
-          const targetRawId = conceptIdsByName.get(normalizeText(targetName))
+          const sourceRawId = resolveConceptRef(sourceName) ?? conceptIdsByName.get(normalizeText(sourceName))
+          const targetRawId = resolveConceptRef(targetName) ?? conceptIdsByName.get(normalizeText(targetName))
           const relationType = value.type === 'related' ? 'related' as const : value.type === 'hierarchy' ? 'hierarchy' as const : null
           if (!sourceRawId || !targetRawId || !relationType || sourceRawId === targetRawId) return
           const [sourceId, targetId] = relationType === 'related' && sourceRawId > targetRawId ? [targetRawId, sourceRawId] : [sourceRawId, targetRawId]
