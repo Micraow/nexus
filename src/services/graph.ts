@@ -486,7 +486,7 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
       id: unitNodeId,
       type: 'unit',
       refId: unit.id,
-      label: unit.title || '待命名知识单元',
+      label: unit.title || '待命名阅读片段',
       subtitle: unit.summary || '尚未生成摘要',
       degree: 0,
       unitCount: 0,
