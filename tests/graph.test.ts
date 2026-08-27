@@ -75,6 +75,27 @@ describe('derived graph', () => {
     expect(snapshot.edges.find((edge) => edge.type === 'co_occurrence')?.weight).toBe(2)
   })
 
+  it('does not project archived Session memberships into the active graph', () => {
+    const concepts = [
+      { id: 'a', name: 'A', normalizedName: 'A', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+      { id: 'b', name: 'B', normalizedName: 'B', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+    ]
+    const snapshot = buildGraph({
+      concepts,
+      sessions: [{ id: 'active', source: 'local', platform: 'local', title: '当前', createdAt: now, updatedAt: now, messageCount: 0, unitCount: 0, knowledgeKind: 'knowledge', knowledgeRetainInGraph: true, revision: 1, localOnly: true }],
+      units: [],
+      messages: [],
+      unitConcepts: [],
+      sessionConcepts: [
+        { sessionId: 'archived', conceptId: 'a', source: 'llm', createdAt: now },
+        { sessionId: 'archived', conceptId: 'b', source: 'llm', createdAt: now },
+      ],
+      relations: [],
+      revision: 1,
+    })
+    expect(snapshot.edges.filter((edge) => edge.type === 'co_occurrence')).toHaveLength(0)
+  })
+
   it('keeps knowledge units behind their explicit display toggle', () => {
     const input = {
       concepts: [
@@ -209,6 +230,27 @@ describe('derived graph', () => {
     })
     expect(snapshot.nodes.some((node) => node.id === 'message:m1')).toBe(true)
     expect(snapshot.edges.filter((edge) => edge.type === 'association' && edge.target === 'message:m1').map((edge) => edge.source).sort()).toEqual(['concept:c1', 'concept:c2'])
+  })
+
+  it('keeps Unit and Session Concept edges on messages when Unit nodes are hidden', () => {
+    const concepts = [
+      { id: 'unit-concept', name: '单元主题', normalizedName: '单元主题', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+      { id: 'session-concept', name: '会话主题', normalizedName: '会话主题', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+    ]
+    const snapshot = buildGraph({
+      concepts,
+      sessions: [{ id: 's', source: 'local', platform: 'local', title: '会话', createdAt: now, updatedAt: now, messageCount: 1, unitCount: 1, knowledgeKind: 'knowledge', knowledgeRetainInGraph: true, revision: 1, localOnly: true }],
+      units: [{ id: 'u', sessionId: 's', title: '单元', summary: '', orderInSession: 0, status: 'ready', revision: 1, createdAt: now, updatedAt: now }],
+      messages: [{ id: 'm', sessionId: 's', unitId: 'u', role: 'assistant', content: '回答', orderInSession: 0 }],
+      unitConcepts: [{ unitId: 'u', conceptId: 'unit-concept', source: 'llm', createdAt: now }],
+      sessionConcepts: [{ sessionId: 's', conceptId: 'session-concept', source: 'llm', createdAt: now }],
+      relations: [],
+      revision: 1,
+      showUnits: false,
+      showMessages: true,
+    })
+    expect(snapshot.nodes.some((node) => node.id === 'unit:u')).toBe(false)
+    expect(snapshot.edges.filter((edge) => edge.type === 'association' && edge.target === 'message:m').map((edge) => edge.source).sort()).toEqual(['concept:session-concept', 'concept:unit-concept'])
   })
 
   it('shows only confirmed hierarchy roots by default and keeps related edges out of the hierarchy', () => {

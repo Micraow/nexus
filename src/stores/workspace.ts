@@ -66,6 +66,19 @@ function bool(value: unknown): boolean {
   return Number(value) === 1 || value === true
 }
 
+function compactSessionText(value: unknown, maxLength: number): string {
+  const normalized = String(value ?? '')
+    .replace(/\[\[\/?nexus(?::(?:existing|suggested):[^\]]+)?\]\]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return Array.from(normalized).slice(0, maxLength).join('')
+}
+
+function isGeneratedConversationTitle(session: Session): boolean {
+  return session.source === 'in_app'
+    && (session.title === '新的知识对话' || /^围绕 .+ 的新对话$/.test(session.title))
+}
+
 /** 深拷贝为纯 JSON 数据，用于跨 Worker 传输（响应式代理无法结构化克隆）。 */
 function toPlainJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
@@ -79,6 +92,7 @@ function sessionFromRow(row: Row): Session {
     model: row.model == null ? null : text(row.model),
     externalSessionId: row.external_session_id == null ? null : text(row.external_session_id),
     title: text(row.title),
+    summary: text(row.summary),
     createdAt: text(row.created_at),
     updatedAt: text(row.updated_at),
     messageCount: number(row.message_count),
@@ -636,7 +650,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
     const conceptRef = (concept: Concept) => ({ refID: concept.id, title: `知识主题：${concept.name}`, summary: conceptSummary(concept) })
     const unitRef = (unit: KnowledgeUnit) => ({ refID: unit.id, title: `知识单元：${unit.title || '未命名知识单元'}`, summary: (unit.summary || '').replace(/\s+/g, ' ').slice(0, 240) })
-    const sessionRef = (session: Session) => ({ refID: session.id, title: `会话：${session.title || '未命名会话'}`, summary: (session.knowledgeJudgment || session.title || '').replace(/\s+/g, ' ').slice(0, 240) })
+    const sessionRef = (session: Session) => ({ refID: session.id, title: `会话：${session.title || '未命名会话'}`, summary: (session.summary || session.knowledgeJudgment || session.title || '').replace(/\s+/g, ' ').slice(0, 240) })
     const messageRef = (message: Message) => ({
       refID: message.id,
       title: `消息：${message.role} #${message.orderInSession + 1}`,
@@ -809,7 +823,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       ] as const
       resetStatements.forEach((statement) => db.run(statement))
       const records = parsed as any
-      records.sessions.forEach((item: Session) => db.run('INSERT INTO sessions(id, source, platform, model, external_session_id, title, created_at, updated_at, message_count, unit_count, knowledge_kind, knowledge_confidence, knowledge_judgment, knowledge_retain_in_graph, revision, local_only, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.source, item.platform, item.model ?? null, item.externalSessionId ?? null, item.title, item.createdAt, item.updatedAt, item.messageCount, item.unitCount, item.knowledgeKind ?? 'unknown', item.knowledgeConfidence ?? null, item.knowledgeJudgment ?? null, item.knowledgeRetainInGraph ? 1 : 0, item.revision, item.localOnly ? 1 : 0, item.deletedAt ?? null]))
+      records.sessions.forEach((item: Session) => db.run('INSERT INTO sessions(id, source, platform, model, external_session_id, title, summary, created_at, updated_at, message_count, unit_count, knowledge_kind, knowledge_confidence, knowledge_judgment, knowledge_retain_in_graph, revision, local_only, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.source, item.platform, item.model ?? null, item.externalSessionId ?? null, item.title, item.summary ?? '', item.createdAt, item.updatedAt, item.messageCount, item.unitCount, item.knowledgeKind ?? 'unknown', item.knowledgeConfidence ?? null, item.knowledgeJudgment ?? null, item.knowledgeRetainInGraph ? 1 : 0, item.revision, item.localOnly ? 1 : 0, item.deletedAt ?? null]))
       records.concepts.forEach((item: Concept) => db.run('INSERT INTO concepts(id, name, normalized_name, summary, notes, status, merged_into_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.name, item.normalizedName, item.summary ?? '', item.notes ?? '', item.status, item.mergedIntoId ?? null, item.createdAt, item.updatedAt, item.deletedAt ?? null]))
       records.units.forEach((item: KnowledgeUnit) => db.run('INSERT INTO knowledge_units(id, session_id, title, summary, order_in_session, status, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.sessionId, item.title ?? null, item.summary ?? null, item.orderInSession, item.status, item.revision, item.createdAt, item.updatedAt]))
       records.messages.forEach((item: Message) => db.run('INSERT INTO messages(id, session_id, unit_id, role, content, order_in_session, timestamp, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.sessionId, item.unitId ?? null, item.role, item.content, item.orderInSession, item.timestamp ?? null, item.metadata ? JSON.stringify(item.metadata) : null]))
@@ -1669,6 +1683,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function applyTaskResult(taskId: string, responseText: string): TaskApplyResult {
     const task = tasks.value.find((item) => item.id === taskId)
     if (!task) return { ok: false, errors: ['找不到任务'] }
+    if (!['pending', 'running', 'needs_review'].includes(task.status)) {
+      return { ok: false, errors: [`任务当前状态为${task.status}，请先重新排队后再应用结果`] }
+    }
     if (task.type === 'segmentation') return applySegmentationTask(taskId, responseText)
 
     const parsed = parseStructuredResponse(responseText)
@@ -1921,8 +1938,16 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (task.type === 'conversation') {
       const answer = data.answer
       const rawUnits = data.units
+      const hasSessionTitle = Object.prototype.hasOwnProperty.call(data, 'session_title')
+      const hasSessionSummary = Object.prototype.hasOwnProperty.call(data, 'session_summary')
+      const sessionTitle = typeof data.session_title === 'string' ? data.session_title.trim() : ''
+      const sessionSummary = typeof data.session_summary === 'string' ? data.session_summary.trim() : ''
       if (typeof answer !== 'string' || !answer.trim()) errors.push('answer 必须是非空字符串')
-      if (!Array.isArray(rawUnits) || rawUnits.length === 0) errors.push('units 必须是非空数组')
+      if (!Array.isArray(rawUnits)) errors.push('units 必须是数组；没有稳定知识片段时可返回空数组')
+      if (hasSessionTitle && !sessionTitle) errors.push('session_title 必须是非空字符串')
+      if (hasSessionSummary && !sessionSummary) errors.push('session_summary 必须是非空字符串')
+      if (Array.from(sessionTitle).length > 60) errors.push('session_title 不能超过 60 个字符')
+      if (Array.from(sessionSummary).length > 120) errors.push('session_summary 不能超过 120 个字符')
       const conversationSession = sessions.value.find((item) => item.id === targetId)
       const userMessage = messages.value.find((message) => {
         if (message.sessionId !== targetId || message.role !== 'user') return false
@@ -1991,7 +2016,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         const sessionMessages = messages.value.filter((message) => message.sessionId === targetId).sort((left, right) => left.orderInSession - right.orderInSession)
         const assistantOrder = sessionMessages.length ? sessionMessages[sessionMessages.length - 1].orderInSession + 1 : 1
         const assistantMessageId = createId('message')
-        db.run('INSERT INTO messages(id, session_id, unit_id, role, content, order_in_session, timestamp, metadata) VALUES (?, ?, NULL, ?, ?, ?, ?, ?)', [assistantMessageId, targetId, 'assistant', String(answer).trim(), assistantOrder, now, JSON.stringify({ taskId })])
+        db.run('INSERT INTO messages(id, session_id, unit_id, role, content, order_in_session, timestamp, metadata) VALUES (?, ?, NULL, ?, ?, ?, ?, ?)', [assistantMessageId, targetId, 'assistant', String(answer).trim(), assistantOrder, now, JSON.stringify({ taskId, navNodeId: branchNodeId })])
         const unitOffset = units.value.filter((unit) => unit.sessionId === targetId).length
         const declaredTopLevelConceptIds = Array.isArray(data.concept_ids)
           ? data.concept_ids.filter((value): value is string => typeof value === 'string').map((value) => value.trim())
@@ -2014,11 +2039,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           })
         })
         persistConceptMemberships(data.memberships, now)
-        if (followUp) {
-          db.run('UPDATE sessions SET unit_count = unit_count + ?, revision = revision + 1, updated_at = ? WHERE id = ?', [normalizedUnits.length, now, targetId])
-        } else {
-          db.run('UPDATE sessions SET message_count = 2, unit_count = ?, revision = revision + 1, updated_at = ? WHERE id = ?', [normalizedUnits.length, now, targetId])
-        }
+        const currentTitle = conversationSession?.title ?? '新的知识对话'
+        const fallbackTitle = normalizedUnits[0]?.title || compactSessionText(userMessage?.content, 60)
+        const nextTitle = conversationSession && isGeneratedConversationTitle(conversationSession)
+          ? sessionTitle || fallbackTitle || currentTitle
+          : currentTitle
+        const fallbackSummary = compactSessionText(answer, 120)
+        const nextSummary = sessionSummary || conversationSession?.summary?.trim() || fallbackSummary
+        // Derive counts from rows after the assistant insert. This keeps the
+        // Session state correct for both new conversations and follow-ups,
+        // including answers that contain no KnowledgeUnit.
+        db.run('UPDATE sessions SET title = ?, summary = ?, message_count = (SELECT COUNT(*) FROM messages WHERE session_id = ?), unit_count = (SELECT COUNT(*) FROM knowledge_units WHERE session_id = ?), revision = revision + 1, updated_at = ? WHERE id = ?', [nextTitle, nextSummary, targetId, targetId, now, targetId])
+        if (nextTitle !== currentTitle) db.run('UPDATE nav_tree_nodes SET label = ? WHERE session_id = ? AND parent_id IS NULL', [nextTitle, targetId])
         db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = ?, validation_errors = NULL, error_message = NULL, updated_at = ? WHERE id = ?', ['success', responseText, JSON.stringify(data), now, taskId])
       })
       return { ok: true, errors: [] }
@@ -2346,6 +2378,30 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     mutate(() => db.run('DELETE FROM quick_phrases WHERE id = ? AND is_builtin = 0', [id]))
   }
 
+  function buildConversationHistory(sessionId: string, maxMessages = 40): string {
+    const history = messages.value
+      .filter((message) => message.sessionId === sessionId)
+      .sort((left, right) => left.orderInSession - right.orderInSession)
+    if (!history.length) return ''
+    const visible = history.length > maxMessages ? history.slice(-maxMessages) : history
+    const omitted = history.length - visible.length
+    const prefix = omitted > 0 ? `（已省略较早的 ${omitted} 条消息）\n` : ''
+    return prefix + visible.map((message) => `消息 #${message.orderInSession + 1} [${message.role}]\n${message.content}`).join('\n\n')
+  }
+
+  function buildNavigationPath(sessionId: string, nodeId: string): string {
+    const byId = new Map(navNodes.value.filter((node) => node.sessionId === sessionId).map((node) => [node.id, node]))
+    const path: NavTreeNode[] = []
+    const seen = new Set<string>()
+    let current = byId.get(nodeId)
+    while (current && !seen.has(current.id)) {
+      seen.add(current.id)
+      path.unshift(current)
+      current = current.parentId ? byId.get(current.parentId) : undefined
+    }
+    return path.map((node, index) => `${index + 1}. ${node.label}`).join('\n')
+  }
+
   function buildConversationContext(sourceUnitIds: string[], sourceMessageIds: string[], includeFullContent: boolean): string {
     const sourceUnits = sourceUnitIds.map((id) => units.value.find((unit) => unit.id === id)).filter(Boolean) as KnowledgeUnit[]
     const unitBlocks = sourceUnits.map((unit, index) => {
@@ -2377,9 +2433,16 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       db.run('INSERT INTO sessions(id, source, platform, model, external_session_id, title, created_at, updated_at, message_count, unit_count, revision, local_only) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 1, 0, 1, 0)', [targetSessionId, 'in_app', 'local', null, topic ? `围绕 ${topic} 的新对话` : '新的知识对话', now, now])
       const messageId = createId('message')
       db.run('INSERT INTO messages(id, session_id, unit_id, role, content, order_in_session, timestamp, metadata) VALUES (?, ?, NULL, ?, ?, 0, ?, ?)', [messageId, targetSessionId, 'user', question, now, JSON.stringify({ mode: 'new', topicId: input.topicId ?? null })])
+      // A topic chosen in the composer is an explicit fact about both the new
+      // Session and its opening Message. Keep it immediately queryable even
+      // before the first assistant result creates an optional KnowledgeUnit.
+      if (input.topicId && concepts.value.some((concept) => concept.id === input.topicId && concept.status === 'active')) {
+        db.run('INSERT OR IGNORE INTO session_concepts(session_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [targetSessionId, input.topicId, 'manual', now])
+        db.run('INSERT OR IGNORE INTO message_concepts(message_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [messageId, input.topicId, 'manual', now])
+      }
       const rootId = createId('nav')
       db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [rootId, targetSessionId, null, input.topicId ?? null, topic ? `围绕 ${topic}` : '新的知识对话', 0, now])
-      const taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${targetSessionId}:1`, prompt: buildConversationPrompt({ question, topic, context, targetSessionId, targetMessageId: messageId, disclosure: promptDisclosureContext({ unitIds: sourceUnitIds, messageIds: sourceMessageIds, includeFullContent: input.includeFullContent ?? false }) }), status: 'pending', scopeLabel: `新对话 · ${topic || '知识探索'}` })
+      const taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${targetSessionId}:1`, prompt: buildConversationPrompt({ question, topic, context, targetSessionId, targetMessageId: messageId, navigationPath: `1. ${topic ? `围绕 ${topic}` : '新的知识对话'}`, conversationHistory: '', sessionTitle: topic ? `围绕 ${topic} 的新对话` : '新的知识对话', sessionSummary: '', disclosure: promptDisclosureContext({ unitIds: sourceUnitIds, messageIds: sourceMessageIds, includeFullContent: input.includeFullContent ?? false }) }), status: 'pending', scopeLabel: `新对话 · ${topic || '知识探索'}` })
       db.run('UPDATE messages SET metadata = ? WHERE id = ?', [JSON.stringify({ mode: 'new', topicId: input.topicId ?? null, parentNodeId: rootId, taskId, sourceSessionId: sourceSession ?? null }), messageId])
       writeSourceReferences(targetSessionId, sourceUnitIds, sourceMessageIds, input.includeFullContent ?? false)
     })
@@ -2409,6 +2472,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (!question) throw new Error('问题不能为空')
     const session = sessions.value.find((item) => item.id === input.sessionId)
     if (!session) throw new Error('找不到目标会话')
+    const unfinished = tasks.value.find((task) =>
+      task.type === 'conversation'
+      && task.inputRevision.startsWith(`${input.sessionId}:`)
+      && ['pending', 'running', 'needs_review'].includes(task.status),
+    )
+    if (unfinished) throw new Error('当前会话已有待完成的追问，请先处理上一条结果')
     const parentNode = navNodes.value.find((node) => node.id === input.parentNodeId && node.sessionId === input.sessionId)
     if (!parentNode) throw new Error('找不到要继续的探索节点')
     const now = isoNow()
@@ -2420,8 +2489,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     mutate(() => {
       const messageId = createId('message')
       db.run('INSERT INTO messages(id, session_id, unit_id, role, content, order_in_session, timestamp, metadata) VALUES (?, ?, NULL, ?, ?, ?, ?, ?)', [messageId, session.id, 'user', question, nextOrder, now, JSON.stringify({ mode: 'follow_up', parentNodeId: parentNode.id })])
+      if (input.topicId && concepts.value.some((concept) => concept.id === input.topicId && concept.status === 'active')) {
+        db.run('INSERT OR IGNORE INTO session_concepts(session_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [session.id, input.topicId, 'manual', now])
+        db.run('INSERT OR IGNORE INTO message_concepts(message_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [messageId, input.topicId, 'manual', now])
+      }
       db.run('UPDATE sessions SET message_count = message_count + 1, updated_at = ? WHERE id = ?', [now, session.id])
-      taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${session.id}:${revision}`, prompt: buildConversationPrompt({ question, topic, context, targetSessionId: session.id, targetMessageId: messageId, disclosure: promptDisclosureContext({ unitIds: input.sourceUnitIds ?? [], messageIds: input.sourceMessageIds ?? [], includeFullContent: input.includeFullContent ?? false }) }), status: 'pending', scopeLabel: `${session.title} · 追问` })
+      taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${session.id}:${revision}`, prompt: buildConversationPrompt({ question, topic, context, navigationPath: buildNavigationPath(session.id, parentNode.id), conversationHistory: buildConversationHistory(session.id), sessionTitle: session.title, sessionSummary: session.summary ?? '', targetSessionId: session.id, targetMessageId: messageId, disclosure: promptDisclosureContext({ unitIds: input.sourceUnitIds ?? [], messageIds: input.sourceMessageIds ?? [], includeFullContent: input.includeFullContent ?? false }) }), status: 'pending', scopeLabel: `${session.title} · 追问` })
       db.run('UPDATE messages SET metadata = ? WHERE id = ?', [JSON.stringify({ mode: 'follow_up', topicId: input.topicId ?? null, parentNodeId: parentNode.id, taskId }), messageId])
       writeSourceReferences(session.id, input.sourceUnitIds ?? [], input.sourceMessageIds ?? [], input.includeFullContent ?? false)
     })

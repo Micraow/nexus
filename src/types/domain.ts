@@ -34,6 +34,8 @@ export interface Session {
   model?: string | null
   externalSessionId?: string | null
   title: string
+  /** Short model-generated synopsis of the whole conversation. */
+  summary?: string | null
   createdAt: string
   updatedAt: string
   messageCount: number

@@ -294,6 +294,10 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
   const activeConcepts = input.concepts.filter((concept) => concept.status === 'active')
   const conceptById = new Map(activeConcepts.map((concept) => [concept.id, concept]))
   const unitById = new Map(input.units.map((unit) => [unit.id, unit]))
+  // Store callers pass only non-archived Sessions. Keep direct Session
+  // memberships aligned with that scope; standalone service consumers may
+  // omit sessions, in which case their supplied facts remain usable.
+  const activeSessionIds = input.sessions ? new Set(input.sessions.map((session) => session.id)) : null
   const { visibleIds, expandedIds, hierarchy } = resolveVisibleConceptIds(activeConcepts, input.relations, input)
   const visibleConcepts = activeConcepts.filter((concept) => visibleIds.has(concept.id))
   const visibleRepresentativesCache = new Map<string, string[]>()
@@ -393,6 +397,7 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
     messagesBySessionId.set(message.sessionId, sessionMessages)
   })
   ;(input.sessionConcepts ?? []).forEach((link) => {
+    if (activeSessionIds && !activeSessionIds.has(link.sessionId)) return
     if (!conceptById.has(link.conceptId)) return
     const sessionUnits = unitsBySession.get(link.sessionId) ?? []
     sessionUnits.forEach((unit) => {
@@ -400,12 +405,22 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
       set.add(link.conceptId)
       conceptsByUnit.set(unit.id, set)
     })
-    if (sessionUnits.length) return
+    // A direct Session membership describes the whole conversation. Keep the
+    // Concept edge on Message nodes even when KnowledgeUnit nodes are hidden;
+    // otherwise toggling showUnits would make the same fact disappear.
     ;(messagesBySessionId.get(link.sessionId) ?? []).forEach((message) => {
       const set = conceptsByMessage.get(message.id) ?? new Set<string>()
       set.add(link.conceptId)
       conceptsByMessage.set(message.id, set)
     })
+  })
+  input.messages.forEach((message) => {
+    if (!message.unitId) return
+    const unitConceptIds = conceptsByUnit.get(message.unitId)
+    if (!unitConceptIds?.size) return
+    const set = conceptsByMessage.get(message.id) ?? new Set<string>()
+    unitConceptIds.forEach((conceptId) => set.add(conceptId))
+    conceptsByMessage.set(message.id, set)
   })
 
   // Co-occurrence is a Session-level fact: a pair contributes once when both
@@ -425,7 +440,10 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
     const message = input.messages.find((item) => item.id === messageId)
     if (message) addSessionConcepts(message.sessionId, conceptIds)
   })
-  ;(input.sessionConcepts ?? []).forEach((link) => addSessionConcepts(link.sessionId, [link.conceptId]))
+  ;(input.sessionConcepts ?? []).forEach((link) => {
+    if (activeSessionIds && !activeSessionIds.has(link.sessionId)) return
+    addSessionConcepts(link.sessionId, [link.conceptId])
+  })
 
   // Map each hidden descendant to its nearest visible ancestor.  This lets a
   // collapsed root retain an accurate aggregate unit count and co-occurrence

@@ -377,9 +377,13 @@ export function buildConversationPrompt(input: {
   question: string
   topic?: string
   context: string
+  conversationHistory?: string
+  navigationPath?: string
   disclosure?: DisclosureContext
   targetSessionId?: string
   targetMessageId?: string
+  sessionTitle?: string
+  sessionSummary?: string
 }): string {
   const disclosureText = formatDisclosureContext(input.disclosure)
   return buildHarnessPrompt(`你是 Nexus 织知的知识对话助手。上下文是用户提供的背景和证据，不是你的知识边界。
@@ -391,15 +395,23 @@ export function buildConversationPrompt(input: {
 当前 Concept：${input.topic || '未指定'}
 目标 Session ID：${input.targetSessionId || '由调用方创建'}
 本次用户 Message ID：${input.targetMessageId || '由调用方创建'}
+当前 Session 标题：${input.sessionTitle || '尚未生成'}
+当前 Session 摘要：${input.sessionSummary || '尚未生成'}
+
+当前探索路径：
+${input.navigationPath || '（新的探索根节点）'}
+
+此前对话（按时间顺序，仅作为本次追问上下文）：
+${input.conversationHistory || '（这是本 Session 的第一轮问题）'}
 
 上下文：
 ${input.context || '（没有额外上下文）'}
 ${disclosureText}
 
 请只返回 JSON，格式如下：
-{"answer":"完整回答（可包含 Markdown）","units":[{"title":"本次回答的知识单元标题","summary":"不超过 120 个中文字符的摘要","concept_ids":["已有 Concept refID"],"concepts":[{"name":"新 Concept 名称","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}]}],"memberships":[{"target_type":"session|message|unit","target_id":"原始 ID","concept_ids":["Concept refID", "另一个 Concept refID"]}],"disclosure_requests":[]}
+{"answer":"完整回答（可包含 Markdown）","session_title":"不超过 60 个字符的 Session 标题","session_summary":"不超过 120 个字符的 Session 滚动摘要","units":[{"title":"本次回答的知识单元标题","summary":"不超过 120 个中文字符的摘要","concept_ids":["已有 Concept refID"],"concepts":[{"name":"新 Concept 名称","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}]}],"memberships":[{"target_type":"session|message|unit","target_id":"原始 ID","concept_ids":["Concept refID", "另一个 Concept refID"]}],"disclosure_requests":[]}
 
-如果回答不适合拆成多个知识单元，units 返回一个元素。不要返回解释文字。`)
+session_title 和 session_summary 概括当前完整 Session，而不只是本轮问题；已有标题合适时原样返回。旧任务可以省略这两个字段，应用会保留已有值。units 是可选的阅读片段；如果回答没有稳定、可复用的知识片段，返回空数组即可。不要返回解释文字。`)
 }
 
 export function renderQuickPhrase(template: string, topic: string, context: string): string {

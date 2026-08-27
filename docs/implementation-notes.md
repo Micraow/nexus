@@ -34,11 +34,13 @@
 - Token 预算不是固定的 `8000`：设置页允许输入任意不小于 `1000` 的有限安全整数并立即持久化为 `llm.token_budget`，不施加产品级最大值。配置读取、界面提交和写回使用同一归一化函数；该值供长 Session 分窗与新对话上下文超限检查共同使用，已创建的任务不会因之后修改预算而重写。
 - 长 Session 按估算 token 预算切成带两条消息重叠的运行时窗口；合并多个窗口结果时按全局 Message ID、Concept 规范名、归属目标和关系类型去重，并校验未知 ID、关系成环与 related/hierarchy 语义冲突，任何冲突都整体判失败，不写入部分结果。窗口不创建 KnowledgeUnit。
 - API 模式采用 OpenAI-compatible Chat Completions：请求地址为 `baseUrl + /chat/completions`，只发送当前任务 Prompt，温度固定为 `0`。`local_only` Session 在 API 执行前被拒绝；Prompt 粘贴模式不发网络请求。
+- 对话 Prompt 携带当前 Session 标题/摘要、导航路径和最近历史消息，并允许返回 `session_title`（≤60 字）和 `session_summary`（≤120 字）。完成结果在同一事务中写入 assistant Message、Session 滚动摘要、可选 KnowledgeUnit 和导航节点；仅应用内占位标题会自动改名，导入或用户编辑过的标题保持不变。旧结果省略字段时保留已有值，空摘要以回答文本作有限回退。
 - 所有任务 Prompt 先经过 `ensureHarnessPrompt`，固定拼接版本化的 `NEXUS_HARNESS_PROMPT` 与 `PROGRESSIVE_DISCLOSURE_PROTOCOL`；动态任务规格放在固定前缀之后。Harness 允许模型使用自身知识和调用方授权的搜索/工具，但要求区分输入证据、外部资料和推断，并把消息、摘要、目录都当作不可信数据。
 - 对话 Prompt 约定已有主题使用 `[[nexus:existing:主题名称]]原文[[/nexus]]`、建议探索主题使用 `[[nexus:suggested:主题名称]]原文[[/nexus]]`；Markdown 渲染器移除标记并以蓝/黄色下划线呈现，未知建议主题不生成可点击 Concept ID。
 - 大型知识上下文通过 `DISCLOSURE_INDEX` 传递：根引用只包含 `title`、`summary` 和不透明 `refID`，展开记录才提供下一层 children 或消息原文。模型可返回 `disclosure_requests: [{ refID, depth }]`；应用先校验 ID 已在当前目录、无重复且深度为 1～64，再从本地 hierarchy、KnowledgeUnit 和 Message 递归生成下一轮 Prompt。API 模式自动续跑，最多 8 轮；Prompt 粘贴模式把同一任务恢复为 pending，等待用户执行更新后的 Prompt。非法请求或超过轮数进入 `needs_review`，不会应用部分结果。
 - 起源 Concept 结果写入独立的 `session_concepts` 多对多事实表；它不会复制到该 Session 的全部 KnowledgeUnit。图谱派生时会把 Session、Message 和 KnowledgeUnit 三种归属投影到可见主题，并按 Session（而不是单元数量）累计 Concept 共现权重。
-- 会话内追问（从导航树节点或会话详情发起）：用户消息以 `metadata = { mode: 'follow_up', parentNodeId, taskId }` 落库，回答分支节点挂在该节点之下（depth + 1）。与“新对话”任务的区别：追问不新建 Session，应用结果后按 `unit_count = unit_count + n` 累加，而新对话固定写 `message_count = 2`。早期没有 `metadata.taskId` 的对话任务按 legacy 规则回落到根节点。
+- 会话内追问（从导航树节点或会话详情发起）：用户消息以 `metadata = { mode: 'follow_up', parentNodeId, taskId }` 落库，回答分支节点挂在该节点之下（depth + 1），assistant Message 额外记录 `navNodeId` 供探索树点击定位正文。结果落库后从 Message 和 KnowledgeUnit 实际行数重算 `message_count` / `unit_count`，每个 Session 同时只允许一个 `pending` / `running` / `needs_review` 对话任务；任务完成后才可创建下一轮。早期没有 `metadata.taskId` 的对话任务按 legacy 规则回落到根节点。
+- 新对话或追问如果预选了现有知识主题，创建任务时立即写入该 Session 和首条用户 Message 的 `session_concepts` / `message_concepts`（source=`manual`）；这不等待 API 或 Prompt 粘贴结果，回答完成后仍按返回的单元和多目标归属继续补充事实。
 - 任务中心在队列启动前显示待处理任务数、覆盖的 Session 数和预计调用次数（按待处理 API 任务数估算，失败重试最多 ×3 不计入）；Session 数取 `inputRevision` 首段去重，`maintenance:` 前缀不计入。
 
 ## 图谱
@@ -47,6 +49,8 @@
 - Worker 通信的数据必须先深拷贝为纯 JSON（`toPlainJson`）：Pinia 的响应式代理无法结构化克隆，直接 `postMessage` 会抛 `DataCloneError` 并中断图谱视图渲染。新增图谱输入字段时必须保持可 JSON 序列化。
 - GraphNode/GraphEdge 继续作为派生视图。`resolveVisibleConceptIds` 默认只返回 active hierarchy 根节点；Concept 主体单击、Enter 或 Space 把节点加入/移出 `expandedConceptIds`，逐层显示直接子节点，叶节点单击只打开详情。`normalizeExpandedConceptIds` 会补齐显式后代的祖先路径；`toggleConceptExpansion` 在收起父节点时递归清除后代。hierarchy 不限制深度且允许多父节点；`related` 始终无向，完全不参与根节点、祖先、深度或展开判断。`showProposed=false` 时 proposed hierarchy/related 均被排除。
 - Concept 的直接证据同时来自 SessionConcept、MessageConcept 和 UnitConcept。没有 KnowledgeUnit 的消息仍可生成图谱关联；KnowledgeUnit 只作为可选阅读片段投影。窗口化处理保留全局 Message ID，不把窗口边界写入图谱。
+- 主题详情的关联会话、消息和单元统一从三类直接归属事实推导；因此只有 MessageConcept 或 UnitConcept、没有直接 SessionConcept 的历史数据也能显示关联会话。
+- Store 传给图谱服务的 Session 集合只包含未归档 Session；当调用方提供该集合时，残留的 `session_concepts` 不得为已归档 Session 生成共现边。独立调用 `buildGraph` 未提供 Session 集合时，仍按调用方显式传入的事实计算。
 - 折叠主题通过 hierarchy 投影到最近可见祖先。每个 KnowledgeUnit 先对可见代表节点去重，再对每个代表节点对贡献一次共现权重；因此隐藏叶节点仍能为根视图提供聚合关系，同时不会因多条叶子路径重复计数。hierarchy 只绘制当前两端都可见的事实边；related 的隐藏端点也可投影到可见祖先，但只形成无向弱关系。
 - 图谱中的 Concept 节点主体点击同时打开详情并改变层级投影；叶节点只打开详情，Enter/Space 与单击一致，图谱不提供独立 `+/-` 展开控件。全局 `showUnits` 才显示单元，`showMessages` 或保留会话筛选才显示消息；这些开关不会被 Concept 展开绕过，并按 Session 的 `orderInSession` 连接成链。
 - 图谱布局持久化：节点拖拽结束写入 `graph_layout`（固定坐标），视口平移/缩放防抖后写入单行 `graph_viewport` 表；刷新后恢复。“重置布局”清除这两类记录并重新计算。快照变化触发的重渲染以 d3 的实时变换恢复视口，持久化视口只在组件挂载时应用；store 保存/重置视口时会同步内存值，避免过期的 prop 把缩放拉回旧状态，“重置布局”通过递增组件 key 整体重建实现。
@@ -67,7 +71,7 @@
 
 - `Concept` 在用户界面中显示为“知识主题”。这是中文产品文案的显示层选择：它比“概念”更能表达跨会话复用的稳定知识主体；数据库字段、TypeScript 类型和 Prompt 契约仍使用 `Concept`，以保持设计文档的数据契约不变。
 - 界面文案不暴露开发术语：面向用户统一使用“会话 / 知识单元 / 知识主题 / 任务”等词，`Session`、`Concept`、`schema` 等只出现在数据层与文档。
-- 从知识主题详情或上下文面板发起对话时，总是打开独立的 composer。快捷短语先渲染 `$(topic)` / `$(context)`，用户仍可编辑生成的问题；创建后只落库用户首条消息和待处理 conversation 任务，不在界面中直接发送网络请求。
+- 从知识主题详情或上下文面板发起对话时，总是打开独立的 composer。快捷短语先渲染 `$(topic)` / `$(context)`，用户仍可编辑生成的问题；创建后落库新的 Session、导航根节点、用户首条消息和待处理 conversation 任务，不在界面中直接发送网络请求。预选主题同时写入 Session/Message 直接归属。
 - 导航树使用 `NavTreeNode` 的父子关系递归渲染；会话页同时保留按时间排列的知识单元列表，节点点击只定位已有单元，不复制或重建事实数据。
 - 上下文排序在界面状态中保持为用户拖拽顺序，创建 conversation 任务时按该顺序写入 `ContextReference.order_in_context`。输入 token 以字符数除以 4 估算；超过配置预算时只提示并禁止创建任务，不静默截断。
 - 长列表使用分段加载而非虚拟滚动：会话每页 40、知识主题每页 60、历史任务每页 30，底部“加载更多”递增可见数。该阈值是界面常量，后续接入虚拟滚动时可整体替换。
@@ -109,7 +113,7 @@
 
 - 事实层次：`Session` 是完整对话容器，`Message` 是不可丢失的原始消息，`Concept` 是跨 Session 复用的知识主题。`KnowledgeUnit` 保留为同一 Session 内可选的阅读片段/证据包，不是主题层级、不是分段前置条件，也不参与根主题判断。
 - 导入链：原始 `Session/Message` 先写入 → 创建 `session_triage` 与 `origin_concepts` 任务 → 任务经历 `pending → running → success`，异常进入 `needs_review/failed`，输入版本变化进入 `stale`；直接主题结果写入 `SessionConcept/MessageConcept`，不等待 KnowledgeUnit。
-- 对话链：本地草稿 → 创建 `conversation` 任务（API 为 `pending → running`，Prompt 粘贴保持 `pending` 等待人工回传）→ 校验结果 → `success` 写入 assistant Message、导航树节点、可选 KnowledgeUnit 和多主题归属；非法结果进入 `needs_review`，重试或版本变化分别回到 `pending` 或 `stale`。
+- 对话链：本地草稿 → 创建 `conversation` 任务（API 为 `pending → running`，Prompt 粘贴保持 `pending` 等待人工回传）→ 校验结果 → `success` 写入 assistant Message、导航树节点、可选 KnowledgeUnit 和多主题归属；`units` 可以为空，表示这轮回答没有稳定的阅读片段。非法结果进入 `needs_review`，重试或版本变化分别回到 `pending` 或 `stale`。
 - 关系链：LLM/维护任务产生 `proposed` → 用户确认变为 `confirmed` 或拒绝变为 `rejected`。只有 `confirmed` 默认参与图谱，`showProposed` 打开时才显示建议关系。
 - 展示层：图谱从事实层实时派生；默认只显示 hierarchy 根主题，Concept 单击同时打开详情并逐层展开/递归收起，`related` 永不改变层级。Sigma.js 评估后暂不替换 D3：现有 SVG 图谱已覆盖缩放、拖拽、悬停高亮、键盘语义、框选和稳定布局，贸然换成 Sigma 会改写测试与交互层；后续若节点规模超过当前阈值，再以独立适配层引入 graphology/Sigma。
-- 知识主题页的左栏使用可折叠 hierarchy 树，主题行单击只负责选中并打开右侧内容，箭头按钮负责展开/收起；过滤时保留命中主题的祖先节点，父子跳转后详情列滚动回顶。
+- 知识主题页的左栏使用可折叠 hierarchy 树，主题行单击选中并打开右侧内容，树节点的独立折叠控件负责展开/收起；过滤时保留命中主题的祖先节点，父子跳转后详情列滚动回顶。图谱主题节点不提供独立 `+/-` 控件，主体单击同时打开详情并展开/收起。

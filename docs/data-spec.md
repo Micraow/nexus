@@ -16,8 +16,12 @@
 9. LLM 结果永远先经过本地 schema 和完整性校验，再进入业务表。
 10. 所有跨实体关系使用内部 ID；来源平台 ID 只用于导入去重和追溯。
 11. 对话答案中的 `[[nexus:existing:...]]...[[/nexus]]` 与 `[[nexus:suggested:...]]...[[/nexus]]` 是展示标记，不是数据库归属字段；应用渲染时分别使用已有主题和建议主题样式。
+12. 新对话创建时用户预选的 Concept 立即记录为该 Session 和首条用户 Message 的直接归属；它不依赖 KnowledgeUnit 或后续 LLM 结果。归档 Session 的直接归属仍保留在事实表，但不参与默认图谱派生。
+13. 对话任务的 `units` 是可选阅读片段；没有稳定知识片段时允许为空数组，assistant Message、Session 和导航树仍必须落库。
 
 ## 2. 命名与格式
+
+当前本地 SQLite schema 为 v6；v6 为 `sessions.summary` 增加会话级滚动摘要列，旧数据库迁移时默认空字符串，旧备份导入时缺少该字段也按空值兼容。
 
 ### 2.1 ID
 
@@ -67,6 +71,7 @@
 | `model` | TEXT | 否 | 来源或当前模型 |
 | `external_session_id` | TEXT | 否 | 与 `platform` 联合用于去重 |
 | `title` | TEXT | 是 | 允许用户编辑，不为空 |
+| `summary` | TEXT | 否 | ≤120 个字符的会话级滚动摘要；对话完成后由结果更新，旧任务可为空 |
 | `created_at` | TEXT | 是 | ISO 8601 |
 | `updated_at` | TEXT | 是 | ISO 8601 |
 | `message_count` | INTEGER | 是 | 可缓存统计值，不能为负 |
@@ -79,6 +84,7 @@
 
 - `message_count` 应等于该 Session 的 Message 数量；显示时可以使用缓存，但维护任务应能重算；
 - `unit_count` 应等于该 Session 的 KnowledgeUnit 数量；
+- `summary` 是整段会话的滚动摘要，不是某个 KnowledgeUnit 的摘要；对话结果可更新它，缺少该字段的旧结果保留已有值；
 - 删除 Session 必须级联或事务删除其 Message、KnowledgeUnit、NavTreeNode 和关联记录；
 - Session 软删除后默认不出现在列表、搜索和图谱中；
 - `platform + external_session_id` 相同的导入数据必须进入重复导入判定，不得静默创建第二条同源记录。
@@ -317,7 +323,7 @@ Concept 提取结果必须包含 `concepts` 数组；全部复用目录中已有
 
 ### 4.4 Prompt Harness 与渐进式披露
 
-- 每个生成的 Prompt 必须以前缀稳定、带版本号的 harness 开始；当前版本使用 `NEXUS_HARNESS_PROMPT`、`PROGRESSIVE_DISCLOSURE_PROTOCOL` 和 `PROMPT_VERSION=2026-08-v3-multi-concept`。任务规格和数据追加在固定前缀之后，续跑不得改写固定前缀；
+- 每个生成的 Prompt 必须以前缀稳定、带版本号的 harness 开始；当前版本使用 `NEXUS_HARNESS_PROMPT`、`PROGRESSIVE_DISCLOSURE_PROTOCOL` 和 `PROMPT_VERSION=2026-08-v4-direct-concepts`。任务规格和数据追加在固定前缀之后，续跑不得改写固定前缀；
 - `DISCLOSURE_INDEX.roots[]` 每项必须包含 `{ refID, title, summary }`。`refID` 是本地实体的不透明标识；模型不得创造、改写或拼接；
 - `DISCLOSURE_INDEX.expansions[]` 以已有 `refID` 为键，可包含下一层 `children[]`，以及明确披露的 `content`。`children` 仍是摘要目录，只有 `content` 可以表示知识单元或 Message 原文；
 - 支持递归链路 `Concept → 子 Concept → KnowledgeUnit → Message 原文`。实现可以按实体类型分步披露，但任何层级都必须先出现在当前目录，才能成为下一次请求目标；

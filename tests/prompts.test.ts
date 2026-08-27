@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildConceptPrompt,
+  buildConversationPrompt,
   buildHarnessPrompt,
   buildOriginConceptPrompt,
   buildRepairPrompt,
@@ -24,6 +25,22 @@ describe('unit metadata prompt', () => {
     expect(prompt).toContain('{"title":"...","summary":"..."}')
     expect(prompt).toContain('不超过 30 个中文字符')
     expect(prompt).toContain('不超过 120 个中文字符')
+  })
+})
+
+describe('conversation prompt', () => {
+  it('requests Session metadata and carries the current exploration path', () => {
+    const prompt = buildConversationPrompt({
+      question: '继续解释',
+      topic: '网络',
+      context: '',
+      navigationPath: '1. 网络\n2. Clos',
+      conversationHistory: '消息 #1 [assistant]\n先前回答',
+    })
+    expect(prompt).toContain('session_title')
+    expect(prompt).toContain('session_summary')
+    expect(prompt).toContain('1. 网络\n2. Clos')
+    expect(prompt).toContain('先前回答')
   })
 })
 

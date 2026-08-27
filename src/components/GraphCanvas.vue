@@ -85,6 +85,10 @@ let renderGeneration = 0
 let fitTimer: number | null = null
 let resizeTimer: number | null = null
 let draggingNodeId: string | null = null
+let dragStartPoint: { x: number; y: number } | null = null
+let dragMoved = false
+let suppressClickNodeId: string | null = null
+let suppressClickTimer: number | null = null
 let lastNodeSignature = ''
 
 const palette: Record<string, string> = {
@@ -400,6 +404,14 @@ function render(): void {
     })
     .on('click', (event, node) => {
       event.stopPropagation()
+      // D3 emits a native click after a drag gesture. A moved node should
+      // keep its position without accidentally toggling its disclosure.
+      if (suppressClickNodeId === node.id) {
+        suppressClickNodeId = null
+        if (suppressClickTimer != null) window.clearTimeout(suppressClickTimer)
+        suppressClickTimer = null
+        return
+      }
       activateNode(event, node)
     })
     .on('keydown', (event, node) => {
@@ -412,6 +424,8 @@ function render(): void {
     .drag<SVGGElement, GraphNode & d3.SimulationNodeDatum>()
     .on('start', (event, node) => {
       draggingNodeId = node.id
+      dragStartPoint = { x: event.x, y: event.y }
+      dragMoved = false
       highlightNode(node.id)
       // Reheat the springs while dragging so connected nodes follow the
       // pointer instead of feeling pinned in place. Keep the target finite;
@@ -421,6 +435,7 @@ function render(): void {
       node.fy = node.y
     })
     .on('drag', (event, node) => {
+      if (dragStartPoint && (Math.abs(event.x - dragStartPoint.x) > 4 || Math.abs(event.y - dragStartPoint.y) > 4)) dragMoved = true
       node.fx = event.x
       node.fy = event.y
     })
@@ -434,6 +449,16 @@ function render(): void {
       }
       node.fx = event.x
       node.fy = event.y
+      if (dragMoved) {
+        suppressClickNodeId = node.id
+        if (suppressClickTimer != null) window.clearTimeout(suppressClickTimer)
+        suppressClickTimer = window.setTimeout(() => {
+          suppressClickNodeId = null
+          suppressClickTimer = null
+        }, 600)
+      }
+      dragStartPoint = null
+      dragMoved = false
       draggingNodeId = null
       clearHighlight()
       emit('layout-change', { nodeType: node.type, refId: node.refId, x: event.x, y: event.y, fixed: true })
@@ -626,6 +651,7 @@ onBeforeUnmount(() => {
   renderGeneration += 1
   if (fitTimer != null) window.clearTimeout(fitTimer)
   if (resizeTimer != null) window.clearTimeout(resizeTimer)
+  if (suppressClickTimer != null) window.clearTimeout(suppressClickTimer)
   simulation?.stop()
   resizeObserver?.disconnect()
 })

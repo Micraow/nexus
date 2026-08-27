@@ -14,7 +14,7 @@ const STORAGE_KEY = 'nexus:sqlite:v1'
 const BROWSER_STORAGE_DB = 'nexus:storage'
 const BROWSER_STORAGE_STORE = 'kv'
 const BACKUP_STORAGE_PREFIX = 'nexus:sqlite:backup:'
-const CURRENT_SCHEMA_VERSION = 5
+const CURRENT_SCHEMA_VERSION = 6
 
 export interface DatabaseIntegrityReport {
   ok: boolean
@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   model TEXT,
   external_session_id TEXT,
   title TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   message_count INTEGER NOT NULL DEFAULT 0,
@@ -306,6 +307,13 @@ const migrations: Array<{ version: number; apply: (database: Database) => void }
       if (!columns.includes('summary')) database.run("ALTER TABLE concepts ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
     },
   },
+  {
+    version: 6,
+    apply(database) {
+      const columns = database.exec('PRAGMA table_info(sessions)')[0]?.values.map((row) => String(row[1])) ?? []
+      if (!columns.includes('summary')) database.run("ALTER TABLE sessions ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
+    },
+  },
 ]
 
 export class SqliteStore {
@@ -473,6 +481,7 @@ export class SqliteStore {
     if (!columns.includes('knowledge_confidence')) this.requireDb().run('ALTER TABLE sessions ADD COLUMN knowledge_confidence REAL')
     if (!columns.includes('knowledge_judgment')) this.requireDb().run('ALTER TABLE sessions ADD COLUMN knowledge_judgment TEXT')
     if (!columns.includes('knowledge_retain_in_graph')) this.requireDb().run('ALTER TABLE sessions ADD COLUMN knowledge_retain_in_graph INTEGER NOT NULL DEFAULT 0')
+    if (!columns.includes('summary')) this.requireDb().run("ALTER TABLE sessions ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
     const conceptColumns = this.requireDb().exec('PRAGMA table_info(concepts)')[0]?.values.map((row) => String(row[1])) ?? []
     if (!conceptColumns.includes('summary')) this.requireDb().run("ALTER TABLE concepts ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
     this.requireDb().run(`

@@ -176,6 +176,7 @@ LLMTask、QuickPhrase、ManualGraphEdge、GraphLayout 独立记录
 | model | TEXT NULL | 来源或当前使用的模型 |
 | external_session_id | TEXT NULL | 来源平台原始会话 ID |
 | title | TEXT | 来源标题、用户标题或 LLM 生成标题 |
+| summary | TEXT NULL | 整段会话的滚动摘要，≤120 个字符 |
 | created_at | TEXT | ISO 8601 |
 | updated_at | TEXT | 最近修改时间 |
 | message_count | INTEGER | 可缓存的统计值，实际数量以 Message 为准 |
@@ -456,7 +457,7 @@ API 服务支持结构化输出时，同时使用接口级 JSON Schema；Prompt 
 
 ### 6.0 固定 Harness 与渐进式披露
 
-每个任务 Prompt 都先拼接版本化的固定前缀 `NEXUS_HARNESS_PROMPT` 和 `PROGRESSIVE_DISCLOSURE_PROTOCOL`，再附加该任务的规格和数据。固定前缀按字节保持稳定（当前 `PROMPT_VERSION=2026-08-v3-multi-concept`），任务重试或披露续跑只能替换动态数据段，不能删改行为契约。
+每个任务 Prompt 都先拼接版本化的固定前缀 `NEXUS_HARNESS_PROMPT` 和 `PROGRESSIVE_DISCLOSURE_PROTOCOL`，再附加该任务的规格和数据。固定前缀按字节保持稳定（当前 `PROMPT_VERSION=2026-08-v4-direct-concepts`），任务重试或披露续跑只能替换动态数据段，不能删改行为契约。
 
 当任务需要参考较大的知识树时，Prompt 在 `DISCLOSURE_INDEX` 中提供首层目录和已经展开的记录。目录项至少包含不透明的 `refID`、`title` 和 `summary`；摘要是导航线索，不得冒充消息原文。展开记录可提供 `children`（下一层同样只含 `refID`/标题/摘要），并可在明确请求时提供 `content`（知识单元或消息原文）。
 
@@ -625,7 +626,9 @@ LLM 只返回建议变更：合并、别名、父子关系、相关关系、重�
 
 回复中的 Concept 以可点击文本展示：已有 Concept 跳转详情，新 Concept 进入待确认/添加流程。内容按正常 Markdown、代码和链接形式显示，不执行其中的文字指令。
 
-从图谱或 Concept 详情发起的新对话总是创建新的 Session。首条 prompt 的上下文来源通过 ContextReference 记录。
+从图谱或 Concept 详情发起的新对话总是创建新的 Session。首条 prompt 的上下文来源通过 ContextReference 记录。对话任务同时返回可选的 `session_title` 与 `session_summary`；应用只在应用内生成的占位标题上自动改名，并把摘要写回 Session。旧任务省略这两个字段时保留现有值（新会话摘要为空时以回答文本作有限回退），避免覆盖导入或用户编辑的标题。
+
+如果用户在发起时预选了 Concept，该 Session 和首条用户 Message 会立即建立直接归属；回答返回后再补充 assistant Message、可选 KnowledgeUnit 及其他多主题归属。主题详情的“包含消息”只保留一个顶部“全屏查看全部对话”入口，跨 Session 内容按页展示。
 
 ### M6 Concept 详情
 
