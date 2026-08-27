@@ -138,7 +138,7 @@ RDMA ──hierarchy──> RDMA 的拥塞控制 <──hierarchy── 拥塞�
 
 Concept、Session、Message 和 KnowledgeUnit 是图谱的节点类型，但 `GraphNode` 和 `GraphEdge` 不作为事实数据表保存。图谱节点和大部分边由业务表实时计算或从缓存生成；用户手动创建的特殊边、节点位置和视口状态单独保存。
 
-图谱采用渐进式披露：默认只投影 active hierarchy 的根 Concept；用户点击父节点旁的展开控件后逐层显示其直接子节点。展开祖先路径后，路径上的节点保持可见；收起某个祖先会递归收起其后代，后代的事实关系仍保留在数据库中。`related` 显示不参与层级展开；Session/KnowledgeUnit/Message 开关控制附加节点，局部展开可以按规则披露关联内容。
+图谱采用渐进式披露：默认只投影 active hierarchy 的根 Concept；用户点击 Concept 主体后逐层显示其直接子节点。展开祖先路径后，路径上的节点保持可见；收起某个祖先会递归收起其后代，后代的事实关系仍保留在数据库中。`related` 显示不参与层级展开；Session/KnowledgeUnit/Message 开关控制附加节点，不能被 Concept 展开绕过。
 
 ## 3. 数据模型
 
@@ -574,7 +574,7 @@ LLM 只返回建议变更：合并、别名、父子关系、相关关系、重�
 | 节点 | 含义 | 默认显示 |
 |---|---|---|
 | Concept | 跨会话聚合的知识主体 | 是 |
-| KnowledgeUnit | 可选的阅读片段/证据包 | 否，使用主题展开控件时局部显示 |
+| KnowledgeUnit | 可选的阅读片段/证据包 | 否，仅在显示开关打开时显示 |
 | Message | 直接支撑主题或用户主动展开的原始消息 | 否 |
 
 自动关系：
@@ -586,23 +586,23 @@ LLM 只返回建议变更：合并、别名、父子关系、相关关系、重�
 - ConceptRelation related：相关关系；
 - ManualGraphEdge：用户明确创建的额外边。
 
-默认只显示 active hierarchy 的根 Concept 和已确认关系。根是“没有 hierarchy 父节点”的 Concept；`related` 边永远不参与根判断。侧边栏可以切换 KnowledgeUnit、Message、父子边、共现边、相关/手动边、待确认关系和保留的探讨/流程会话。
+默认只显示 active hierarchy 的根 Concept 和已确认关系。根是“没有可见 hierarchy 父节点”的 Concept；`related` 边永远不参与根判断。`showProposed=false` 时 proposed hierarchy/related 均不参与根、祖先、展开和投影；侧边栏可以切换 KnowledgeUnit、Message、父子边、共现边、相关/手动边、待确认关系和保留的探讨/流程会话。
 
 层级展开不设固定深度：
 
-- `expandedConceptIds` 记录用户明确展开的节点，点击父节点只增加或移除它本身；
+- `expandedConceptIds` 记录用户明确展开的节点，点击 Concept 主体同时更新详情并增加或移除它本身；有子节点时单击/Enter/Space 切换展开状态，叶节点单击只打开详情；
 - 一个节点展开后显示其直接子节点，继续点击子节点才显示下一层；显式展开的后代会自动带上祖先路径；
 - 收起祖先时递归清理该祖先的后代展开状态，后代回到折叠投影，但不改变事实关系；
 - `expandedConceptDepth` 只用于需要确定性批量预展开的调用方，`0` 表示根节点，不能替代无限层级模型。
 
-折叠层级下仍保留数据密度：隐藏 Concept 通过 hierarchy 向上投影到最近的可见祖先。每个 Session 汇总其直接、消息级和 KnowledgeUnit 级归属；同一 Session 对每一对可见代表 Concept 只贡献一次共现权重，多个单元、消息或隐藏叶节点落在同一对代表节点时不会重复计数，不同 Session 才会累加。KnowledgeUnit 节点在全局开关打开或其祖先被明确展开时出现，Message 节点按消息开关出现；这些局部披露不改变 Concept 的层级可见性。
+折叠层级下仍保留数据密度：隐藏 Concept 通过 hierarchy 向上投影到最近的可见祖先。每个 Session 汇总其直接、消息级和 KnowledgeUnit 级归属；同一 Session 对每一对可见代表 Concept 只贡献一次共现权重，多个单元、消息或隐藏叶节点落在同一对代表节点时不会重复计数，不同 Session 才会累加。KnowledgeUnit 节点仅在全局开关打开时出现，Message 节点仅按消息开关或保留会话筛选出现；这些局部披露不改变 Concept 的层级可见性。
 
-`related` 是独立的无向边：可以在可见节点之间绘制，也可以随筛选隐藏，但从不触发祖先路径、子节点展开、根节点计算或 hierarchy 布局约束。
+`related` 是独立的无向边：可以在可见节点之间绘制，也可以随筛选隐藏，但从不触发祖先路径、子节点展开、根节点计算或 hierarchy 布局约束。待确认关系只有在 `showProposed=true` 时进入派生图谱。
 
 交互：
 
-- 单击 Concept 主体：只打开详情，不改变图谱拓扑；
-- 单击 Concept 旁的展开/收起控件：逐层显示直接子节点，或递归收起该节点的后代；
+- 单击 Concept 主体：同时打开详情；有子节点时逐层显示直接子节点，或递归收起该节点的后代；叶节点只打开详情；
+- Concept 节点支持 Enter/Space 执行与单击相同的详情/展开语义，并暴露 `aria-expanded`；图谱上不提供独立的 `+/-` 展开控件；
 - 单击 KnowledgeUnit：打开详情面板；
 - Ctrl/Cmd 单击或框选：多选 KnowledgeUnit；
 - 右侧上下文面板：排序、移除和发起新对话；
@@ -831,7 +831,7 @@ Nexus 采用克制的知识工作台风格，优先信息层级、可读性和�
 ### 12.4 图谱交互
 
 - 滚轮/触控板缩放，拖拽平移和调整节点位置；
-- Concept 主体点击只打开详情；节点旁的展开/收起控件逐层显示直接子 Concept，并在收起祖先时递归收起后代；
+- Concept 主体点击同时打开详情并逐层显示直接子 Concept；叶节点只打开详情；Enter/Space 与单击一致，并在收起祖先时递归收起后代；图谱不绘制独立 `+/-` 控件；
 - 全局力向布局对 hierarchy 关系增加吸引约束，使子 Concept 倾向于靠近父 Concept；一个子 Concept 有多个父节点时，布局在多个父节点之间取折中位置；
 - Ctrl/Cmd 单击和框选用于多选；
 - 关系创建使用菜单/确认面板，拖拽不创建关系；

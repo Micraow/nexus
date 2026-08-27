@@ -153,7 +153,6 @@ function expandedConceptSet(): Set<string> {
 
 function conceptHasChildren(node: GraphNode, edges: GraphEdge[]): boolean {
   const conceptId = node.refId
-  if ((props.expandedConceptIds ?? []).includes(conceptId) || node.expanded === true) return true
   const children = mapValue(props.conceptChildren, conceptId) ?? mapValue(props.conceptChildren, `concept:${conceptId}`)
   if (children?.length) return true
   const meta = conceptMeta(conceptId)
@@ -316,7 +315,7 @@ function render(): void {
         .append('g')
         .attr('class', 'graph-node')
         .attr('tabindex', 0)
-        .attr('role', 'group')
+        .attr('role', 'button')
       group
         .append('circle')
         .attr('class', 'graph-node-shape')
@@ -338,58 +337,24 @@ function render(): void {
     .attr('data-ref-id', (node) => node.refId)
     .attr('data-depth', (node) => nodeLevel(node) == null ? null : String(nodeLevel(node)))
     .attr('data-expanded', (node) => node.type === 'concept' ? String(isExpanded(node)) : null)
-    .attr('aria-label', (node) => `${node.label} · ${node.subtitle ?? node.type}`)
+    .attr('aria-expanded', (node) => node.type === 'concept' && conceptHasChildren(node, links) ? String(isExpanded(node)) : null)
+    .attr('aria-label', (node) => {
+      if (node.type !== 'concept') return `${node.label} · ${node.subtitle ?? node.type}`
+      if (!conceptHasChildren(node, links)) return `${node.label} · 打开详情`
+      return `${node.label} · ${isExpanded(node) ? '收起子主题' : '展开子主题'}并打开详情`
+    })
+    .classed('is-expandable', (node) => node.type === 'concept' && conceptHasChildren(node, links))
   nodeSelection.classed('is-selected', (node) => node.type === 'unit' && props.selectedUnitIds.includes(node.refId))
 
-  // Expansion is deliberately a separate affordance from node selection. A
-  // concept click can therefore open its detail drawer without changing the
-  // snapshot underneath the pointer; only this control asks the parent for a
-  // recursive query.
-  const expandControl = nodeSelection
-    .filter((node) => node.type === 'concept' && conceptHasChildren(node, links))
-    .append('g')
-    .attr('class', 'graph-node-expand-control')
-    .attr('role', 'button')
-    .attr('tabindex', 0)
-    .attr('pointer-events', 'all')
-    .attr('aria-label', (node) => isExpanded(node) ? '收起子节点' : '展开子节点')
-    .attr('aria-expanded', (node) => String(isExpanded(node)))
-    .attr('transform', (node) => {
-      const offset = nodeRadius(node) + 10
-      return `translate(${offset},${-offset})`
-    })
-  expandControl
-    .append('circle')
-    .attr('class', 'graph-node-expand-background')
-    .attr('r', 8)
-  expandControl
-    .append('path')
-    .attr('class', 'graph-node-expand-horizontal')
-    .attr('d', 'M-4 0H4')
-  expandControl
-    .append('path')
-    .attr('class', 'graph-node-expand-vertical')
-    .attr('d', 'M0-4V4')
-  expandControl
-    .append('title')
-    .text((node) => isExpanded(node) ? '收起子节点' : '展开子节点')
-  expandControl.classed('is-expanded', (node) => isExpanded(node))
-
-  const toggleConcept = (event: Event, node: GraphNode): void => {
-    event.preventDefault()
-    event.stopPropagation()
-    const nextExpanded = !isExpanded(node)
-    emit('toggle-concept', node.refId, nextExpanded)
+  const activateNode = (event: MouseEvent | KeyboardEvent, node: GraphNode): void => {
+    if (node.type === 'concept') {
+      emit('select-concept', node.refId)
+      if (conceptHasChildren(node, links)) emit('toggle-concept', node.refId, !isExpanded(node))
+      return
+    }
+    if (node.type === 'unit') emit('select-unit', node.refId, event.ctrlKey || event.metaKey)
+    if (node.type === 'message') emit('select-message', node.refId)
   }
-  expandControl
-    .on('pointerdown', (event) => { event.stopPropagation() })
-    .on('mousedown', (event) => { event.stopPropagation() })
-    .on('touchstart', (event) => { event.stopPropagation() })
-    .on('click', toggleConcept)
-    .on('keydown', (event, node) => {
-      if (event.key !== 'Enter' && event.key !== ' ') return
-      toggleConcept(event, node)
-    })
   const adjacency = new Map<string, Set<string>>()
   links.forEach((link) => {
     const source = typeof link.source === 'string' ? link.source : String(link.source)
@@ -435,15 +400,12 @@ function render(): void {
     })
     .on('click', (event, node) => {
       event.stopPropagation()
-      if (node.type === 'concept') emit('select-concept', node.refId)
-      if (node.type === 'unit') emit('select-unit', node.refId, event.ctrlKey || event.metaKey)
-      if (node.type === 'message') emit('select-message', node.refId)
+      activateNode(event, node)
     })
     .on('keydown', (event, node) => {
       if (event.key !== 'Enter' && event.key !== ' ') return
       event.preventDefault()
-      if (node.type === 'concept') emit('select-concept', node.refId)
-      if (node.type === 'unit') emit('select-unit', node.refId, event.ctrlKey || event.metaKey)
+      activateNode(event, node)
     })
 
   const drag = d3
@@ -677,41 +639,10 @@ onBeforeUnmount(() => {
       <span class="legend-dot concept-dot" /> 知识主题
       <span class="legend-dot unit-dot" /> 知识单元
       <span class="legend-dot message-dot" /> 消息
-      <span class="graph-hint">滚轮缩放 · 拖拽平移/定位 · Shift+拖动框选知识单元 · 节点 +/− 展开层级</span>
+      <span class="graph-hint">滚轮缩放 · 拖拽平移/定位 · Shift+拖动框选知识单元 · 点击主题逐层展开</span>
     </div>
   </div>
 </template>
 
 <style>
-.graph-node-expand-control {
-  cursor: pointer;
-  outline: none;
-}
-
-.graph-node-expand-background {
-  fill: var(--surface);
-  stroke: var(--primary-strong);
-  stroke-width: 1.5px;
-  vector-effect: non-scaling-stroke;
-  transition: fill var(--motion-fast), stroke var(--motion-fast);
-}
-
-.graph-node-expand-control path {
-  fill: none;
-  stroke: var(--primary-strong);
-  stroke-width: 1.7px;
-  stroke-linecap: round;
-  pointer-events: none;
-  vector-effect: non-scaling-stroke;
-}
-
-.graph-node-expand-control:hover .graph-node-expand-background,
-.graph-node-expand-control:focus .graph-node-expand-background {
-  fill: var(--primary-soft);
-  stroke-width: 2px;
-}
-
-.graph-node-expand-control.is-expanded .graph-node-expand-vertical {
-  opacity: 0;
-}
 </style>

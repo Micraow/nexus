@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildGraph } from '@/services/graph'
+import { buildGraph, toggleExpandedConceptIds } from '@/services/graph'
 
 const now = '2026-08-24T00:00:00.000Z'
 
@@ -75,17 +75,21 @@ describe('derived graph', () => {
     expect(snapshot.edges.find((edge) => edge.type === 'co_occurrence')?.weight).toBe(2)
   })
 
-  it('shows expanded units for one concept without globally enabling units', () => {
-    const snapshot = buildGraph({
-      concepts: [{ id: 'c1', name: 'A', normalizedName: 'A', notes: '', status: 'active', createdAt: now, updatedAt: now }],
-      units: [{ id: 'u1', sessionId: 's', title: 'U1', summary: '', orderInSession: 0, status: 'ready', revision: 1, createdAt: now, updatedAt: now }],
+  it('keeps knowledge units behind their explicit display toggle', () => {
+    const input = {
+      concepts: [
+        { id: 'c1', name: 'A', normalizedName: 'A', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+        { id: 'c2', name: 'A child', normalizedName: 'A CHILD', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+      ],
+      units: [{ id: 'u1', sessionId: 's', title: 'U1', summary: '', orderInSession: 0, status: 'ready' as const, revision: 1, createdAt: now, updatedAt: now }],
       messages: [],
-      unitConcepts: [{ unitId: 'u1', conceptId: 'c1', source: 'manual', createdAt: now }],
-      relations: [],
+      unitConcepts: [{ unitId: 'u1', conceptId: 'c2', source: 'manual' as const, createdAt: now }],
+      relations: [{ id: 'h', parentConceptId: 'c1', childConceptId: 'c2', relationType: 'hierarchy' as const, source: 'manual' as const, status: 'confirmed' as const, createdAt: now, updatedAt: now }],
       revision: 1,
       expandedConceptIds: ['c1'],
-    })
-    expect(snapshot.nodes.some((node) => node.id === 'unit:u1')).toBe(true)
+    }
+    expect(buildGraph(input).nodes.some((node) => node.id === 'unit:u1')).toBe(false)
+    expect(buildGraph({ ...input, showUnits: true }).nodes.some((node) => node.id === 'unit:u1')).toBe(true)
   })
 
   it('keeps assigned messages visible and connects a session into an ordered chain', () => {
@@ -149,18 +153,18 @@ describe('derived graph', () => {
     expect(snapshot.edges.filter((edge) => edge.type === 'related')).toHaveLength(1)
   })
 
-  it('expands a selected concept through its unit to assigned messages', () => {
-    const snapshot = buildGraph({
-      concepts: [{ id: 'c1', name: '主题', normalizedName: '主题', notes: '', status: 'active', createdAt: now, updatedAt: now }],
-      units: [{ id: 'u1', sessionId: 's', title: '单元', summary: '', orderInSession: 0, status: 'ready', revision: 1, createdAt: now, updatedAt: now }],
-      messages: [{ id: 'm1', sessionId: 's', unitId: 'u1', role: 'assistant', content: '回答', orderInSession: 0 }],
-      unitConcepts: [{ unitId: 'u1', conceptId: 'c1', source: 'llm', createdAt: now }],
+  it('keeps messages behind their explicit display toggle when a concept expands', () => {
+    const input = {
+      concepts: [{ id: 'c1', name: '主题', normalizedName: '主题', notes: '', status: 'active' as const, createdAt: now, updatedAt: now }],
+      units: [{ id: 'u1', sessionId: 's', title: '单元', summary: '', orderInSession: 0, status: 'ready' as const, revision: 1, createdAt: now, updatedAt: now }],
+      messages: [{ id: 'm1', sessionId: 's', unitId: 'u1', role: 'assistant' as const, content: '回答', orderInSession: 0 }],
+      unitConcepts: [{ unitId: 'u1', conceptId: 'c1', source: 'llm' as const, createdAt: now }],
       relations: [],
       revision: 1,
       expandedConceptIds: ['c1'],
-    })
-    expect(snapshot.nodes.some((node) => node.id === 'unit:u1')).toBe(true)
-    expect(snapshot.nodes.some((node) => node.id === 'message:m1')).toBe(true)
+    }
+    expect(buildGraph(input).nodes.some((node) => node.id === 'message:m1')).toBe(false)
+    expect(buildGraph({ ...input, showMessages: true }).nodes.some((node) => node.id === 'message:m1')).toBe(true)
   })
 
   it('projects multi-concept memberships from unassigned message metadata', () => {
@@ -179,6 +183,7 @@ describe('derived graph', () => {
       relations: [],
       revision: 1,
       expandedConceptIds: ['c1'],
+      showMessages: true,
     })
     expect(snapshot.nodes.some((node) => node.id === 'message:m1')).toBe(true)
     expect(snapshot.edges.filter((edge) => edge.type === 'association' && edge.target === 'message:m1').map((edge) => edge.source).sort()).toEqual(['concept:c1', 'concept:c2'])
@@ -200,12 +205,13 @@ describe('derived graph', () => {
       relations: [],
       revision: 1,
       expandedConceptIds: ['c1'],
+      showMessages: true,
     })
     expect(snapshot.nodes.some((node) => node.id === 'message:m1')).toBe(true)
     expect(snapshot.edges.filter((edge) => edge.type === 'association' && edge.target === 'message:m1').map((edge) => edge.source).sort()).toEqual(['concept:c1', 'concept:c2'])
   })
 
-  it('shows only hierarchy roots by default and keeps related edges out of the hierarchy', () => {
+  it('shows only confirmed hierarchy roots by default and keeps related edges out of the hierarchy', () => {
     const concepts = [
       { id: 'root', name: '根', normalizedName: '根', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
       { id: 'child', name: '子', normalizedName: '子', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
@@ -225,6 +231,36 @@ describe('derived graph', () => {
     expect(snapshot.nodes.filter((node) => node.type === 'concept').map((node) => node.refId)).toEqual(['root', 'other'])
     expect(snapshot.edges.some((edge) => edge.type === 'hierarchy')).toBe(false)
     expect(snapshot.edges.filter((edge) => edge.type === 'related')).toHaveLength(1)
+  })
+
+  it('excludes proposed hierarchy and related relations unless explicitly enabled', () => {
+    const concepts = [
+      { id: 'root', name: '根', normalizedName: '根', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+      { id: 'child', name: '子', normalizedName: '子', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+      { id: 'other', name: '另一根', normalizedName: '另一根', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+    ]
+    const relations = [
+      { id: 'h', parentConceptId: 'root', childConceptId: 'child', relationType: 'hierarchy' as const, source: 'llm' as const, status: 'proposed' as const, createdAt: now, updatedAt: now },
+      { id: 'r', parentConceptId: 'child', childConceptId: 'other', relationType: 'related' as const, source: 'llm' as const, status: 'proposed' as const, createdAt: now, updatedAt: now },
+    ]
+
+    const hidden = buildGraph({ concepts, units: [], messages: [], unitConcepts: [], relations, revision: 1 })
+    expect(hidden.nodes.filter((node) => node.type === 'concept').map((node) => node.refId)).toEqual(['root', 'child', 'other'])
+    expect(hidden.edges).toHaveLength(0)
+
+    const visible = buildGraph({
+      concepts,
+      units: [],
+      messages: [],
+      unitConcepts: [],
+      relations,
+      revision: 1,
+      showProposed: true,
+      expandedConceptIds: ['root'],
+    })
+    expect(visible.nodes.filter((node) => node.type === 'concept').map((node) => node.refId)).toEqual(['root', 'child', 'other'])
+    expect(visible.edges.filter((edge) => edge.type === 'hierarchy')).toHaveLength(1)
+    expect(visible.edges.filter((edge) => edge.type === 'related')).toHaveLength(1)
   })
 
   it('reveals one hierarchy level per expanded ancestor', () => {
@@ -247,7 +283,7 @@ describe('derived graph', () => {
     expect(levelThree.edges.filter((edge) => edge.type === 'hierarchy')).toHaveLength(2)
   })
 
-  it('aggregates hidden leaf co-occurrence into visible roots', () => {
+  it('aggregates hidden descendant co-occurrence once per Session into visible roots', () => {
     const concepts = [
       { id: 'a', name: 'A', normalizedName: 'A', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
       { id: 'a1', name: 'A1', normalizedName: 'A1', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
@@ -255,7 +291,10 @@ describe('derived graph', () => {
       { id: 'b', name: 'B', normalizedName: 'B', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
       { id: 'b1', name: 'B1', normalizedName: 'B1', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
     ]
-    const units = ['u1', 'u2'].map((id, index) => ({ id, sessionId: 's', title: id, summary: '', orderInSession: index, status: 'ready' as const, revision: 1, createdAt: now, updatedAt: now }))
+    const units = [
+      { id: 'u1', sessionId: 's1', title: 'u1', summary: '', orderInSession: 0, status: 'ready' as const, revision: 1, createdAt: now, updatedAt: now },
+      { id: 'u2', sessionId: 's1', title: 'u2', summary: '', orderInSession: 1, status: 'ready' as const, revision: 1, createdAt: now, updatedAt: now },
+    ]
     const relations = [
       { id: 'ha1', parentConceptId: 'a', childConceptId: 'a1', relationType: 'hierarchy' as const, source: 'manual' as const, status: 'confirmed' as const, createdAt: now, updatedAt: now },
       { id: 'ha2', parentConceptId: 'a', childConceptId: 'a2', relationType: 'hierarchy' as const, source: 'manual' as const, status: 'confirmed' as const, createdAt: now, updatedAt: now },
@@ -264,16 +303,69 @@ describe('derived graph', () => {
     const unitConcepts = [
       { unitId: 'u1', conceptId: 'a1', source: 'llm' as const, createdAt: now },
       { unitId: 'u1', conceptId: 'b1', source: 'llm' as const, createdAt: now },
-      { unitId: 'u2', conceptId: 'a2', source: 'llm' as const, createdAt: now },
+      { unitId: 'u2', conceptId: 'a1', source: 'llm' as const, createdAt: now },
       { unitId: 'u2', conceptId: 'b1', source: 'llm' as const, createdAt: now },
     ]
-    const collapsed = buildGraph({ concepts, units, messages: [], unitConcepts, relations, revision: 1 })
+    const sessionConcepts = [
+      { sessionId: 's2', conceptId: 'a2', source: 'llm' as const, createdAt: now },
+      { sessionId: 's2', conceptId: 'b1', source: 'llm' as const, createdAt: now },
+      { sessionId: 's3', conceptId: 'a1', source: 'llm' as const, createdAt: now },
+    ]
+    const collapsed = buildGraph({ concepts, units, messages: [], unitConcepts, sessionConcepts, relations, revision: 1 })
     expect(collapsed.edges.find((edge) => edge.type === 'co_occurrence')?.id).toContain('concept:a|concept:b')
-    expect(collapsed.edges.find((edge) => edge.type === 'co_occurrence')?.weight).toBe(1)
-    const expanded = buildGraph({ concepts, units, messages: [], unitConcepts, relations, revision: 1, expandedConceptIds: ['a'] })
+    expect(collapsed.edges.find((edge) => edge.type === 'co_occurrence')?.weight).toBe(2)
+    const expanded = buildGraph({ concepts, units, messages: [], unitConcepts, sessionConcepts, relations, revision: 1, expandedConceptIds: ['a'] })
     const hasPair = (left: string, right: string) => expanded.edges.some((edge) => edge.type === 'co_occurrence' && new Set([edge.source, edge.target]).has(left) && new Set([edge.source, edge.target]).has(right))
     expect(hasPair('concept:a1', 'concept:b')).toBe(true)
     expect(hasPair('concept:a2', 'concept:b')).toBe(true)
+  })
+
+  it('projects a hidden multi-parent Concept only to its nearest visible representatives', () => {
+    const concepts = [
+      { id: 'r1', name: '根一', normalizedName: '根一', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+      { id: 'r2', name: '根二', normalizedName: '根二', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+      { id: 'bridge', name: '桥', normalizedName: '桥', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+      { id: 'leaf', name: '叶', normalizedName: '叶', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+      { id: 'other', name: '其他', normalizedName: '其他', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+    ]
+    const relations = [
+      { id: 'h1', parentConceptId: 'r1', childConceptId: 'leaf', relationType: 'hierarchy' as const, source: 'manual' as const, status: 'confirmed' as const, createdAt: now, updatedAt: now },
+      { id: 'h2', parentConceptId: 'bridge', childConceptId: 'leaf', relationType: 'hierarchy' as const, source: 'manual' as const, status: 'confirmed' as const, createdAt: now, updatedAt: now },
+      { id: 'h3', parentConceptId: 'r2', childConceptId: 'bridge', relationType: 'hierarchy' as const, source: 'manual' as const, status: 'confirmed' as const, createdAt: now, updatedAt: now },
+    ]
+    const snapshot = buildGraph({
+      concepts,
+      units: [],
+      messages: [],
+      unitConcepts: [],
+      sessionConcepts: [
+        { sessionId: 's', conceptId: 'leaf', source: 'llm', createdAt: now },
+        { sessionId: 's', conceptId: 'other', source: 'llm', createdAt: now },
+      ],
+      relations,
+      revision: 1,
+    })
+    expect(snapshot.edges.some((edge) => edge.type === 'co_occurrence' && edge.source === 'concept:r1' && edge.target === 'concept:other')).toBe(true)
+    expect(snapshot.edges.some((edge) => edge.type === 'co_occurrence' && edge.source === 'concept:r2' && edge.target === 'concept:other')).toBe(false)
+  })
+
+  it('collapsing an ancestor removes every expanded descendant but keeps other branches', () => {
+    const relations = [
+      { id: 'h1', parentConceptId: 'r', childConceptId: 'c', relationType: 'hierarchy' as const, source: 'manual' as const, status: 'confirmed' as const, createdAt: now, updatedAt: now },
+      { id: 'h2', parentConceptId: 'c', childConceptId: 'g', relationType: 'hierarchy' as const, source: 'llm' as const, status: 'confirmed' as const, createdAt: now, updatedAt: now },
+      { id: 'h3', parentConceptId: 'x', childConceptId: 'y', relationType: 'hierarchy' as const, source: 'manual' as const, status: 'confirmed' as const, createdAt: now, updatedAt: now },
+    ]
+    expect(toggleExpandedConceptIds(['r', 'c', 'g', 'x'], 'r', relations, false).sort()).toEqual(['x'])
+  })
+
+  it('uses the same proposed-relation boundary when collapsing disclosure state', () => {
+    const relations = [
+      { id: 'h1', parentConceptId: 'r', childConceptId: 'c', relationType: 'hierarchy' as const, source: 'manual' as const, status: 'confirmed' as const, createdAt: now, updatedAt: now },
+      { id: 'h2', parentConceptId: 'c', childConceptId: 'g', relationType: 'hierarchy' as const, source: 'llm' as const, status: 'proposed' as const, createdAt: now, updatedAt: now },
+      { id: 'related', parentConceptId: 'c', childConceptId: 'x', relationType: 'related' as const, source: 'manual' as const, status: 'confirmed' as const, createdAt: now, updatedAt: now },
+    ]
+    expect(toggleExpandedConceptIds(['r', 'c', 'g', 'x'], 'r', relations, false).sort()).toEqual(['g', 'x'])
+    expect(toggleExpandedConceptIds(['r', 'c', 'g', 'x'], 'r', relations, false, true).sort()).toEqual(['x'])
   })
 
   it('supports a global expansion depth without treating related edges as hierarchy', () => {

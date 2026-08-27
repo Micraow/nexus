@@ -43,6 +43,10 @@ function relationIsVisible(relation: ConceptRelation, showProposed: boolean): bo
   return relation.status === 'confirmed' || (showProposed && relation.status === 'proposed')
 }
 
+function hierarchyRelationIsVisible(relation: ConceptRelation, showProposed: boolean): boolean {
+  return relation.relationType === 'hierarchy' && relationIsVisible(relation, showProposed)
+}
+
 /**
  * Message-level Concept memberships are kept in metadata when a Message has
  * not yet been assigned to a KnowledgeUnit.  Accept both the parsed object
@@ -70,7 +74,7 @@ function indexHierarchy(concepts: Concept[], relations: ConceptRelation[], showP
   const childrenByParent = new Map<string, Set<string>>()
 
   relations.forEach((relation) => {
-    if (relation.relationType !== 'hierarchy' || !relationIsVisible(relation, showProposed)) return
+    if (!hierarchyRelationIsVisible(relation, showProposed)) return
     if (!activeIds.has(relation.parentConceptId) || !activeIds.has(relation.childConceptId)) return
     if (relation.parentConceptId === relation.childConceptId) return
     const parents = parentsByChild.get(relation.childConceptId) ?? new Set<string>()
@@ -161,6 +165,40 @@ export function normalizeExpandedConceptIds(
   return expanded
 }
 
+/** Toggle one disclosure branch and forget every expanded descendant on collapse. */
+export function toggleExpandedConceptIds(
+  currentIds: Iterable<string>,
+  conceptId: string,
+  relations: ConceptRelation[],
+  expanded?: boolean,
+  showProposed = false,
+): string[] {
+  const current = new Set(currentIds)
+  const shouldExpand = expanded ?? !current.has(conceptId)
+  if (shouldExpand) {
+    current.add(conceptId)
+    return [...current]
+  }
+
+  const childrenByParent = new Map<string, Set<string>>()
+  relations.forEach((relation) => {
+    if (!hierarchyRelationIsVisible(relation, showProposed)) return
+    const children = childrenByParent.get(relation.parentConceptId) ?? new Set<string>()
+    children.add(relation.childConceptId)
+    childrenByParent.set(relation.parentConceptId, children)
+  })
+  const queue = [conceptId]
+  const visited = new Set<string>()
+  for (let index = 0; index < queue.length; index += 1) {
+    const currentId = queue[index]
+    if (visited.has(currentId)) continue
+    visited.add(currentId)
+    current.delete(currentId)
+    ;(childrenByParent.get(currentId) ?? new Set<string>()).forEach((childId) => queue.push(childId))
+  }
+  return [...current]
+}
+
 /**
  * Resolve the Concept nodes visible in a progressive projection.
  *
@@ -249,7 +287,7 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
   const activeConcepts = input.concepts.filter((concept) => concept.status === 'active')
   const conceptById = new Map(activeConcepts.map((concept) => [concept.id, concept]))
   const unitById = new Map(input.units.map((unit) => [unit.id, unit]))
-  const { visibleIds, expandedIds, explicitExpandedIds, hierarchy } = resolveVisibleConceptIds(activeConcepts, input.relations, input)
+  const { visibleIds, expandedIds, hierarchy } = resolveVisibleConceptIds(activeConcepts, input.relations, input)
   const visibleConcepts = activeConcepts.filter((concept) => visibleIds.has(concept.id))
   const visibleRepresentativesCache = new Map<string, string[]>()
   const representativesFor = (conceptId: string): string[] => {
@@ -420,33 +458,8 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
     attached.forEach((conceptId) => ensureEdge(conceptNode(conceptId), unitNodeId, 'association'))
   }
 
-  const explicitAncestorCache = new Map<string, boolean>()
-  const hasExplicitExpandedAncestor = (conceptId: string): boolean => {
-    const cached = explicitAncestorCache.get(conceptId)
-    if (cached != null) return cached
-    const queue = [conceptId]
-    const visited = new Set<string>()
-    for (let queueIndex = 0; queueIndex < queue.length; queueIndex += 1) {
-      const current = queue[queueIndex]
-      if (visited.has(current)) continue
-      visited.add(current)
-      if (explicitExpandedIds.has(current)) {
-        explicitAncestorCache.set(conceptId, true)
-        return true
-      }
-      ;(hierarchy.parentsByChild.get(current) ?? new Set<string>()).forEach((parentId) => queue.push(parentId))
-    }
-    explicitAncestorCache.set(conceptId, false)
-    return false
-  }
-
   for (const [unitId, conceptIds] of conceptsByUnit) {
-    // A collapsed root can still expose all of its local units when explicitly
-    // expanded.  Global showUnits keeps the old behavior and shows every unit.
-    if (input.showUnits || [...conceptIds].some((conceptId) => hasExplicitExpandedAncestor(conceptId))) {
-      ensureUnitNode(unitId, conceptIds)
-    }
-
+    if (input.showUnits) ensureUnitNode(unitId, conceptIds)
   }
 
   // Project each Session's Concept set to visible ancestors and add one edge
@@ -463,12 +476,8 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
     }
   })
 
-  if (input.showMessages || input.showRetainedSessions || explicitExpandedIds.size) {
+  if (input.showMessages || input.showRetainedSessions) {
     const sessionsById = new Map((input.sessions ?? []).map((session) => [session.id, session]))
-    const expandedUnitIds = new Set<string>()
-    conceptsByUnit.forEach((conceptIds, unitId) => {
-      if ([...conceptIds].some((conceptId) => hasExplicitExpandedAncestor(conceptId))) expandedUnitIds.add(unitId)
-    })
     const visibleMessages = input.messages.filter((message) => {
       const session = sessionsById.get(message.sessionId)
       const retained = Boolean(
@@ -477,8 +486,7 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
         && session.knowledgeKind !== 'knowledge'
         && (session.knowledgeKind === 'unknown' || session.knowledgeRetainInGraph),
       )
-      return input.showMessages || retained || (message.unitId != null && expandedUnitIds.has(message.unitId))
-        || [...(conceptsByMessage.get(message.id) ?? [])].some((conceptId) => hasExplicitExpandedAncestor(conceptId))
+      return input.showMessages || retained
     })
     visibleMessages.forEach((message) => {
       const messageNodeId = `message:${message.id}`
@@ -516,7 +524,7 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
   // visible.  In particular, a collapsed child is represented by its visible
   // ancestor rather than by a misleading parent→hidden-leaf edge.
   input.relations
-    .filter((relation) => relation.relationType === 'hierarchy' && relationIsVisible(relation, Boolean(input.showProposed)))
+    .filter((relation) => hierarchyRelationIsVisible(relation, Boolean(input.showProposed)))
     .forEach((relation) => {
       if (!visibleIds.has(relation.parentConceptId) || !visibleIds.has(relation.childConceptId)) return
       ensureEdge(conceptNode(relation.parentConceptId), conceptNode(relation.childConceptId), 'hierarchy', 1, relation.status)

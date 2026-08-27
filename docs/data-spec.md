@@ -365,7 +365,7 @@ Concept 提取结果必须包含 `concepts` 数组；全部复用目录中已有
 - hierarchy 是无限深度 DAG。`expandedConceptIds` 是用户明确展开的 Concept ID 集合；显式展开的后代会自动补齐祖先路径。父节点展开只使直接子节点可见，继续展开子节点才进入下一层；`expandedConceptDepth=0` 表示仅根节点，正值是可选的批量深度上限，不是模型层数上限；
 - 收起一个 Concept 必须递归移除其后代的展开状态；后代事实仍在数据库中，重新展开即可恢复；
 - 可见 Concept 集合是根节点加上沿“已展开父节点”可达的后代。对隐藏 Concept，计算其到最近可见 hierarchy 祖先的一个或多个代表节点；这组代表用于折叠投影；
-- KnowledgeUnit 节点在 `showUnits=true` 时全部生成，在某个祖先被明确展开时生成其关联单元；Message 节点按 `showMessages`、保留会话筛选或明确展开的单元生成；
+- KnowledgeUnit 节点只在 `showUnits=true` 时生成；Message 节点只按 `showMessages` 或保留会话筛选生成，Concept 展开不能绕过这些开关；
 - 节点 `label` 来自 `Concept.name`、`KnowledgeUnit.title` 或 Message 内容预览；Concept 节点可附带 `depth`、`parentId`/`parentIds`、`rootIds`、`hasChildren`、`expanded` 等派生元数据；
 - 节点位置和视口是可丢弃的 `GraphLayout`，不是业务事实。
 

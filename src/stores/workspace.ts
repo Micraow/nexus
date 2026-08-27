@@ -3,7 +3,7 @@ import { defineStore } from 'pinia'
 import { db } from '@/services/db'
 import { httpRequest } from '@/services/http'
 import { DEFAULT_TOKEN_BUDGET, normalizeTokenBudget, parseConfigText, readConfigText, writeConfig } from '@/services/config'
-import { buildGraph, graphStats } from '@/services/graph'
+import { buildGraph, graphStats, toggleExpandedConceptIds } from '@/services/graph'
 import { buildSearchDocuments, searchKnowledge } from '@/services/search'
 import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildOriginConceptPrompt, buildRepairPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, ensureHarnessPrompt, listedDisclosureRefIds, parseDisclosureContext, PROMPT_VERSION, renderQuickPhrase, replaceDisclosureContext } from '@/services/prompts'
 import { importPayloadSchema, parseImportPayload, validateConceptIdList, validateConceptMemberships, validateDisclosureRequests, validateOriginConceptResult, validateSegmentationResult, validateUnitText } from '@/services/validation'
@@ -577,17 +577,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
    * component state. Collapsing a Concept also collapses its entire subtree,
    * matching the progressive-disclosure interaction contract.
    */
-  function toggleConceptExpansion(currentIds: string[], conceptId: string, expanded?: boolean, includeProposed = false): string[] {
+  function toggleConceptExpansion(currentIds: string[], conceptId: string, expanded?: boolean, showProposed = false): string[] {
     if (!activeConcepts.value.some((concept) => concept.id === conceptId)) return currentIds.slice()
-    const current = new Set(currentIds)
-    const shouldExpand = expanded ?? !current.has(conceptId)
-    if (shouldExpand) {
-      current.add(conceptId)
-      return [...current]
-    }
-    current.delete(conceptId)
-    conceptDescendants(conceptId, includeProposed).forEach((concept) => current.delete(concept.id))
-    return [...current]
+    return toggleExpandedConceptIds(currentIds, conceptId, relations.value, expanded, showProposed)
   }
   /**
    * Build the read-only catalog used by LLM prompts. The catalog is derived

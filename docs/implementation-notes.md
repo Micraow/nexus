@@ -44,10 +44,10 @@
 
 - 图谱共现计算运行在 Web Worker（`workers/graph.worker.ts`）中；主线程只做缓存命中与布局回填。缓存键包含 `graph_revision`、Session/Message/KnowledgeUnit/待确认/保留会话开关、`expandedConceptDepth` 和排序后的 `expandedConceptIds`，任一输入变化即重新计算，计算期间先返回最近一次快照（stale-while-revalidate 式），完成后增量刷新。Worker 不可用时退回主线程同步计算。
 - Worker 通信的数据必须先深拷贝为纯 JSON（`toPlainJson`）：Pinia 的响应式代理无法结构化克隆，直接 `postMessage` 会抛 `DataCloneError` 并中断图谱视图渲染。新增图谱输入字段时必须保持可 JSON 序列化。
-- GraphNode/GraphEdge 继续作为派生视图。`resolveVisibleConceptIds` 默认只返回 active hierarchy 根节点；节点旁的展开控件把 Concept 加入 `expandedConceptIds`，逐层显示直接子节点。`normalizeExpandedConceptIds` 会补齐显式后代的祖先路径；`toggleConceptExpansion` 在收起父节点时递归清除后代。hierarchy 不限制深度且允许多父节点；`related` 始终无向，完全不参与根节点、祖先、深度或展开判断。
+- GraphNode/GraphEdge 继续作为派生视图。`resolveVisibleConceptIds` 默认只返回 active hierarchy 根节点；Concept 主体单击、Enter 或 Space 把节点加入/移出 `expandedConceptIds`，逐层显示直接子节点，叶节点单击只打开详情。`normalizeExpandedConceptIds` 会补齐显式后代的祖先路径；`toggleConceptExpansion` 在收起父节点时递归清除后代。hierarchy 不限制深度且允许多父节点；`related` 始终无向，完全不参与根节点、祖先、深度或展开判断。`showProposed=false` 时 proposed hierarchy/related 均被排除。
 - Concept 的直接证据同时来自 SessionConcept、MessageConcept 和 UnitConcept。没有 KnowledgeUnit 的消息仍可生成图谱关联；KnowledgeUnit 只作为可选阅读片段投影。窗口化处理保留全局 Message ID，不把窗口边界写入图谱。
 - 折叠主题通过 hierarchy 投影到最近可见祖先。每个 KnowledgeUnit 先对可见代表节点去重，再对每个代表节点对贡献一次共现权重；因此隐藏叶节点仍能为根视图提供聚合关系，同时不会因多条叶子路径重复计数。hierarchy 只绘制当前两端都可见的事实边；related 的隐藏端点也可投影到可见祖先，但只形成无向弱关系。
-- 图谱中的节点主体点击只打开详情，不改变拓扑；节点旁的展开/收起控件才改变层级投影。全局 `showUnits` 显示所有有关联的单元，显式展开的主题也会披露其后代单元；消息按 `showMessages`、保留会话或局部展开生成，并按 Session 的 `orderInSession` 连接成链。
+- 图谱中的 Concept 节点主体点击同时打开详情并改变层级投影；叶节点只打开详情，Enter/Space 与单击一致，图谱不提供独立 `+/-` 展开控件。全局 `showUnits` 才显示单元，`showMessages` 或保留会话筛选才显示消息；这些开关不会被 Concept 展开绕过，并按 Session 的 `orderInSession` 连接成链。
 - 图谱布局持久化：节点拖拽结束写入 `graph_layout`（固定坐标），视口平移/缩放防抖后写入单行 `graph_viewport` 表；刷新后恢复。“重置布局”清除这两类记录并重新计算。快照变化触发的重渲染以 d3 的实时变换恢复视口，持久化视口只在组件挂载时应用；store 保存/重置视口时会同步内存值，避免过期的 prop 把缩放拉回旧状态，“重置布局”通过递增组件 key 整体重建实现。
 - 图谱支持框选多选：空白画布上 Shift+左键拖出选框（该手势已从 d3.zoom 的默认事件过滤中排除，不与平移冲突），松开后把框内知识单元节点逐一加入跨会话上下文选择；选框坐标经当前缩放变换的逆变换映射回布局坐标再判定命中。
 - 手动图谱边保存在 `manual_graph_edges`，但当前界面只提供数据层 API，关系创建界面仍以 ConceptRelation 表单为主。

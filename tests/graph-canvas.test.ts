@@ -25,7 +25,7 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 
-function mountGraph(listeners: Record<string, (...args: unknown[]) => void> = {}): HTMLElement {
+function mountGraph(listeners: Record<string, (...args: unknown[]) => void> = {}, hasChildren = true): HTMLElement {
   const snapshot: GraphSnapshot = {
     revision: 1,
     nodes: [{
@@ -35,7 +35,7 @@ function mountGraph(listeners: Record<string, (...args: unknown[]) => void> = {}
       label: '根主题',
       degree: 0,
       unitCount: 1,
-      hasChildren: true,
+      hasChildren,
       expanded: false,
     }],
     edges: [],
@@ -53,20 +53,37 @@ function mountGraph(listeners: Record<string, (...args: unknown[]) => void> = {}
 }
 
 describe('GraphCanvas progressive disclosure', () => {
-  it('keeps concept selection separate from explicit expansion', async () => {
+  it('selects and toggles an expandable Concept from its body', async () => {
     const selectConcept = vi.fn()
     const toggleConcept = vi.fn()
     const target = mountGraph({ onSelectConcept: selectConcept, onToggleConcept: toggleConcept })
     await nextTick()
 
-    const expandControl = target.querySelector<SVGGElement>('.graph-node-expand-control')
-    expect(expandControl).not.toBeNull()
-    expandControl!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    expect(toggleConcept).toHaveBeenCalledWith('root', true)
-    expect(selectConcept).not.toHaveBeenCalled()
-
-    target.querySelector<SVGGElement>('.graph-node')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const node = target.querySelector<SVGGElement>('.graph-node')!
+    expect(node.getAttribute('role')).toBe('button')
+    expect(node.getAttribute('aria-expanded')).toBe('false')
+    node.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     expect(selectConcept).toHaveBeenCalledWith('root')
-    expect(toggleConcept).toHaveBeenCalledTimes(1)
+    expect(toggleConcept).toHaveBeenCalledWith('root', true)
+
+    node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    expect(selectConcept).toHaveBeenCalledTimes(2)
+    expect(toggleConcept).toHaveBeenNthCalledWith(2, 'root', true)
+  })
+
+  it('only opens details when the selected Concept is a leaf', async () => {
+    const selectConcept = vi.fn()
+    const toggleConcept = vi.fn()
+    const target = mountGraph({ onSelectConcept: selectConcept, onToggleConcept: toggleConcept }, false)
+    await nextTick()
+
+    const node = target.querySelector<SVGGElement>('.graph-node')!
+    node.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(selectConcept).toHaveBeenCalledWith('root')
+    expect(toggleConcept).not.toHaveBeenCalled()
+
+    node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    expect(selectConcept).toHaveBeenCalledTimes(2)
+    expect(toggleConcept).not.toHaveBeenCalled()
   })
 })
