@@ -62,6 +62,7 @@ describe('GraphCanvas progressive disclosure', () => {
     const node = target.querySelector<SVGGElement>('.graph-node')!
     expect(target.querySelector('svg')?.getAttribute('role')).toBe('group')
     expect(node.getAttribute('role')).toBe('button')
+    expect(node.getAttribute('transform')).toMatch(/^translate\(/)
     expect(node.getAttribute('aria-expanded')).toBe('false')
     expect(target.querySelector('.graph-node-expand-control')).toBeNull()
     expect(target.querySelector('.graph-node-expand-toggle')).toBeNull()

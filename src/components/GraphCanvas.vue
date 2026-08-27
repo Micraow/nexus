@@ -456,6 +456,9 @@ function render(): void {
       }
       node.fx = event.x
       node.fy = event.y
+      // Keep the in-memory seed in sync with the persisted layout immediately;
+      // a disclosure render can happen before the next simulation tick.
+      nodePositions.set(node.id, { x: event.x, y: event.y })
       if (dragMoved) {
         suppressClickNodeId = node.id
         if (suppressClickTimer != null) window.clearTimeout(suppressClickTimer)
@@ -521,6 +524,9 @@ function render(): void {
         .attr('y2', (edge) => (edge.target as unknown as GraphNode).y ?? 0)
       nodeSelection.attr('transform', (node) => `translate(${node.x ?? width / 2},${node.y ?? height / 2})`)
   }
+  // Paint the seeded positions before the first physics tick. Topology
+  // updates can otherwise leave one rendered frame with an empty canvas.
+  paint()
   let tickCount = 0
   simulation.on('tick', () => {
     tickCount += 1
