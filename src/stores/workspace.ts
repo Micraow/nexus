@@ -2,7 +2,7 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { db } from '@/services/db'
 import { httpRequest } from '@/services/http'
-import { parseConfigText, readConfigText, writeConfig } from '@/services/config'
+import { DEFAULT_TOKEN_BUDGET, normalizeTokenBudget, parseConfigText, readConfigText, writeConfig } from '@/services/config'
 import { buildGraph, graphStats } from '@/services/graph'
 import { buildSearchDocuments, searchKnowledge } from '@/services/search'
 import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildOriginConceptPrompt, buildRepairPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, ensureHarnessPrompt, listedDisclosureRefIds, parseDisclosureContext, PROMPT_VERSION, renderQuickPhrase, replaceDisclosureContext } from '@/services/prompts'
@@ -47,7 +47,7 @@ export type { GraphViewOptions } from '@/types/domain'
 type Row = Record<string, unknown>
 
 const DEFAULT_CONFIG: AppConfig = {
-  llm: { mode: null, defaultProvider: null, concurrency: 2, tokenBudget: 8000, providers: [], taskOverrides: {} },
+  llm: { mode: null, defaultProvider: null, concurrency: 2, tokenBudget: DEFAULT_TOKEN_BUDGET, providers: [], taskOverrides: {} },
   prompts: { overrideDir: '' },
   ui: { theme: 'system', reducedMotion: false, fontFamily: 'system-sans', fontSize: 15, graph: { showUnits: false, showMessages: false, showProposed: false, showRetainedSessions: false } },
   storage: { databasePath: '' },
@@ -2270,10 +2270,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   function updateConfig(patch: Partial<AppConfig>): void {
+    const nextLlm = { ...config.value.llm, ...(patch.llm ?? {}) }
+    nextLlm.tokenBudget = normalizeTokenBudget(nextLlm.tokenBudget, config.value.llm.tokenBudget)
     config.value = {
       ...config.value,
       ...patch,
-      llm: { ...config.value.llm, ...(patch.llm ?? {}) },
+      llm: nextLlm,
       ui: { ...config.value.ui, ...(patch.ui ?? {}), graph: { ...config.value.ui.graph, ...(patch.ui?.graph ?? {}) } },
       storage: { ...config.value.storage, ...(patch.storage ?? {}) },
     }

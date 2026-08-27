@@ -4,6 +4,20 @@ import type { AppConfig, ProviderConfig } from '@/types/domain'
 
 const CONFIG_STORAGE_KEY = 'nexus:config:v1'
 
+/**
+ * Token budget used when splitting long sessions and validating new context.
+ * Keep these bounds in one place so config files, the settings UI and runtime
+ * callers all apply the same normalization rules.
+ */
+export const DEFAULT_TOKEN_BUDGET = 8_000
+export const MIN_TOKEN_BUDGET = 1_000
+
+export function normalizeTokenBudget(value: unknown, fallback = DEFAULT_TOKEN_BUDGET): number {
+  const candidate = typeof value === 'string' && value.trim().length === 0 ? Number.NaN : Number(value)
+  if (!Number.isFinite(candidate)) return fallback
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.max(MIN_TOKEN_BUDGET, Math.round(candidate)))
+}
+
 type YamlConfig = {
   llm?: {
     mode?: AppConfig['llm']['mode']
@@ -45,7 +59,7 @@ export function serializeConfig(config: AppConfig): string {
       mode: config.llm.mode,
       default_provider: config.llm.defaultProvider,
       concurrency: config.llm.concurrency,
-      token_budget: config.llm.tokenBudget,
+      token_budget: normalizeTokenBudget(config.llm.tokenBudget),
       providers: config.llm.providers.map((provider) => ({
         id: provider.id,
         name: provider.name,
@@ -87,7 +101,7 @@ export function parseConfig(value: unknown): Partial<AppConfig> {
       mode: raw.llm?.mode ?? null,
       defaultProvider: raw.llm?.default_provider ?? raw.llm?.defaultProvider ?? null,
       concurrency: Number.isInteger(raw.llm?.concurrency) ? Math.min(4, Math.max(1, raw.llm?.concurrency as number)) : 2,
-      tokenBudget: Number.isInteger(raw.llm?.token_budget ?? raw.llm?.tokenBudget) ? Math.max(1000, Number(raw.llm?.token_budget ?? raw.llm?.tokenBudget)) : 8000,
+      tokenBudget: normalizeTokenBudget(raw.llm?.token_budget ?? raw.llm?.tokenBudget),
       providers,
       taskOverrides: raw.llm?.task_overrides ?? raw.llm?.taskOverrides ?? {},
     },

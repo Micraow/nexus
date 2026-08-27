@@ -361,6 +361,7 @@ llm:
   mode: prompt_paste
   default_provider: deepseek
   concurrency: 2
+  token_budget: 32000
   providers:
     - id: deepseek
       name: DeepSeek
@@ -379,6 +380,8 @@ ui:
 storage:
   database_path: ""
 ```
+
+`token_budget` 是用户可调的估算输入上限，设置页允许手动输入不小于 `1000` 的有限安全整数，不设置产品级最大值。它同时用于长 Session 的运行时窗口切分和新对话上下文的超限校验；`8000` 仅是首次启动或配置值无效时的默认值，不是固定限制。修改后立即写回 `config.yaml`，只影响之后创建的窗口和对话任务。
 
 API Key 按用户选择以明文存储；设置页必须明确提示能够读取该文件的本机用户也能看到 Key。配置文件不进入数据库备份和业务导出。
 

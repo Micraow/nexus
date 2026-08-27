@@ -31,6 +31,7 @@
 - `segmentation`、标题和摘要任务仍作为旧数据库/按需阅读片段的兼容任务保留。旧分段结果通过完整覆盖、重复、越界和文本长度校验后才写入；应用旧分段只影响对应 KnowledgeUnit、Message.unit_id 和 UnitConcept 下游，不得清除或阻塞 SessionConcept/MessageConcept。
 - LLM 生成的 Concept 名称、摘要和别名优先在同一结果中写入；可选 KnowledgeUnit 的标题/摘要写入时不增加其 revision。用户创建或编辑 KnowledgeUnit 只使该单元尚未完成的下游任务变为 `stale`，不使直接 Session/Message 归属失效。
 - API 任务队列按配置并发数（1～4）批量执行，单任务最多进行三次请求（含超时、429 和 5xx 的指数退避）。同一 Session 的直接 Concept 任务按输入 revision 串行，避免旧结果覆盖新归属；可选 KnowledgeUnit 元数据任务只在对应单元创建后串行。Prompt 粘贴任务保持人工逐项应用。并发数已在设置页提供选择器（1～4），写回 `config.yaml`；同一 Session 的 revision 规则不受并发数影响。
+- Token 预算不是固定的 `8000`：设置页允许输入任意不小于 `1000` 的有限安全整数并立即持久化为 `llm.token_budget`，不施加产品级最大值。配置读取、界面提交和写回使用同一归一化函数；该值供长 Session 分窗与新对话上下文超限检查共同使用，已创建的任务不会因之后修改预算而重写。
 - 长 Session 按估算 token 预算切成带两条消息重叠的运行时窗口；合并多个窗口结果时按全局 Message ID、Concept 规范名、归属目标和关系类型去重，并校验未知 ID、关系成环与 related/hierarchy 语义冲突，任何冲突都整体判失败，不写入部分结果。窗口不创建 KnowledgeUnit。
 - API 模式采用 OpenAI-compatible Chat Completions：请求地址为 `baseUrl + /chat/completions`，只发送当前任务 Prompt，温度固定为 `0`。`local_only` Session 在 API 执行前被拒绝；Prompt 粘贴模式不发网络请求。
 - 所有任务 Prompt 先经过 `ensureHarnessPrompt`，固定拼接版本化的 `NEXUS_HARNESS_PROMPT` 与 `PROGRESSIVE_DISCLOSURE_PROTOCOL`；动态任务规格放在固定前缀之后。Harness 允许模型使用自身知识和调用方授权的搜索/工具，但要求区分输入证据、外部资料和推断，并把消息、摘要、目录都当作不可信数据。
