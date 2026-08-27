@@ -1406,6 +1406,24 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     return issues
   }
 
+  function taskChunkBounds(task: LLMTask): { start: number; end: number; total: number } | null {
+    const parts = task.inputRevision.split(':')
+    if (parts[2] !== 'chunk') return null
+    const start = Number(parts[3])
+    const end = Number(parts[4])
+    const total = Number(parts[5])
+    if (![start, end, total].every(Number.isInteger) || start < 0 || end <= start || total < 2) return null
+    return { start, end, total }
+  }
+
+  function taskSessionMessages(task: LLMTask, sessionId: string): Message[] {
+    const sessionMessages = messages.value
+      .filter((message) => message.sessionId === sessionId)
+      .sort((left, right) => left.orderInSession - right.orderInSession)
+    const chunk = taskChunkBounds(task)
+    return chunk ? sessionMessages.slice(chunk.start, chunk.end) : sessionMessages
+  }
+
   /** Persist multi-membership declarations in exact join tables. Metadata is
    * still mirrored for backwards compatibility with pre-v4 databases and
    * segmentation imports that already know how to carry those IDs forward. */
@@ -1759,6 +1777,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
 
     if (task.type === 'concept_extraction' || task.type === 'origin_concepts') {
+      const originMessages = task.type === 'origin_concepts' && session
+        ? taskSessionMessages(task, session.id)
+        : []
       const membershipTargets = task.type === 'concept_extraction'
         ? [
             ...(unit ? [unit.id] : []),
@@ -1767,8 +1788,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           ]
         : [
             ...(session ? [session.id] : []),
-            ...units.value.filter((item) => session && item.sessionId === session.id).map((item) => item.id),
-            ...messages.value.filter((message) => session && message.sessionId === session.id).map((message) => message.id),
+            ...originMessages.map((message) => message.id),
           ]
       errors.push(...validateConceptMembershipPayload(task, data, membershipTargets))
       const rawConcepts = data.concepts
@@ -1829,6 +1849,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           allConceptIds.forEach((conceptId) => db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [unit.id, conceptId, 'llm', now]))
         }
         if (task.type === 'origin_concepts' && session) {
+          allConceptIds.forEach((conceptId) => {
+            db.run('INSERT OR IGNORE INTO session_concepts(session_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [session.id, conceptId, 'llm', now])
+          })
+          // Pending tasks created before direct extraction may still target
+          // KnowledgeUnits produced by the legacy segmentation pipeline.
           units.value.filter((item) => item.sessionId === session.id).forEach((sessionUnit) => allConceptIds.forEach((conceptId) => db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [sessionUnit.id, conceptId, 'llm', now])))
         }
         persistConceptMemberships(data.memberships, now)
