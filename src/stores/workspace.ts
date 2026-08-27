@@ -1801,10 +1801,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
             ...messages.value.filter((message) => unit && message.unitId === unit.id).map((message) => message.id),
             ...(session ? [session.id] : []),
           ]
-        : [
-            ...(session ? [session.id] : []),
-            ...originMessages.map((message) => message.id),
-          ]
+        : taskChunkBounds(task)
+          ? originMessages.map((message) => message.id)
+          : [
+              ...(session ? [session.id] : []),
+              ...originMessages.map((message) => message.id),
+            ]
       if (task.type === 'origin_concepts') {
         errors.push(...validateOriginConceptResult(data, {
           targetIds: membershipTargets,

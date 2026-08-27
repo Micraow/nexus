@@ -54,6 +54,15 @@ describe('direct concept extraction import pipeline', () => {
     const task = originTasks.find((item) => item.inputRevision.includes(':chunk:'))!
     const [, , , startText] = task.inputRevision.split(':')
     const targetMessage = store.messages.find((message) => message.orderInSession === Number(startText))!
+    const invalid = store.applyTaskResult(task.id, JSON.stringify({
+      concepts: [{ client_ref: 'new:1', name: '窗口概念', summary: '只由窗口内消息明确支撑。', aliases: [] }],
+      memberships: [{ target_type: 'session', target_id: store.sessions[0].id, concept_ids: ['new:1'] }],
+      relations: [],
+    }))
+    expect(invalid.ok).toBe(false)
+    expect(invalid.errors.some((error) => error.includes('target_id'))).toBe(true)
+    store.retryTask(task.id)
+    store.refreshFromDb()
     const result = store.applyTaskResult(task.id, JSON.stringify({
       concepts: [{ client_ref: 'new:1', name: '窗口概念', summary: '只由窗口内消息明确支撑。', aliases: [] }],
       memberships: [{ target_type: 'message', target_id: targetMessage.id, concept_ids: ['new:1'] }],
