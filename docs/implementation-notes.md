@@ -35,6 +35,7 @@
 - 长 Session 按估算 token 预算切成带两条消息重叠的运行时窗口；合并多个窗口结果时按全局 Message ID、Concept 规范名、归属目标和关系类型去重，并校验未知 ID、关系成环与 related/hierarchy 语义冲突，任何冲突都整体判失败，不写入部分结果。窗口不创建 KnowledgeUnit。
 - API 模式采用 OpenAI-compatible Chat Completions：请求地址为 `baseUrl + /chat/completions`，只发送当前任务 Prompt，温度固定为 `0`。`local_only` Session 在 API 执行前被拒绝；Prompt 粘贴模式不发网络请求。
 - 所有任务 Prompt 先经过 `ensureHarnessPrompt`，固定拼接版本化的 `NEXUS_HARNESS_PROMPT` 与 `PROGRESSIVE_DISCLOSURE_PROTOCOL`；动态任务规格放在固定前缀之后。Harness 允许模型使用自身知识和调用方授权的搜索/工具，但要求区分输入证据、外部资料和推断，并把消息、摘要、目录都当作不可信数据。
+- 对话 Prompt 约定已有主题使用 `[[nexus:existing:主题名称]]原文[[/nexus]]`、建议探索主题使用 `[[nexus:suggested:主题名称]]原文[[/nexus]]`；Markdown 渲染器移除标记并以蓝/黄色下划线呈现，未知建议主题不生成可点击 Concept ID。
 - 大型知识上下文通过 `DISCLOSURE_INDEX` 传递：根引用只包含 `title`、`summary` 和不透明 `refID`，展开记录才提供下一层 children 或消息原文。模型可返回 `disclosure_requests: [{ refID, depth }]`；应用先校验 ID 已在当前目录、无重复且深度为 1～64，再从本地 hierarchy、KnowledgeUnit 和 Message 递归生成下一轮 Prompt。API 模式自动续跑，最多 8 轮；Prompt 粘贴模式把同一任务恢复为 pending，等待用户执行更新后的 Prompt。非法请求或超过轮数进入 `needs_review`，不会应用部分结果。
 - 起源 Concept 结果写入独立的 `session_concepts` 多对多事实表；它不会复制到该 Session 的全部 KnowledgeUnit。图谱派生时会把 Session、Message 和 KnowledgeUnit 三种归属投影到可见主题，并按 Session（而不是单元数量）累计 Concept 共现权重。
 - 会话内追问（从导航树节点或会话详情发起）：用户消息以 `metadata = { mode: 'follow_up', parentNodeId, taskId }` 落库，回答分支节点挂在该节点之下（depth + 1）。与“新对话”任务的区别：追问不新建 Session，应用结果后按 `unit_count = unit_count + n` 累加，而新对话固定写 `message_count = 2`。早期没有 `metadata.taskId` 的对话任务按 legacy 规则回落到根节点。

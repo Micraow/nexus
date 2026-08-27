@@ -86,6 +86,11 @@ function fencedCodeHtml(language: string, code: string): string {
   return `<pre><code${className}>${highlightedCode(code, normalized)}</code></pre>`
 }
 
+function conceptMentionHtml(label: string, id: string, kind: 'existing' | 'suggested'): string {
+  const interactive = Boolean(id)
+  return `<span class="md-concept md-concept-${kind}"${interactive ? ` role="link" tabindex="0" data-concept-id="${escapeHtml(id)}"` : ''}>${label}</span>`
+}
+
 function linkifyConcepts(raw: string, matcher: ConceptMatcher | null): InlineToken[] {
   if (!matcher) return raw ? [{ type: 'text', value: raw }] : []
   const tokens: InlineToken[] = []
@@ -95,10 +100,32 @@ function linkifyConcepts(raw: string, matcher: ConceptMatcher | null): InlineTok
     if (!found || found[0].length === 0) break
     if (found.index > 0) tokens.push({ type: 'text', value: rest.slice(0, found.index) })
     const id = matcher.ids.get(found[0]) ?? ''
-    tokens.push({ type: 'mention', value: `<span class="md-concept" role="link" tabindex="0" data-concept-id="${id}">${found[0]}</span>` })
+    tokens.push({ type: 'mention', value: conceptMentionHtml(found[0], id, 'existing') })
     rest = rest.slice(found.index + found[0].length)
   }
   if (rest) tokens.push({ type: 'text', value: rest })
+  return tokens
+}
+
+/**
+ * Conversation answers may explicitly distinguish known topics from ideas
+ * worth exploring. The delimiters are presentation-only and are removed from
+ * the rendered output; unknown suggested names remain non-interactive.
+ */
+function linkifyMarkedConcepts(raw: string, matcher: ConceptMatcher | null): InlineToken[] {
+  const pattern = /\[\[nexus:(existing|suggested):([^\]]+)\]\]([\s\S]*?)\[\[\/nexus\]\]/gi
+  const tokens: InlineToken[] = []
+  let cursor = 0
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(raw))) {
+    if (match.index > cursor) tokens.push(...linkifyConcepts(raw.slice(cursor, match.index), matcher))
+    const kind = match[1].toLowerCase() as 'existing' | 'suggested'
+    const label = match[3] || match[2]
+    const id = matcher?.ids.get(match[2].trim()) ?? matcher?.ids.get(label.trim()) ?? ''
+    tokens.push({ type: 'mention', value: conceptMentionHtml(label, id, kind) })
+    cursor = match.index + match[0].length
+  }
+  if (cursor < raw.length) tokens.push(...linkifyConcepts(raw.slice(cursor), matcher))
   return tokens
 }
 
@@ -106,7 +133,7 @@ function linkifyConcepts(raw: string, matcher: ConceptMatcher | null): InlineTok
 function tokenizeInline(line: string, matcher: ConceptMatcher | null): InlineToken[] {
   const tokens: InlineToken[] = []
   const pushText = (value: string): void => {
-    tokens.push(...linkifyConcepts(escapeHtml(value), matcher))
+    tokens.push(...linkifyMarkedConcepts(escapeHtml(value), matcher))
   }
   // Protect strong spans before concept linkification so `**bold Concept**`
   // keeps both markers in one token.

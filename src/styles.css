@@ -332,7 +332,7 @@ textarea { resize: vertical; }
 .md-body table { display: block; width: 100%; max-width: 100%; margin: 10px 0; overflow-x: auto; border-collapse: collapse; font-size: .95em; }
 .md-body th, .md-body td { min-width: 96px; padding: 7px 10px; border: 1px solid var(--line-strong); text-align: left; vertical-align: top; }
 .md-body th { color: var(--text); background: var(--surface-muted); font-weight: 700; }
-.md-concept { text-decoration-line: underline; text-decoration-style: solid; text-decoration-color: var(--amber); text-decoration-thickness: 2px; text-underline-offset: 3px; }
+.md-concept { text-decoration-line: underline; text-decoration-style: solid; text-decoration-thickness: 2px; text-underline-offset: 3px; }
 .prompt-box pre { color: var(--text); font-family: var(--app-mono-font-family, ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace); font-size: calc(var(--app-font-size) * .9); font-weight: 500; line-height: 1.65; font-variant-ligatures: none; }
 .response-box textarea { font-family: var(--app-mono-font-family, ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace); font-size: calc(var(--app-font-size) * .9); line-height: 1.65; font-variant-ligatures: none; }
 @media (prefers-reduced-motion: reduce) {
@@ -442,7 +442,9 @@ textarea { resize: vertical; }
 .md-body blockquote { margin: 6px 0; padding: 5px 11px; border-left: 3px solid var(--line-strong); color: var(--muted); }
 .md-body hr { margin: 10px 0; border: none; border-top: 1px solid var(--line); }
 .md-body a:not(.md-concept) { color: var(--primary-strong); text-decoration-line: underline; text-decoration-style: solid; text-decoration-color: var(--primary) !important; text-decoration-thickness: 3px; text-underline-offset: 4px; text-decoration-skip-ink: none; }
-.md-concept { padding: 0 3px; cursor: pointer; color: var(--primary-strong); background: var(--primary-soft); border-radius: 4px; text-decoration-line: underline; text-decoration-style: solid !important; text-decoration-color: var(--amber) !important; text-decoration-thickness: 3px; text-underline-offset: 4px; text-decoration-skip-ink: none; }
+.md-concept { padding: 0 3px; color: var(--text); border-radius: 4px; text-decoration-line: underline; text-decoration-style: solid !important; text-decoration-thickness: 3px; text-underline-offset: 4px; text-decoration-skip-ink: none; }
+.md-concept-existing { cursor: pointer; color: var(--primary-strong); background: var(--primary-soft); text-decoration-color: var(--primary) !important; }
+.md-concept-suggested { color: var(--text); background: var(--amber-soft); text-decoration-color: var(--amber) !important; }
 .md-concept:hover, .md-concept:focus-visible { outline: 1px solid color-mix(in srgb, var(--primary) 60%, transparent); }
 .md-body pre code.hljs { display: block; overflow-x: auto; padding: 0; background: transparent; color: inherit; font: inherit; }
 .md-body pre code.hljs .hljs-keyword, .md-body pre code.hljs .hljs-selector-tag, .md-body pre code.hljs .hljs-title, .md-body pre code.hljs .hljs-section { color: #9d7bff; }

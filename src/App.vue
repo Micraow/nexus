@@ -141,8 +141,11 @@ const graphLayoutNonce = ref(0)
 const selectedNavNodeId = ref<string | null>(null)
 const draggedContextId = ref<string | null>(null)
 const helpOpen = ref(false)
-type FullscreenTarget = { kind: 'session'; sessionId: string } | { kind: 'message'; messageId: string }
+type FullscreenTarget = { kind: 'session'; sessionId: string } | { kind: 'message'; messageId: string } | { kind: 'concept'; conceptId: string }
 const fullscreenTarget = ref<FullscreenTarget | null>(null)
+const fullscreenPage = ref(0)
+const fullscreenPageSize = 20
+const detailDrawer = ref<HTMLElement | null>(null)
 const storageInfo = ref<{ dataDir: string; databasePath: string; configPath: string } | null>(null)
 const databasePathDraft = ref('')
 const visibleSessionCount = ref(40)
@@ -274,9 +277,19 @@ const fullscreenMessages = computed<Message[]>(() => {
     const message = store.messages.find((item) => item.id === target.messageId)
     return message ? [message] : []
   }
+  if (target.kind === 'concept') {
+    return selectedConceptMessages.value
+  }
   return store.messages.filter((message) => message.sessionId === target.sessionId).sort((left, right) => left.orderInSession - right.orderInSession)
 })
-const fullscreenTitle = computed(() => fullscreenTarget.value?.kind === 'message' ? `消息 #${(fullscreenMessages.value[0]?.orderInSession ?? 0) + 1}` : fullscreenSession.value?.title ?? '会话详情')
+const fullscreenPageCount = computed(() => Math.max(1, Math.ceil(fullscreenMessages.value.length / fullscreenPageSize)))
+const fullscreenPageMessages = computed(() => fullscreenMessages.value.slice(fullscreenPage.value * fullscreenPageSize, (fullscreenPage.value + 1) * fullscreenPageSize))
+const fullscreenTitle = computed(() => {
+  const target = fullscreenTarget.value
+  if (target?.kind === 'message') return `消息 #${(fullscreenMessages.value[0]?.orderInSession ?? 0) + 1}`
+  if (target?.kind === 'concept') return selectedConcept.value?.name ?? '主题消息'
+  return fullscreenSession.value?.title ?? '会话详情'
+})
 const searchResults = computed(() => store.search(searchQuery.value))
 const maintenanceSuggestions = computed(() => {
   if (!selectedTask.value || selectedTask.value.type !== 'maintenance' || !selectedTask.value.parsedResult) return [] as Array<MaintenanceSuggestion & { applied?: boolean }>
@@ -321,12 +334,29 @@ const selectedConceptMessages = computed(() => {
     const declared = parseMetadata(message.metadata).concept_ids
     const direct = store.messageConcepts.some((link) => link.messageId === message.id && link.conceptId === conceptId)
     return direct || (Array.isArray(declared) && declared.some((id) => id === conceptId))
-  }).sort((left, right) => left.orderInSession - right.orderInSession)
+  }).sort((left, right) => {
+    const leftSession = store.sessions.find((session) => session.id === left.sessionId)
+    const rightSession = store.sessions.find((session) => session.id === right.sessionId)
+    const sessionOrder = (leftSession?.updatedAt ?? left.sessionId).localeCompare(rightSession?.updatedAt ?? right.sessionId)
+    return sessionOrder || left.orderInSession - right.orderInSession
+  })
 })
 const selectedConceptSessions = computed(() => {
   const conceptId = selectedConcept.value?.id
   if (!conceptId) return []
   const ids = new Set(store.sessionConcepts.filter((link) => link.conceptId === conceptId).map((link) => link.sessionId))
+  store.unitConcepts.filter((link) => link.conceptId === conceptId).forEach((link) => {
+    const unit = store.units.find((item) => item.id === link.unitId)
+    if (unit) ids.add(unit.sessionId)
+  })
+  store.messageConcepts.filter((link) => link.conceptId === conceptId).forEach((link) => {
+    const message = store.messages.find((item) => item.id === link.messageId)
+    if (message) ids.add(message.sessionId)
+  })
+  store.messages.forEach((message) => {
+    const declared = parseMetadata(message.metadata).concept_ids
+    if (Array.isArray(declared) && declared.some((id) => id === conceptId)) ids.add(message.sessionId)
+  })
   return store.activeSessions.filter((session) => ids.has(session.id))
 })
 const otherConceptOf = (relation: { parentConceptId: string; childConceptId: string }, conceptId: string): string => (relation.childConceptId === conceptId ? relation.parentConceptId : relation.childConceptId)
@@ -361,7 +391,7 @@ const rootNavNode = computed(() => selectedSession.value ? store.navNodes.find((
 const sessionMessages = computed(() => selectedSession.value ? store.messages.filter((message) => message.sessionId === selectedSession.value?.id).sort((a, b) => a.orderInSession - b.orderInSession) : [])
 const taskTypeOptions: Array<{ value: TaskType; label: string }> = [
   { value: 'session_triage', label: '会话分类' },
-  { value: 'segmentation', label: '对话分段' },
+  { value: 'segmentation', label: '旧版对话分组' },
   { value: 'concept_extraction', label: '知识主题提取' },
   { value: 'unit_metadata', label: '标题与摘要生成' },
   { value: 'title', label: '标题生成（旧任务）' },
@@ -431,6 +461,7 @@ function notify(message: string): void {
 function setView(view: ViewName): void {
   if (view === 'overview' && activeView.value === 'overview') startWelcomeTypewriter()
   activeView.value = view
+  if (view === 'concepts') isDetailOpen.value = false
   if (view === 'graph') nextTick(() => window.dispatchEvent(new Event('resize')))
 }
 
@@ -489,8 +520,13 @@ function openConcept(conceptId: string): void {
   conceptChildQuery.value = ''
   conceptParentQuery.value = ''
   mergeTargetId.value = ''
-  isDetailOpen.value = true
+  // The topic catalog owns its detail column. Keep the global drawer for
+  // graph, session and message contexts so a topic is not rendered twice.
+  isDetailOpen.value = activeView.value !== 'concepts'
   if (activeView.value !== 'graph' && activeView.value !== 'concepts') setView('graph')
+  void nextTick(() => {
+    detailDrawer.value?.scrollTo({ top: 0, behavior: store.config.ui.reducedMotion ? 'auto' : 'smooth' })
+  })
 }
 
 function openUnit(unitId: string, additive = false): void {
@@ -519,11 +555,22 @@ function toggleMessageContext(messageId: string): void {
 }
 
 function openFullscreenSession(sessionId: string): void {
+  fullscreenPage.value = 0
   fullscreenTarget.value = { kind: 'session', sessionId }
 }
 
 function openFullscreenMessage(messageId: string): void {
+  fullscreenPage.value = 0
   fullscreenTarget.value = { kind: 'message', messageId }
+}
+
+function openFullscreenConcept(conceptId: string): void {
+  fullscreenPage.value = 0
+  fullscreenTarget.value = { kind: 'concept', conceptId }
+}
+
+function changeFullscreenPage(delta: number): void {
+  fullscreenPage.value = Math.min(fullscreenPageCount.value - 1, Math.max(0, fullscreenPage.value + delta))
 }
 
 function closeFullscreen(): void {
@@ -848,6 +895,8 @@ function submitComposer(): void {
         includeFullContent: composerIncludeFull.value,
       })
       composerOpen.value = false
+      composerQuestion.value = ''
+      composerPhraseId.value = ''
       selectedTaskId.value = taskId
       activeConversationSessionId.value = composerFollowUp.value.sessionId
       selectedNavNodeId.value = composerFollowUp.value.nodeId
@@ -877,6 +926,8 @@ function submitComposer(): void {
     store.setSelectedSession(targetSessionId)
     store.clearContext()
     composerOpen.value = false
+    composerQuestion.value = ''
+    composerPhraseId.value = ''
     if (task) selectedTaskId.value = task.id
     activeConversationSessionId.value = targetSessionId
     selectedNavNodeId.value = store.navNodes.find((node) => node.sessionId === targetSessionId && !node.parentId)?.id ?? null
@@ -1130,7 +1181,7 @@ function taskTone(status: LLMTask['status']): string {
 }
 
 function taskTypeLabel(type: LLMTask['type']): string {
-  return ({ session_triage: '会话分类', segmentation: '对话分段', concept_extraction: '知识主题提取', unit_metadata: '标题与摘要生成', title: '标题生成（旧任务）', summary: '摘要生成（旧任务）', origin_concepts: '起始知识主题', conversation: '对话', maintenance: '维护建议' } as Record<string, string>)[type]
+  return ({ session_triage: '会话分类', segmentation: '旧版对话分组', concept_extraction: '知识主题提取', unit_metadata: '标题与摘要生成', title: '标题生成（旧任务）', summary: '摘要生成（旧任务）', origin_concepts: '起始知识主题', conversation: '对话', maintenance: '维护建议' } as Record<string, string>)[type]
 }
 
 function taskValidationErrors(task: LLMTask): string[] {
@@ -1473,6 +1524,7 @@ watch(activeView, (view, previousView) => {
 
 watch(fullscreenTarget, (target) => {
   document.body.classList.toggle('fullscreen-active', Boolean(target))
+  fullscreenPage.value = 0
 })
 
 onMounted(async () => {
@@ -1616,7 +1668,7 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <section v-else-if="activeView === 'sessions'" class="view-panel sessions-view"><div class="page-toolbar"><div><span class="eyebrow">SESSION ARCHIVE</span><h2>会话与探索树</h2></div><button class="button secondary-button" @click="triggerImport"><Upload :size="15" />导入更多</button></div><div class="session-list surface-section"><div v-for="session in store.activeSessions.slice(0, visibleSessionCount)" :key="session.id" class="session-block"><div class="session-row-wrap"><button class="session-row" @click="toggleSession(session.id); selectSession(session.id)"><div class="session-avatar"><History :size="16" /></div><div class="row-main"><strong>{{ session.title }}</strong><span>{{ session.platform }} · {{ session.messageCount }} 条消息 · {{ session.unitCount }} 个知识单元</span></div><span v-if="session.localOnly" class="soft-tag">仅本地</span><ChevronDown v-if="expandedSessionIds.includes(session.id)" :size="17" /><ChevronRight v-else :size="17" /></button><button class="icon-button session-fullscreen-button" aria-label="全屏查看会话" title="全屏查看会话" @click.stop="openFullscreenSession(session.id)"><Maximize2 :size="16" /></button></div><div v-if="expandedSessionIds.includes(session.id)" class="session-expanded"><div class="session-meta-line"><span>创建于 {{ new Date(session.createdAt).toLocaleDateString('zh-CN') }}</span><label class="inline-toggle"><input type="checkbox" :checked="session.localOnly" @change="store.toggleSessionLocalOnly(session.id, ($event.target as HTMLInputElement).checked)" />仅本地（禁止 API 任务）</label><button class="text-button" @click.stop="exportSession(session)"><Download :size="14" />导出会话</button></div><div class="unit-timeline"><button v-for="unit in store.units.filter((item) => item.sessionId === session.id)" :key="unit.id" class="timeline-unit" :class="{ selected: selectedUnitId === unit.id }" @click="openUnit(unit.id)"><span class="timeline-dot" /><div><strong>{{ unit.title || '待命名知识单元' }}</strong><span>{{ unit.summary || '等待摘要生成' }}</span><small>{{ store.unitConceptNames(unit.id).join(' · ') || '未关联知识主题' }}</small></div></button><div v-if="!store.units.some((unit) => unit.sessionId === session.id)" class="empty-inline">这个会话还没有完成整理分段。</div></div></div></div><div v-if="!store.activeSessions.length" class="empty-state session-empty-state"><History :size="30" /><strong>还没有会话</strong><span>导入历史对话后，所有会话和探索树会显示在这里。</span><button class="button secondary-button" @click="triggerImport"><Upload :size="15" />导入历史对话</button></div></div><button v-if="store.activeSessions.length > visibleSessionCount" class="text-button load-more-button" @click="visibleSessionCount += 40">加载更多会话（还有 {{ store.activeSessions.length - visibleSessionCount }} 个）</button></section>
+        <section v-else-if="activeView === 'sessions'" class="view-panel sessions-view"><div class="page-toolbar"><div><span class="eyebrow">SESSION ARCHIVE</span><h2>会话与探索树</h2></div><button class="button secondary-button" @click="triggerImport"><Upload :size="15" />导入更多</button></div><div class="session-list surface-section"><div v-for="session in store.activeSessions.slice(0, visibleSessionCount)" :key="session.id" class="session-block"><div class="session-row-wrap"><button class="session-row" @click="toggleSession(session.id); selectSession(session.id)"><div class="session-avatar"><History :size="16" /></div><div class="row-main"><strong>{{ session.title }}</strong><span>{{ session.platform }} · {{ session.messageCount }} 条消息 · {{ session.unitCount }} 个知识单元</span></div><span v-if="session.localOnly" class="soft-tag">仅本地</span><ChevronDown v-if="expandedSessionIds.includes(session.id)" :size="17" /><ChevronRight v-else :size="17" /></button><button class="icon-button session-fullscreen-button" aria-label="全屏查看会话" title="全屏查看会话" @click.stop="openFullscreenSession(session.id)"><Maximize2 :size="16" /></button></div><div v-if="expandedSessionIds.includes(session.id)" class="session-expanded"><div class="session-meta-line"><span>创建于 {{ new Date(session.createdAt).toLocaleDateString('zh-CN') }}</span><label class="inline-toggle"><input type="checkbox" :checked="session.localOnly" @change="store.toggleSessionLocalOnly(session.id, ($event.target as HTMLInputElement).checked)" />仅本地（禁止 API 任务）</label><button class="text-button" @click.stop="exportSession(session)"><Download :size="14" />导出会话</button></div><div class="unit-timeline"><button v-for="unit in store.units.filter((item) => item.sessionId === session.id)" :key="unit.id" class="timeline-unit" :class="{ selected: selectedUnitId === unit.id }" @click="openUnit(unit.id)"><span class="timeline-dot" /><div><strong>{{ unit.title || '待命名知识单元' }}</strong><span>{{ unit.summary || '等待摘要生成' }}</span><small>{{ store.unitConceptNames(unit.id).join(' · ') || '未关联知识主题' }}</small></div></button><div v-if="!store.units.some((unit) => unit.sessionId === session.id)" class="empty-inline">这个会话还没有生成知识单元，原始消息仍可直接浏览。</div></div></div></div><div v-if="!store.activeSessions.length" class="empty-state session-empty-state"><History :size="30" /><strong>还没有会话</strong><span>导入历史对话后，所有会话和探索树会显示在这里。</span><button class="button secondary-button" @click="triggerImport"><Upload :size="15" />导入历史对话</button></div></div><button v-if="store.activeSessions.length > visibleSessionCount" class="text-button load-more-button" @click="visibleSessionCount += 40">加载更多会话（还有 {{ store.activeSessions.length - visibleSessionCount }} 个）</button></section>
 
         <section v-else-if="activeView === 'concepts'" class="view-panel concepts-view"><div class="page-toolbar"><div><span class="eyebrow">KNOWLEDGE TOPICS</span><h2>知识主题目录</h2></div><button class="button secondary-button" @click="setView('graph')"><Network :size="15" />在图谱中查看</button></div><div class="concepts-layout"><div class="concept-list surface-section"><div class="list-toolbar"><span>{{ store.activeConcepts.length }} 个知识主题</span><div class="compact-search"><Search :size="14" /><input v-model="graphSearch" placeholder="过滤知识主题" /></div></div><button v-for="concept in filteredConcepts.slice(0, visibleConceptCount)" :key="concept.id" class="concept-list-row" :class="{ selected: selectedConceptId === concept.id }" @click="openConcept(concept.id)"><span class="concept-swatch" /><div><strong>{{ concept.name }}</strong><span>{{ store.units.filter((unit) => store.unitConcepts.some((link) => link.unitId === unit.id && link.conceptId === concept.id)).length }} 个知识单元</span></div><ChevronRight :size="15" /></button><button v-if="filteredConcepts.length > visibleConceptCount" class="text-button load-more-button" @click="visibleConceptCount += 60">加载更多知识主题（还有 {{ filteredConcepts.length - visibleConceptCount }} 个）</button></div><div class="concept-detail surface-section"><template v-if="selectedConcept"><div class="detail-header"><div><span class="eyebrow">KNOWLEDGE TOPIC</span><h3>{{ selectedConcept.name }}</h3></div><button class="icon-button" title="归档知识主题" aria-label="归档知识主题" @click="archiveSelectedConcept"><Archive :size="16" /></button></div><div class="alias-row"><span>别名</span><span v-for="alias in store.aliases.filter((item) => item.conceptId === selectedConcept?.id)" :key="alias.id" class="soft-tag">{{ alias.alias }}</span><span v-if="!store.aliases.some((item) => item.conceptId === selectedConcept?.id)" class="muted">暂无别名</span></div><section class="concept-page-editor" aria-labelledby="concept-page-editor-title"><div class="subsection-title"><strong id="concept-page-editor-title">主题信息</strong><span>本地可编辑</span></div><label class="field-label" for="concept-page-name">名称 <small>唯一标识</small></label><input id="concept-page-name" v-model="conceptDraftName" class="drawer-input" maxlength="120" autocomplete="off" /><label class="field-label" for="concept-page-summary">摘要 <small>≤120 字</small></label><textarea id="concept-page-summary" v-model="conceptDraftSummary" class="drawer-textarea" maxlength="120" placeholder="用一句话概括这个主题的范围和核心结论"></textarea><label class="field-label" for="concept-page-notes">主题说明 / 笔记 <small>Concept.notes</small></label><textarea id="concept-page-notes" v-model="conceptDraftNotes" class="drawer-textarea" placeholder="记录这个主题的长期理解、边界和待核实问题"></textarea><p class="field-hint">摘要用于目录和上下文导航；说明 / 笔记用于记录长期理解。</p><div class="concept-editor-actions"><button class="button primary-button" @click="saveConcept"><Check :size="14" />保存主题</button><button class="button ghost-button" @click="resetConceptDraft">撤销修改</button></div></section><div class="relation-summary"><div><span>父主题</span><strong>{{ selectedConceptParents.length }}</strong></div><div><span>子主题</span><strong>{{ selectedConceptChildren.length }}</strong></div><div><span>关联单元</span><strong>{{ selectedConceptUnits.length }}</strong></div></div><div class="detail-subsection"><div class="subsection-title"><strong>关联知识单元</strong><span class="sort-inline"><select v-model="conceptUnitSort" aria-label="知识单元排序方式"><option value="updated">最近更新</option><option value="created">创建时间</option><option value="title">名称</option></select><span>{{ selectedConceptUnits.length }}</span></span></div><button v-for="unit in selectedConceptUnits" :key="unit.id" class="mini-unit-row" @click="openUnit(unit.id)"><BookOpen :size="14" /><span>{{ unit.title || '待命名知识单元' }}</span><ChevronRight :size="14" /></button><div v-if="!selectedConceptUnits.length" class="empty-inline">还没有关联单元</div></div><div class="detail-subsection"><div class="subsection-title"><strong>维护关系</strong><span>手动确认</span></div><div class="relation-form"><select v-model="relationParentId" :aria-label="relationType === 'hierarchy' ? '父知识主题' : '相关关系一端'"><option value="">{{ relationType === 'hierarchy' ? '选择父知识主题' : '选择相关关系一端' }}</option><option v-for="concept in store.activeConcepts" :key="concept.id" :value="concept.id">{{ concept.name }}</option></select><select v-model="relationChildId" :aria-label="relationType === 'hierarchy' ? '子知识主题' : '相关关系另一端'"><option value="">{{ relationType === 'hierarchy' ? '选择子知识主题' : '选择相关关系另一端' }}</option><option v-for="concept in store.activeConcepts" :key="concept.id" :value="concept.id">{{ concept.name }}</option></select><select v-model="relationType" aria-label="关系类型"><option value="hierarchy">父子</option><option value="related">相关</option></select><button class="button secondary-button" @click="createRelationFromForm"><Link2 :size="14" />建立</button></div></div><div class="detail-subsection"><div class="subsection-title"><strong>合并到</strong><span>可撤销事务</span></div><div class="merge-form"><select v-model="mergeTargetId" aria-label="合并目标"><option value="">选择目标知识主题</option><option v-for="concept in store.activeConcepts.filter((item) => item.id !== selectedConcept?.id)" :key="concept.id" :value="concept.id">{{ concept.name }}</option></select><button class="button danger-button" @click="mergeSelectedConcept"><GitBranch :size="14" />合并</button></div></div></template><div v-else class="empty-detail"><Layers3 :size="30" /><strong>选择一个知识主题</strong><span>查看它关联的知识单元、层级关系和笔记。</span></div></div></div></section>
 
@@ -1669,7 +1721,7 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
-    <aside v-if="isDetailOpen && (selectedConcept || selectedUnit || selectedMessage)" class="detail-drawer" :class="{ open: isDetailOpen }">
+    <aside v-if="isDetailOpen && (selectedConcept || selectedUnit || selectedMessage)" ref="detailDrawer" class="detail-drawer" :class="{ open: isDetailOpen }">
       <div class="drawer-header"><div><span class="eyebrow">DETAIL</span><h3>{{ selectedConcept?.name || selectedUnit?.title || '消息详情' }}</h3></div><div class="drawer-header-actions"><button v-if="selectedMessage" class="icon-button" aria-label="全屏查看消息" title="全屏查看消息" @click="openFullscreenMessage(selectedMessage.id)"><Maximize2 :size="17" /></button><button v-else-if="selectedUnit" class="icon-button" aria-label="全屏查看所属会话" title="全屏查看所属会话" @click="openFullscreenSession(selectedUnit.sessionId)"><Maximize2 :size="17" /></button><button class="icon-button" aria-label="关闭详情" title="关闭详情" @click="isDetailOpen = false"><X :size="17" /></button></div></div>
       <div v-if="selectedUnit" class="drawer-content"><div class="drawer-tags"><span class="soft-tag">知识单元</span><span class="soft-tag">{{ sessionForUnit(selectedUnit)?.title }}</span></div><label class="field-label" for="unit-title">标题 <small>≤30 字</small></label><input id="unit-title" v-model="unitDraftTitle" class="drawer-input" maxlength="30" /><label class="field-label" for="unit-summary">摘要 <small>≤120 字</small></label><textarea id="unit-summary" v-model="unitDraftSummary" class="drawer-textarea" maxlength="120" /><button class="button primary-button full-button" @click="saveUnit"><Check :size="15" />保存单元</button><div class="drawer-section"><div class="subsection-title"><strong>关联知识主题</strong><span>{{ store.unitConceptNames(selectedUnit.id).length }}</span></div><div class="chip-list"><button v-for="conceptId in store.unitConcepts.filter((link) => link.unitId === selectedUnit?.id).map((link) => link.conceptId)" :key="conceptId" class="concept-chip" @click="openConcept(conceptId)">{{ store.concepts.find((concept) => concept.id === conceptId)?.name }}<X :size="12" @click.stop="removeConceptFromUnit(selectedUnit!.id, conceptId)" /></button><span v-if="!store.unitConceptNames(selectedUnit.id).length" class="muted">暂无关联</span></div><div class="add-inline"><input v-model="newUnitConcept" placeholder="添加知识主题" @keyup.enter="addConceptToSelectedUnit" /><button class="icon-button" aria-label="添加知识主题" title="添加知识主题" @click="addConceptToSelectedUnit"><Plus :size="15" /></button></div></div><div class="drawer-section"><div class="subsection-title"><strong>包含消息</strong><span>{{ store.unitMessages(selectedUnit.id).length }}</span></div><div class="message-stack"><article v-for="message in store.unitMessages(selectedUnit.id)" :key="message.id" class="message-card" :class="message.role"><span>{{ message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : '系统' }}</span><div class="md-body" v-html="renderedMessageContent(message.content)" @click="handleRenderedClick" @keydown.enter.prevent="handleRenderedClick" /></article></div></div><button class="text-button" @click="selectedUnitId = null; setView('sessions')"><ArrowRight :size="14" />打开所属会话</button></div>
       <div v-else-if="selectedConcept" class="drawer-content concept-drawer-content">
@@ -1707,7 +1759,7 @@ onBeforeUnmount(() => {
         <section class="drawer-section"><div class="subsection-title"><strong>相关主题</strong><span>{{ selectedConceptRelated.length }} 个</span></div><div class="concept-relation-list"><div v-for="relation in selectedConceptRelated" :key="relation.id" class="concept-relation-row"><button class="relation-link" @click="openConcept(otherConceptOf(relation, selectedConcept!.id))"><Link2 :size="13" />{{ conceptName(otherConceptOf(relation, selectedConcept!.id)) }}</button><span class="status-label" :class="relation.status === 'confirmed' ? 'label-success' : relation.status === 'proposed' ? 'label-warning' : 'label-neutral'">{{ relationStatusLabel(relation.status) }}</span><button class="icon-button relation-remove" title="移除相关关系" aria-label="移除相关关系" @click="deleteConceptRelation(relation.id)"><Trash2 :size="13" /></button></div><div v-if="!selectedConceptRelated.length" class="empty-inline">暂无相关主题；“相关”关系不表示父子层级。</div></div></section>
         <section class="drawer-section"><div class="subsection-title"><strong>关联会话</strong><span>{{ selectedConceptSessions.length }} 个</span></div><button v-for="session in selectedConceptSessions.slice(0, 8)" :key="session.id" class="mini-unit-row" @click="openFullscreenSession(session.id)"><History :size="14" /><span>{{ session.title }}</span><Maximize2 :size="14" /></button><div v-if="!selectedConceptSessions.length" class="empty-inline">暂无直接会话归属。</div></section>
         <section class="drawer-section"><div class="subsection-title"><strong>关联知识单元</strong><span>{{ selectedConceptUnits.length }} 个</span></div><button v-for="unit in selectedConceptUnits.slice(0, 12)" :key="unit.id" class="mini-unit-row" @click="openUnit(unit.id)"><BookOpen :size="14" /><span>{{ unit.title || '待命名知识单元' }}</span><ChevronRight :size="14" /></button><div v-if="selectedConceptUnits.length > 12" class="empty-inline">还有 {{ selectedConceptUnits.length - 12 }} 个单元，可在主题目录中继续查看。</div><div v-if="!selectedConceptUnits.length" class="empty-inline">还没有关联单元。</div></section>
-        <section class="drawer-section"><div class="subsection-title"><strong>包含消息</strong><span>{{ selectedConceptMessages.length }} 条</span></div><button v-for="message in selectedConceptMessages.slice(0, 12)" :key="message.id" class="mini-unit-row" @click="openFullscreenMessage(message.id)"><MessageSquare :size="14" /><span>{{ message.content.slice(0, 54) || '空消息' }}</span><Maximize2 :size="14" /></button><div v-if="selectedConceptMessages.length > 12" class="empty-inline">还有 {{ selectedConceptMessages.length - 12 }} 条消息。</div><div v-if="!selectedConceptMessages.length" class="empty-inline">暂无已归属消息。</div></section>
+        <section class="drawer-section"><div class="subsection-title"><strong>包含消息</strong><span>{{ selectedConceptMessages.length }} 条</span></div><button v-if="selectedConceptMessages.length" class="button secondary-button full-button" @click="openFullscreenConcept(selectedConcept!.id)"><Maximize2 :size="14" />全屏查看全部对话</button><div v-for="message in selectedConceptMessages.slice(0, 12)" :key="message.id" class="mini-unit-row"><MessageSquare :size="14" /><span>{{ message.content.slice(0, 54) || '空消息' }}</span><span class="muted">{{ store.sessions.find((session) => session.id === message.sessionId)?.title || '未知会话' }}</span></div><div v-if="selectedConceptMessages.length > 12" class="empty-inline">还有 {{ selectedConceptMessages.length - 12 }} 条消息，使用上方入口查看全部。</div><div v-if="!selectedConceptMessages.length" class="empty-inline">暂无已归属消息。</div></section>
         <button class="button primary-button full-button" @click="openComposer({ topicId: selectedConcept?.id ?? null, sourceUnitIds: selectedConceptUnits.map((unit) => unit.id) })"><MessageSquare :size="15" />从此知识主题开始新对话</button>
       </div>
       <div v-else-if="selectedMessage" class="drawer-content"><div class="drawer-tags"><span class="soft-tag">{{ selectedMessage.role }}</span><span class="soft-tag">消息 #{{ selectedMessage.orderInSession + 1 }}</span></div><div class="message-context-actions"><button class="button secondary-button" @click="toggleMessageContext(selectedMessage.id)"><Check v-if="store.selectedContextMessageIds.includes(selectedMessage.id)" :size="14" /><Plus v-else :size="14" />{{ store.selectedContextMessageIds.includes(selectedMessage.id) ? '已加入上下文' : '加入上下文' }}</button><button class="button secondary-button" @click="openFullscreenMessage(selectedMessage.id)"><Maximize2 :size="14" />全屏查看</button></div><div class="drawer-section message-membership-editor"><div class="subsection-title"><strong>消息归属</strong><span>可多选</span></div><div class="chip-list"><button v-for="link in store.messageConcepts.filter((item) => item.messageId === selectedMessage?.id)" :key="link.conceptId" class="concept-chip" @click="openConcept(link.conceptId)">{{ store.concepts.find((concept) => concept.id === link.conceptId)?.name }}<X :size="12" @click.stop="removeConceptFromMessage(selectedMessage!.id, link.conceptId)" /></button><span v-if="!store.messageConcepts.some((item) => item.messageId === selectedMessage?.id)" class="muted">暂无直接主题归属</span></div><div class="add-inline"><input v-model="newMessageConcept" list="message-concept-options" placeholder="输入现有知识主题名称" @keyup.enter="addConceptToSelectedMessage" /><datalist id="message-concept-options"><option v-for="concept in store.activeConcepts" :key="concept.id" :value="concept.name" /></datalist><button class="icon-button" aria-label="添加消息知识主题" title="添加消息知识主题" @click="addConceptToSelectedMessage"><Plus :size="15" /></button></div></div><div class="md-body message-detail-content" v-html="renderedMessageContent(selectedMessage.content)" @click="handleRenderedClick" @keydown.enter.prevent="handleRenderedClick" /><button v-if="selectedMessage.unitId" class="text-button" @click="openUnit(selectedMessage.unitId)"><BookOpen :size="14" />打开所属知识单元</button></div>
@@ -1717,9 +1769,9 @@ onBeforeUnmount(() => {
 
     <div v-if="fullscreenTarget" class="fullscreen-backdrop" role="presentation" tabindex="-1" @click.self="closeFullscreen" @keydown.esc="closeFullscreen">
       <section class="fullscreen-viewer" role="dialog" aria-modal="true" aria-labelledby="fullscreen-title">
-        <header class="fullscreen-viewer-header"><div><span class="eyebrow">{{ fullscreenTarget.kind === 'message' ? 'MESSAGE VIEWER' : 'SESSION VIEWER' }}</span><h2 id="fullscreen-title">{{ fullscreenTitle }}</h2><span class="detail-subtitle">{{ fullscreenMessages.length }} 条消息 · 本地内容</span></div><div class="fullscreen-viewer-actions"><button class="icon-button" aria-label="关闭全屏查看" title="关闭" @click="closeFullscreen"><X :size="18" /></button></div></header>
+        <header class="fullscreen-viewer-header"><div><span class="eyebrow">{{ fullscreenTarget.kind === 'message' ? 'MESSAGE VIEWER' : fullscreenTarget.kind === 'concept' ? 'TOPIC CONVERSATIONS' : 'SESSION VIEWER' }}</span><h2 id="fullscreen-title">{{ fullscreenTitle }}</h2><span class="detail-subtitle">{{ fullscreenMessages.length }} 条消息 · 第 {{ fullscreenPage + 1 }} / {{ fullscreenPageCount }} 页 · 本地内容</span></div><div class="fullscreen-viewer-actions"><button class="icon-button" aria-label="上一页" title="上一页" :disabled="fullscreenPage === 0" @click="changeFullscreenPage(-1)"><ArrowLeft :size="17" /></button><button class="icon-button" aria-label="下一页" title="下一页" :disabled="fullscreenPage >= fullscreenPageCount - 1" @click="changeFullscreenPage(1)"><ArrowRight :size="17" /></button><button class="icon-button" aria-label="关闭全屏查看" title="关闭" @click="closeFullscreen"><X :size="18" /></button></div></header>
         <div class="fullscreen-conversation">
-          <article v-for="message in fullscreenMessages" :key="message.id" class="fullscreen-message" :class="message.role">
+          <article v-for="message in fullscreenPageMessages" :key="message.id" class="fullscreen-message" :class="message.role">
             <div class="fullscreen-message-header"><strong>{{ message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : '系统' }}</strong><span>消息 #{{ message.orderInSession + 1 }}</span><time v-if="message.timestamp">{{ new Date(message.timestamp).toLocaleString('zh-CN') }}</time><button class="button secondary-button message-context-button" @click="toggleMessageContext(message.id)"><Check v-if="store.selectedContextMessageIds.includes(message.id)" :size="13" /><Plus v-else :size="13" />{{ store.selectedContextMessageIds.includes(message.id) ? '已加入上下文' : '加入上下文' }}</button></div>
             <div class="md-body" v-html="renderedMessageContent(message.content)" @click="handleRenderedClick" @keydown.enter.prevent="handleRenderedClick" />
           </article>
@@ -1755,7 +1807,7 @@ onBeforeUnmount(() => {
         <div class="modal-header"><div><span class="eyebrow">GUIDE</span><h2 id="help-title">使用指南</h2></div><button class="icon-button" aria-label="关闭使用指南" title="关闭" @click="helpOpen = false"><X :size="17" /></button></div>
         <ol class="help-steps">
           <li><strong>导入对话</strong><span>把浏览器扩展导出的 JSON 拖入窗口，或点击“导入 JSON”。原始消息会先完整保存在本机。</span></li>
-          <li><strong>自动整理</strong><span>在任务中心选择 API 或 Prompt 粘贴模式后启动整理；分段、标题、摘要和知识主题会逐步生成，异常结果可以人工修正后应用。</span></li>
+          <li><strong>自动整理</strong><span>在任务中心选择 API 或 Prompt 粘贴模式后启动整理；会话分类、知识主题和关系会逐步生成，异常结果可以人工修正后应用。</span></li>
           <li><strong>探索知识</strong><span>在知识图谱中点击知识主题展开关联单元，也可以用顶部搜索直达主题、单元或具体消息。</span></li>
           <li><strong>继续追问</strong><span>多选知识单元组成上下文，或从知识主题、导航树发起新对话；回答会成为新的知识单元并挂到当前探索分支。</span></li>
         </ol>

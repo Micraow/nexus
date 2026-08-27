@@ -68,6 +68,17 @@ describe('renderMarkdown', () => {
     expect((html.match(/data-concept-id/g) ?? []).length).toBe(2)
   })
 
+  it('renders existing topic markers blue and suggested markers yellow', () => {
+    const html = renderMarkdown('已知 [[nexus:existing:RDMA]]RDMA[[/nexus]]，建议 [[nexus:suggested:量子纠错]]量子纠错[[/nexus]]。', {
+      concepts: [{ id: 'c1', name: 'RDMA' }],
+    })
+    expect(html).toContain('md-concept-existing')
+    expect(html).toContain('data-concept-id="c1"')
+    expect(html).toContain('md-concept-suggested')
+    expect(html).not.toContain('nexus:existing')
+    expect(html).not.toContain('nexus:suggested')
+  })
+
   it('does not linkify concept names inside inline code', () => {
     const html = renderMarkdown('保持 `RDMA` 原样', { concepts: [{ id: 'c1', name: 'RDMA' }] })
     expect(html).toContain('<code>RDMA</code>')
