@@ -1,9 +1,28 @@
 import { describe, expect, it } from 'vitest'
-import { buildGraph, toggleExpandedConceptIds } from '@/services/graph'
+import { buildGraph, graphViewFallbackIsCompatible, toggleExpandedConceptIds } from '@/services/graph'
 
 const now = '2026-08-24T00:00:00.000Z'
 
 describe('derived graph', () => {
+  it('never reuses a more disclosed or differently filtered Worker snapshot', () => {
+    expect(graphViewFallbackIsCompatible(
+      { expandedConceptIds: [] },
+      { expandedConceptIds: ['root'] },
+    )).toBe(true)
+    expect(graphViewFallbackIsCompatible(
+      { expandedConceptIds: ['root', 'child'] },
+      { expandedConceptIds: ['root'] },
+    )).toBe(false)
+    expect(graphViewFallbackIsCompatible(
+      { expandedConceptIds: ['root'], showProposed: true },
+      { expandedConceptIds: ['root'], showProposed: false },
+    )).toBe(false)
+    expect(graphViewFallbackIsCompatible(
+      { expandedConceptIds: ['root'], showMessages: true },
+      { expandedConceptIds: ['root'], showMessages: false },
+    )).toBe(false)
+  })
+
   it('builds concept co-occurrence with accumulated weight', () => {
     const snapshot = buildGraph({
       concepts: [

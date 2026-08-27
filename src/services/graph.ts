@@ -140,6 +140,27 @@ function finiteDepth(value: number | undefined): number | null {
 }
 
 /**
+ * A pending Worker query may temporarily reuse a cached graph only when the
+ * cached topology cannot disclose more than the requested view. In
+ * particular, an expanded snapshot must never flash back after its ancestor
+ * was collapsed, and snapshots from different display/proposal filters must
+ * never cross-contaminate each other.
+ */
+export function graphViewFallbackIsCompatible(
+  candidate: GraphViewOptions,
+  requested: GraphViewOptions,
+): boolean {
+  if (Boolean(candidate.showUnits) !== Boolean(requested.showUnits)) return false
+  if (Boolean(candidate.showMessages) !== Boolean(requested.showMessages)) return false
+  if (Boolean(candidate.showProposed) !== Boolean(requested.showProposed)) return false
+  if (Boolean(candidate.showRetainedSessions) !== Boolean(requested.showRetainedSessions)) return false
+  if (finiteDepth(candidate.expandedConceptDepth) !== finiteDepth(requested.expandedConceptDepth)) return false
+
+  const requestedExpanded = new Set(requested.expandedConceptIds ?? [])
+  return (candidate.expandedConceptIds ?? []).every((id) => requestedExpanded.has(id))
+}
+
+/**
  * Add all hierarchy ancestors required to make an explicitly expanded child
  * reachable.  The returned set is only a visibility aid; callers should keep
  * the original set around when deciding which units/messages to reveal.

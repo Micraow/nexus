@@ -18,10 +18,11 @@ const emit = defineEmits<{
 }>()
 const expandedIds = computed(() => new Set(props.expandedIds))
 const conceptIds = computed(() => new Set(props.concepts.map((concept) => concept.id)))
+const isConfirmedHierarchy = (relation: ConceptRelation): boolean => relation.relationType === 'hierarchy' && relation.status === 'confirmed'
 const childrenByParent = computed(() => {
   const result = new Map<string, Concept[]>()
   props.relations.forEach((relation) => {
-    if (relation.relationType !== 'hierarchy' || relation.status === 'rejected') return
+    if (!isConfirmedHierarchy(relation)) return
     if (!conceptIds.value.has(relation.parentConceptId) || !conceptIds.value.has(relation.childConceptId)) return
     const child = props.concepts.find((concept) => concept.id === relation.childConceptId)
     if (!child) return
@@ -37,7 +38,7 @@ const roots = computed(() => {
   const result = props.concepts
     .filter((concept) => rootIds
       ? rootIds.has(concept.id)
-      : !props.relations.some((relation) => relation.relationType === 'hierarchy' && relation.status !== 'rejected' && relation.childConceptId === concept.id && conceptIds.value.has(relation.parentConceptId)))
+      : !props.relations.some((relation) => isConfirmedHierarchy(relation) && relation.childConceptId === concept.id && conceptIds.value.has(relation.parentConceptId)))
     .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
   // Keep malformed cyclic imports inspectable without recursively rendering a
   // cycle forever. The path guard below prevents a cycle from expanding.

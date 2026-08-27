@@ -105,6 +105,13 @@ function edgeColor(edge: GraphEdge): string {
   return '#71899a'
 }
 
+function edgeWidth(edge: GraphEdge): number {
+  if (edge.type === 'co_occurrence') return Math.min(4, 0.8 + Math.log2(edge.weight + 1) * 0.7)
+  if (edge.type === 'hierarchy') return 1.35
+  if (edge.type === 'manual') return 1.1
+  return edge.type === 'related' ? 0.95 : 0.85
+}
+
 function mapValue<T>(map: Record<string, T> | Map<string, T> | undefined, key: string): T | undefined {
   if (!map) return undefined
   return map instanceof Map ? map.get(key) : map[key]
@@ -289,7 +296,7 @@ function render(): void {
     .join('line')
     .attr('class', 'graph-link')
     .attr('stroke', edgeColor)
-    .attr('stroke-width', (edge) => Math.min(6, 1 + Math.log2(edge.weight + 1)))
+    .attr('stroke-width', edgeWidth)
     .attr('stroke-dasharray', (edge) => (edge.status === 'proposed' || edge.type === 'related' || edge.type === 'conversation' ? '5 5' : null))
     .attr('stroke-linecap', 'round')
     .attr('vector-effect', 'non-scaling-stroke')
@@ -659,7 +666,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div ref="host" class="graph-canvas">
-    <svg ref="svg" role="img" />
+    <svg ref="svg" role="group" />
     <div v-if="brushSelectionCount" class="graph-selection-feedback" role="status">已选 {{ brushSelectionCount }} 个知识单元</div>
     <div class="graph-scale-hint">
       <span class="legend-dot concept-dot" /> 知识主题

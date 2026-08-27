@@ -60,6 +60,7 @@ describe('GraphCanvas progressive disclosure', () => {
     await nextTick()
 
     const node = target.querySelector<SVGGElement>('.graph-node')!
+    expect(target.querySelector('svg')?.getAttribute('role')).toBe('group')
     expect(node.getAttribute('role')).toBe('button')
     expect(node.getAttribute('aria-expanded')).toBe('false')
     expect(target.querySelector('.graph-node-expand-control')).toBeNull()
@@ -71,6 +72,10 @@ describe('GraphCanvas progressive disclosure', () => {
     node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     expect(selectConcept).toHaveBeenCalledTimes(2)
     expect(toggleConcept).toHaveBeenNthCalledWith(2, 'root', true)
+
+    node.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }))
+    expect(selectConcept).toHaveBeenCalledTimes(3)
+    expect(toggleConcept).toHaveBeenNthCalledWith(3, 'root', true)
   })
 
   it('only opens details when the selected Concept is a leaf', async () => {

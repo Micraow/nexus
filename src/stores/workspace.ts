@@ -3,7 +3,7 @@ import { defineStore } from 'pinia'
 import { db } from '@/services/db'
 import { httpRequest } from '@/services/http'
 import { DEFAULT_TOKEN_BUDGET, normalizeTokenBudget, parseConfigText, readConfigText, writeConfig } from '@/services/config'
-import { buildGraph, graphStats, toggleExpandedConceptIds } from '@/services/graph'
+import { buildGraph, graphStats, graphViewFallbackIsCompatible, toggleExpandedConceptIds } from '@/services/graph'
 import { buildSearchDocuments, searchKnowledge } from '@/services/search'
 import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildOriginConceptPrompt, buildRepairPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, ensureHarnessPrompt, listedDisclosureRefIds, parseDisclosureContext, PROMPT_VERSION, renderQuickPhrase, replaceDisclosureContext } from '@/services/prompts'
 import { importPayloadSchema, parseImportPayload, validateConceptIdList, validateConceptMemberships, validateDisclosureRequests, validateOriginConceptResult, validateSegmentationResult, validateUnitText } from '@/services/validation'
@@ -201,9 +201,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const selectedSessionId = ref<string | null>(null)
   const lastImport = ref<ImportReport | null>(null)
   const graphSnapshots = new Map<string, GraphSnapshot>()
+  const graphSnapshotOptions = new Map<string, GraphViewOptions>()
+  const graphPendingOptions = new Map<string, GraphViewOptions>()
   const graphPendingKeys = new Set<string>()
   const graphTick = ref(0)
-  let lastGraphSnapshot: GraphSnapshot | null = null
   let graphWorker: Worker | null = null
   const queueRunning = ref(false)
   const queuePaused = ref(false)
@@ -324,8 +325,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     graphViewport.value = viewport ? { x: number(viewport.x), y: number(viewport.y), scale: number(viewport.scale, 1), layoutVersion: number(viewport.layout_version, 1) } : { x: 0, y: 0, scale: 1, layoutVersion: 1 }
     graphRevision.value = Number(db.getMeta('graph_revision') ?? '1')
     graphSnapshots.clear()
+    graphSnapshotOptions.clear()
+    graphPendingOptions.clear()
     graphPendingKeys.clear()
-    lastGraphSnapshot = null
     db.rebuildSearchDocuments(buildSearchDocuments({
       concepts: concepts.value,
       aliases: aliases.value,
@@ -408,6 +410,29 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     return snapshot
   }
 
+  function rememberGraphSnapshot(key: string, snapshot: GraphSnapshot, options: GraphViewOptions): GraphSnapshot {
+    const prepared = applyGraphLayout(snapshot)
+    graphSnapshots.set(key, prepared)
+    graphSnapshotOptions.set(key, toPlainJson(options))
+    return prepared
+  }
+
+  function compatibleGraphFallback(options: GraphViewOptions): GraphSnapshot | null {
+    let bestSnapshot: GraphSnapshot | null = null
+    let bestExpansionCount = -1
+    graphSnapshots.forEach((snapshot: GraphSnapshot, key: string) => {
+      if (snapshot.revision !== graphRevision.value) return
+      const candidateOptions = graphSnapshotOptions.get(key)
+      if (!candidateOptions || !graphViewFallbackIsCompatible(candidateOptions, options)) return
+      const expansionCount = candidateOptions.expandedConceptIds?.length ?? 0
+      if (expansionCount > bestExpansionCount) {
+        bestSnapshot = snapshot
+        bestExpansionCount = expansionCount
+      }
+    })
+    return bestSnapshot
+  }
+
   function graphInputFor(options: GraphViewOptions) {
     const activeUnits = units.value.filter((unit) => activeSessionIds.value.has(unit.sessionId))
     const activeUnitIds = new Set(activeUnits.map((unit) => unit.id))
@@ -434,9 +459,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       worker.onmessage = (event: MessageEvent<GraphWorkerResponse>) => {
         const { key, snapshot } = event.data
         graphPendingKeys.delete(key)
-        const prepared = applyGraphLayout(snapshot)
-        graphSnapshots.set(key, prepared)
-        lastGraphSnapshot = prepared
+        const options = graphPendingOptions.get(key)
+        graphPendingOptions.delete(key)
+        if (options) rememberGraphSnapshot(key, snapshot, options)
         graphTick.value += 1
       }
       graphWorker = worker
@@ -447,9 +472,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   function computeGraphSync(key: string, options: GraphViewOptions): void {
-    const snapshot = applyGraphLayout(buildGraph(graphInputFor(options)))
-    graphSnapshots.set(key, snapshot)
-    lastGraphSnapshot = snapshot
+    rememberGraphSnapshot(key, buildGraph(graphInputFor(options)), options)
   }
 
   /** Cached graph view; heavy co-occurrence computation runs inside a worker. */
@@ -457,21 +480,20 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     void graphTick.value
     const key = graphCacheKey(options)
     const cached = graphSnapshots.get(key)
-    if (cached) {
-      lastGraphSnapshot = cached
-      return cached
-    }
+    if (cached) return cached
     const worker = ensureGraphWorker()
     if (worker) {
       if (!graphPendingKeys.has(key)) {
         graphPendingKeys.add(key)
+        graphPendingOptions.set(key, toPlainJson(options))
         // Pinia 的响应式代理无法结构化克隆，必须先还原成普通 JSON 数据。
         worker.postMessage({ key, ...toPlainJson(graphInputFor(options)) })
       }
     } else {
       computeGraphSync(key, options)
+      return graphSnapshots.get(key) as GraphSnapshot
     }
-    return lastGraphSnapshot ?? applyGraphLayout({ nodes: [], edges: [], revision: graphRevision.value })
+    return compatibleGraphFallback(options) ?? applyGraphLayout({ nodes: [], edges: [], revision: graphRevision.value })
   }
 
   function unitMessages(unitId: string): Message[] {
