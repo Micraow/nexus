@@ -37,7 +37,7 @@ Nexus 织知是一个本地优先的 AI 对话知识管理桌面应用。它把�
 
 ### 2.1 Session（会话）
 
-一次完整的对话及其持久化探索树。一个 Session 包含按时间顺序排列的 Message，并可以包含多个 KnowledgeUnit。
+一次完整的对话及其持久化探索树。一个 Session 包含按时间顺序排列的 Message，并可以按需包含多个 KnowledgeUnit。KnowledgeUnit 不是 Session 完整性的前提。
 
 - `source=chrome_import`：从浏览器扩展导入的历史会话；
 - `source=in_app`：在 Nexus 中创建的新会话；
@@ -47,17 +47,20 @@ Nexus 织知是一个本地优先的 AI 对话知识管理桌面应用。它把�
 
 ### 2.2 Message（消息）
 
-原始对话中的一条用户、AI 或系统消息。Message 只属于一个 Session，可以暂时不属于任何 KnowledgeUnit；未分配的消息仍然保留并在图谱中可见。
+原始对话中的一条用户、AI 或系统消息。Message 只属于一个 Session，可以直接关联多个 Concept，并可以不属于任何 KnowledgeUnit；没有知识单元归属的消息仍然保留、可检索、可作为上下文并可在图谱中显示。
 
 ### 2.3 KnowledgeUnit（知识单元）
 
-一次 Session 中语义连续的一段具体讨论。它可以包含一条或多条 Message，也可以包含多轮 Q&A。KnowledgeUnit 是一次发生过的内容，不跨 Session 合并。
+用户手动整理或 AI 按需生成的阅读片段/证据包，用于把一次 Session 内值得一起阅读的一组 Message 命名、摘要和复用。KnowledgeUnit 不跨 Session 合并，也不要求覆盖 Session 的全部消息。
 
-KnowledgeUnit 有三个互相独立的用户可见字段：
+KnowledgeUnit 是辅助内容结构，不是 Concept 提取或建图的前置条件：
 
-- `title`：不超过 30 个中文字符，表达本单元独有的讨论角度；
-- `summary`：不超过 120 个中文字符，概括主要结论、比较对象或关键问题；
-- 关联的多个 Concept：不区分强制的主次概念。
+- 导入后默认直接分析 Session/Message，不先强制分段；
+- 没有 KnowledgeUnit 的 Session/Message 仍可直接关联多个 Concept；
+- 用户可以从所选消息创建 KnowledgeUnit，AI 也可以在整理、分享或阅读需要时提出创建建议；
+- `title` 不超过 30 个中文字符，表达这组证据独有的讨论角度；
+- `summary` 不超过 120 个中文字符，概括主要结论、比较对象或关键问题；
+- 关联的多个 Concept 不区分强制的主次概念。
 
 例如：
 
@@ -70,7 +73,7 @@ Concept：RDMA 的拥塞控制、RDMA、拥塞控制、ECN、PFC、DCQCN
 
 ### 2.4 Concept（概念）
 
-跨 Session 复用、可聚合知识单元的稳定知识主体。Concept 可以是单一概念，也可以是有明确语义的复合概念，例如：
+跨 Session 复用、可聚合 Session、Message 和可选 KnowledgeUnit 的稳定知识主体。Concept 可以是单一概念，也可以是有明确语义的复合概念，例如：
 
 ```text
 RDMA
@@ -80,7 +83,7 @@ ECN
 PFC
 ```
 
-同一个 Concept 可以关联多个 Session 中的多个 KnowledgeUnit。Concept 有名称、别名、用户笔记、父子关系和相关关系。
+同一个 Concept 可以关联多个 Session、Message 和 KnowledgeUnit；同一个 Session、Message 或 KnowledgeUnit 也可以同时关联多个 Concept。Concept 有名称、别名、用户笔记、父子关系和相关关系。
 
 Concept hierarchy 不限制为固定层数，而是一个可有多个父节点的有向无环图（DAG）；`depth` 只是从根 Concept 计算出的派生值，不是数据模型的层数上限。KnowledgeUnit 和 Message 不会因为当前界面只显示根节点而被删除或改写。
 
@@ -107,9 +110,9 @@ RDMA ──hierarchy──> RDMA 的拥塞控制 <──hierarchy── 拥塞�
 
 ### 2.7 NavTreeNode（导航树节点）
 
-记录 Session 中的一次探索动作，而不是单条消息。节点通过 `parent_id` 自引用形成持久化树，并通过 `NavTreeNodeUnit` 关联一个或多个 KnowledgeUnit。
+记录 Session 中的一次探索动作，而不是 Concept 层级或分段结果。节点通过 `parent_id` 自引用形成持久化树；已有数据继续通过 `NavTreeNodeUnit` 关联一个或多个 KnowledgeUnit。没有 KnowledgeUnit 的导入会话仍按 Message 顺序浏览，软件内追问仍按提问/回答动作创建导航节点；后续扩展直接内容引用时不得为了创建导航树而伪造 KnowledgeUnit。
 
-- 导入的线性会话：通常每个 KnowledgeUnit 形成一个连续节点；
+- 导入的线性会话：按原始消息顺序退化为链式浏览；已有 KnowledgeUnit 时可以作为阅读定位点；
 - 软件内追问：一次用户提问及其回复形成一个节点，即使回复被分成多个 KnowledgeUnit；
 - `trigger_concept_id` 可记录这次探索从哪个 Concept 发起；导入的节点可以为空；
 - 返回旧节点再提问会创建新分支，不覆盖旧分支；
@@ -119,7 +122,7 @@ RDMA ──hierarchy──> RDMA 的拥塞控制 <──hierarchy── 拥塞�
 
 原始 Session 和 Message 是不可丢失的事实层。导入、分段或 AI 判断失败都不能删除、覆盖或因为“不像知识”而隐藏这些内容；用户仍可检索、导出、查看原始会话，并在后续对话中把它们作为上下文来源。
 
-导入后可创建一个 `session_triage` 任务，对会话给出 `knowledge`（知识）、`discussion`（探讨）、`procedure`（流程）、`mixed`（混合）和置信度。这个判断只是可修正的展示元数据，不是归档或删除依据。`mixed` 会话仍然继续执行分段、标题、摘要和 Concept 提取，以便从探讨内容中识别其中稳定的知识。
+导入后可创建一个 `session_triage` 任务，对会话给出 `knowledge`（知识）、`discussion`（探讨）、`procedure`（流程）、`mixed`（混合）和置信度。这个判断只是可修正的展示元数据，不是归档或删除依据。所有类型都保留原始会话；`mixed` 会话必须继续执行 Session/Message 级 Concept 提取，从探讨内容中识别稳定知识，不能因为整体不是知识文章而跳过。
 
 图谱默认聚焦知识主题；“探讨与流程会话”选项打开后，才显示被判断为可保留的非主题会话。打开“消息与会话链”后，同一 Session 的原始消息按 `order_in_session` 连接成链；这是网页聊天树结构在当前数据模型下的可解释退化，未来可通过分支元数据恢复更细的树边。
 
@@ -133,9 +136,9 @@ RDMA ──hierarchy──> RDMA 的拥塞控制 <──hierarchy── 拥塞�
 
 ### 2.11 图谱派生视图
 
-Concept、KnowledgeUnit 和未归类 Message 是图谱的节点类型，但 `GraphNode` 和 `GraphEdge` 不作为事实数据表保存。图谱节点和大部分边由业务表实时计算或从缓存生成；用户手动创建的特殊边、节点位置和视口状态单独保存。
+Concept、Session、Message 和 KnowledgeUnit 是图谱的节点类型，但 `GraphNode` 和 `GraphEdge` 不作为事实数据表保存。图谱节点和大部分边由业务表实时计算或从缓存生成；用户手动创建的特殊边、节点位置和视口状态单独保存。
 
-图谱采用渐进式披露：默认只投影 active hierarchy 的根 Concept；用户点击父节点旁的展开控件后逐层显示其直接子节点。展开祖先路径后，路径上的节点保持可见；收起某个祖先会递归收起其后代，后代的事实关系仍保留在数据库中。`related` 显示不参与层级展开；KnowledgeUnit/Message 开关控制附加节点，局部展开可以按规则披露关联内容。
+图谱采用渐进式披露：默认只投影 active hierarchy 的根 Concept；用户点击父节点旁的展开控件后逐层显示其直接子节点。展开祖先路径后，路径上的节点保持可见；收起某个祖先会递归收起其后代，后代的事实关系仍保留在数据库中。`related` 显示不参与层级展开；Session/KnowledgeUnit/Message 开关控制附加节点，局部展开可以按规则披露关联内容。
 
 ## 3. 数据模型
 
@@ -145,6 +148,8 @@ Concept、KnowledgeUnit 和未归类 Message 是图谱的节点类型，但 `Gra
 Session 1──N Message
 Session 1──N KnowledgeUnit
 KnowledgeUnit 1──N Message（Message.unit_id 可为空）
+Session N──N Concept（SessionConcept）
+Message N──N Concept（MessageConcept）
 KnowledgeUnit N──N Concept（UnitConcept）
 Concept 1──N ConceptAlias
 Concept N──N Concept（ConceptRelation；hierarchy 为有向 DAG，related 为无向）
@@ -202,7 +207,7 @@ LLMTask、QuickPhrase、ManualGraphEdge、GraphLayout 独立记录
 | created_at | TEXT | |
 | updated_at | TEXT | |
 
-知识单元包含哪些消息由 `Message.unit_id` 表达。一个 Message 最多属于一个 KnowledgeUnit。
+知识单元包含哪些消息目前由 `Message.unit_id` 表达。一个 Message 最多属于一个 KnowledgeUnit，但可以不属于任何 KnowledgeUnit；这个兼容约束只限制可选阅读片段，不限制 Message 通过 `MessageConcept` 同时归属多个知识主题。
 
 ### 3.5 Concept
 
@@ -242,6 +247,12 @@ LLMTask、QuickPhrase、ManualGraphEdge、GraphLayout 独立记录
 | created_at | TEXT | |
 
 PRIMARY KEY 为 `(unit_id, concept_id)`。不设置强制的 `primary` 角色；一个 KnowledgeUnit 的多个 Concept 平等关联。
+
+#### 3.7.1 SessionConcept / MessageConcept
+
+Session 和 Message 直接归属于 Concept 的多对多关联表。两者都以“目标 ID + Concept ID”为复合主键，`source` 与 UnitConcept 使用相同枚举。
+
+直接归属是 Concept 树的主要证据入口，不要求先存在 KnowledgeUnit。Session 级归属表达“这场会话涉及哪些主题”，Message 级归属表达“哪些原始消息直接支撑这些主题”；两者是独立事实，不能把 Session 归属自动复制为所有 Message 的归属。
 
 ### 3.8 ConceptRelation
 
@@ -305,7 +316,7 @@ PRIMARY KEY 为 `(node_id, unit_id)`。
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | id | TEXT PK | |
-| type | TEXT | `segmentation` / `concept_extraction` / `title` / `summary` / `origin_concepts` / `conversation` / `maintenance` |
+| type | TEXT | `concept_extraction` / `origin_concepts` / `conversation` / `maintenance`，以及兼容或按需使用的 `segmentation` / `title` / `summary` |
 | mode | TEXT | `api` / `prompt_paste` |
 | provider_id | TEXT NULL | 实际使用的连接配置 |
 | model | TEXT NULL | 实际模型 |
@@ -446,28 +457,35 @@ API 服务支持结构化输出时，同时使用接口级 JSON Schema；Prompt 
 
 Concept 归属是多对多的：同一个 Session、Message 或 KnowledgeUnit 可以同时关联多个知识主题，也可以暂时没有主题。任务结果用 `memberships[].concept_ids` 或目标对象中的 `concept_ids` 数组表达归属，不能用单个 `concept_id` 代表“主主题”。运行时分别使用 `session_concepts`、`message_concepts` 和 `unit_concepts` 三张关联表；旧版本写入 `messages.metadata.concept_ids` 的数据会在迁移时兼容导入。一个子 Concept 也可以拥有多个 `hierarchy` 父主题；`related` 始终是无向关系。知识维护中的重新关联建议同样使用 `concept_ids` 数组，应用前逐项校验 ID、重复项和当前任务范围。
 
-### 6.1 分段输出
+### 6.1 Session/Message 直接归属输出
+
+主整理任务直接返回 Concept 定义、严格区分的关系和多目标归属，不返回覆盖全部消息的互斥分段：
 
 ```json
 {
-  "units": [
-    { "message_indices": [0, 1, 2], "title_hint": "RDMA 基本原理" },
-    { "message_indices": [3, 4], "title_hint": "ECN 的反馈机制" }
+  "concepts": [
+    { "name": "Clos 网络", "summary": "多级无阻塞交换网络结构。", "aliases": [] }
   ],
-  "unassigned_message_indices": []
+  "memberships": [
+    { "target_type": "session", "target_id": "session-id", "concept_ids": ["concept-ref-1"] },
+    { "target_type": "message", "target_id": "message-id", "concept_ids": ["concept-ref-1", "concept-ref-2"] }
+  ],
+  "relations": [
+    { "source": "concept-ref-1", "target": "concept-ref-2", "type": "hierarchy" }
+  ]
 }
 ```
 
 校验规则：
 
-- 索引必须在输入范围内；
-- 同一索引不能出现在两个单元；
-- `units` 与 `unassigned_message_indices` 的并集必须覆盖全部消息；
-- 不允许默默遗漏消息；
-- `title_hint` 必须是短主体/角度短语，不是完整摘要；
-- 越界、重复、遗漏和空单元都必须报告。
+- `target_type` 只能是 `session`、`message` 或兼容的 `unit`，`target_id` 必须属于当前任务范围；
+- 每个目标使用可为空的 `concept_ids` 数组，同一目标和 Concept 不能重复；
+- 同一个 Session、Message 或 KnowledgeUnit 可以归属多个 Concept，不得压缩为单个“主主题”；
+- 新 Concept 的名称、摘要和别名在同一结果中返回；引用现有 Concept 时使用当前目录中给出的 ID；
+- `hierarchy` 只表达严格的上位/下位关系并接受 DAG 校验；语义相关但不存在包含关系时必须使用 `related`；
+- `mixed`、`discussion` 和 `procedure` 不得成为跳过 Message 级知识识别的理由，没有稳定知识的目标可以返回空数组。
 
-校验失败时不应用任何部分结果，生成带具体错误的修复 Prompt；重试仍失败则进入人工处理。用户可以在引导式界面中调整边界、主题提示和未分配消息。
+长 Session 可以使用带重叠上下文的窗口分批提取候选，但窗口只是运行时处理机制：每个窗口保留全局 Message ID，最后进行 Session 级去重、归一化、关系校验和归属合并。窗口边界不得持久化为 KnowledgeUnit，也不得被视为知识边界。
 
 ### 6.2 Concept 提取与归一化
 
@@ -475,19 +493,19 @@ LLM 返回 Concept 名称、别名和建议关系。系统按以下顺序寻找�
 
 1. 名称/别名归一化后的精确匹配；
 2. 本地字符 n-gram、前缀和倒排检索；
-3. 将新 Concept、候选 Concept、当前 KnowledgeUnit 标题/摘要和上下文交给 LLM 语义判断。
+3. 将新 Concept、候选 Concept、当前 Session/Message 证据以及可选 KnowledgeUnit 标题/摘要交给 LLM 语义判断。
 
 第一版不使用本地 embedding 模型。候选检索只是召回，不能直接决定合并。无法确定时产生 `proposed` 维护建议，用户确认后才变更。
 
 归一化规则：英文统一大写、清理首尾空格、统一标点和空白、保留原始显示名称。系统不使用简单编辑距离作为最终合并依据。
 
-### 6.3 标题、摘要和起源 Concept
+### 6.3 摘要、起源 Concept 和可选 KnowledgeUnit
 
-- 标题输入当前 KnowledgeUnit 消息、Session 标题、相邻单元标题/摘要、关联 Concept 和起源 Concept；
-- 标题不超过 30 个中文字符，不能只是重复 Concept 名称；
-- 摘要不超过 120 个中文字符，突出本单元独有的角度或结论；
-- 起源 Concept 任务输入整个 Session，返回 1～3 个核心 Concept 候选；
-- 生成失败不阻塞导入，字段可为空并进入可重试任务。
+- Concept 的名称、摘要、别名和归属在同一次提取结果中返回，避免标题与摘要来自互不知情的任务；
+- 起源 Concept 任务输入整个 Session，返回多个核心 Concept 候选以及 Session/Message 多归属，不限制为单个主题；
+- KnowledgeUnit 只在用户手动选择消息或明确启动按需整理时创建；其标题、摘要和关联 Concept 可以在同一元数据任务中生成；
+- KnowledgeUnit 标题不超过 30 个中文字符，摘要不超过 120 个中文字符，并只描述所选证据；
+- 可选元数据生成失败不阻塞 Session/Message 的导入、直接 Concept 归属或图谱生成。
 
 ### 6.4 维护任务
 
@@ -532,17 +550,19 @@ LLM 只返回建议变更：合并、别名、父子关系、相关关系、重�
 
 重复导入默认跳过完全相同的会话，不静默覆盖用户编辑过的标题、Concept、摘要或导航树。覆盖前自动备份数据库。
 
-### M2 对话分段
+### M2 会话判断与直接知识提取
 
-读取一个 Session 的 Message，生成分段任务。LLM 可以返回多个 KnowledgeUnit，每个单元指定全局 `message_indices`。分段完成后创建/更新 KnowledgeUnit 和 Message.unit_id，再触发标题、摘要和 Concept 任务。
+读取一个 Session 及其 Message，先记录可修正的内容形态判断，再直接创建 Session/Message 级 Concept 提取任务。`knowledge`、`discussion`、`procedure` 和 `mixed` 都完整保留；`mixed` 必须继续识别其中稳定的知识。
 
-用户修改消息边界时，只让受影响单元及其下游任务失效；旧结果保留在 LLMTask 历史中，标记为 `stale`，不得覆盖新版本。
+默认整理不创建 `segmentation` 任务，也不等待 KnowledgeUnit、标题或摘要任务。长会话只在任务执行时按带重叠的窗口处理，并在 Session 级合并候选；窗口不写入业务表。
 
-导入整理期间用户可以直接调整消息边界、编辑标题和摘要、增加或删除 Concept 关联。手动修改立即保存；只有受影响的下游任务失效，其他已完成结果继续可用。
+旧数据库中的 KnowledgeUnit、`Message.unit_id`、`NavTreeNodeUnit` 和历史 `segmentation`/标题/摘要任务继续可读、可编辑和导出。旧待处理分段任务可以完成、取消或转为人工处理，但新主流程不能依赖它们。
 
-### M3 Concept 提取
+### M3 Concept 提取与塔式层级
 
-对每个 KnowledgeUnit 提取多个 Concept，执行归一化、候选检索和语义判定。关联写入 UnitConcept；新建的复合 Concept 可以同时建议多个父 Concept。明显关系可标记为 LLM 来源，未确定关系进入 `proposed`。
+一次任务可以创建/复用多个 Concept，并为 Session、Message 和可选 KnowledgeUnit 分别返回 `concept_ids[]`。关联分别写入 SessionConcept、MessageConcept 和 UnitConcept；同一目标可以同时支撑多个主题。
+
+新 Concept 的名称、摘要和别名在同一结果中返回。`hierarchy` 只用于可证明的上位/下位关系并通过 DAG 校验；一般关联使用无向 `related`。明显关系可标记为 LLM 来源，无法确定的关系进入 `proposed`，不能为了让塔形更满而强行补父子边。
 
 ### M4 知识图谱
 
@@ -551,12 +571,13 @@ LLM 只返回建议变更：合并、别名、父子关系、相关关系、重�
 | 节点 | 含义 | 默认显示 |
 |---|---|---|
 | Concept | 跨会话聚合的知识主体 | 是 |
-| KnowledgeUnit | 一次具体讨论 | 否，使用主题展开控件时局部显示 |
-| Message | 尚未归入单元或用户主动展开的原始消息 | 否 |
+| KnowledgeUnit | 可选的阅读片段/证据包 | 否，使用主题展开控件时局部显示 |
+| Message | 直接支撑主题或用户主动展开的原始消息 | 否 |
 
 自动关系：
 
 - Concept-Concept 共现边：同一 Session 内共同出现的次数越多，边越粗；同一 Session 对同一 Concept 对最多贡献一次；
+- Concept-Session / Concept-Message 归属边：直接来自 SessionConcept 和 MessageConcept，是没有 KnowledgeUnit 时的主要证据边；
 - Concept-KnowledgeUnit 关联边：表示该单元涉及该 Concept；
 - ConceptRelation hierarchy：父子关系，带方向；
 - ConceptRelation related：相关关系；
@@ -610,7 +631,7 @@ LLM 只返回建议变更：合并、别名、父子关系、相关关系、重�
 
 ### M7 导航树
 
-每个 Session 永久保存一棵导航树。导入会话按单元顺序形成链；软件内追问从当前节点创建子节点，回到旧节点继续提问形成兄弟分支。节点点击展开所关联的一个或多个 KnowledgeUnit；返回操作回到父探索节点。
+每个 Session 永久保存一棵导航树。导入会话按原始 Message 顺序退化为链式浏览，不要求先生成 KnowledgeUnit；软件内追问从当前节点创建子节点，回到旧节点继续提问形成兄弟分支。已有 KnowledgeUnit 可继续作为节点的阅读定位内容；返回操作回到父探索节点。
 
 ### M8 搜索
 
@@ -708,15 +729,17 @@ LLM 返回建议而不是直接修改，包括：
   → 桌面端校验 schema 和重复项
   → 事务写入 Session + Message
   → 用户确认任务队列
-  → 分段任务（必要时分块）
-  → 本地完整性校验
-  → 创建 KnowledgeUnit 和消息归属
-  → 生成标题/摘要
-  → 提取并归一化 Concept
-  → 建立/提议 ConceptRelation
-  → 生成导航树链
+  → Session triage（只记录内容形态）
+  → 直接提取 Session/Message 的 Concept 候选与多归属（长会话可使用临时重叠窗口）
+  → Session 级归一化、去重和本地完整性校验
+  → 写入 SessionConcept / MessageConcept
+  → 建立或提议严格 hierarchy 与独立 related 关系
+  → 按原始消息顺序提供链式浏览
+  → 用户按需从所选消息创建 KnowledgeUnit 阅读片段
   → 刷新图谱派生缓存
 ```
+
+旧数据中已经存在的 KnowledgeUnit 和导航树关联照常参与浏览与图谱；迁移不会删除或重切旧单元。旧 `segmentation` 任务保留审计记录，但不再阻塞新的直接 Concept 提取流程。
 
 ### 10.2 追问分支
 
@@ -747,7 +770,7 @@ LLM 返回建议而不是直接修改，包括：
 
 ### 11.1 派生缓存
 
-业务表是真相，图谱节点和自动边是派生视图。内存缓存按查询范围、筛选条件、`showUnits`/`showMessages`/`showProposed`/`showRetainedSessions`、`expandedConceptIds`（排序后）和 `expandedConceptDepth` 以及 `graph_revision` 缓存快照。导入、分段、Concept 关联、合并、删除和关系编辑事务提交后递增 `graph_revision`，相关缓存自动失效。
+业务表是真相，图谱节点和自动边是派生视图。内存缓存按查询范围、筛选条件、`showUnits`/`showMessages`/`showProposed`/`showRetainedSessions`、`expandedConceptIds`（排序后）和 `expandedConceptDepth` 以及 `graph_revision` 缓存快照。导入、Session/Message/KnowledgeUnit 的 Concept 关联、按需创建或编辑 KnowledgeUnit、合并、删除和关系编辑事务提交后递增 `graph_revision`，相关缓存自动失效。
 
 缓存不持久化为第二套事实数据。`GraphLayout` 只保存节点位置、固定状态和视口。未来若 profiling 证明需要，再增加持久化聚合表。
 
@@ -819,7 +842,8 @@ Nexus 采用克制的知识工作台风格，优先信息层级、可读性和�
 | JSON 格式错误 | 指出文件位置和缺失字段，不写入部分业务数据 |
 | 重复导入 | 显示新增/未变化/变化数量，由用户选择处理 |
 | LLM 返回非 JSON | 结构化解析、局部提取、修复 Prompt，仍失败进入人工任务 |
-| 分段遗漏/重复/越界 | 不应用部分结果，显示具体索引错误 |
+| Concept 归属引用越界/重复/未知 ID | 不应用部分结果，显示具体目标和字段错误 |
+| 旧版或按需分段遗漏/重复/越界 | 不应用部分结果，保留原始消息并显示具体索引错误 |
 | Concept 候选不确定 | 生成 proposed 建议，不自动合并 |
 | LLM API 超时/429 | 退避重试、暂停、继续和单任务重跑 |
 | Prompt 粘贴结果缺失 | 保留任务和已粘贴内容，提示继续或重新粘贴 |
@@ -838,9 +862,9 @@ Nexus 采用克制的知识工作台风格，优先信息层级、可读性和�
 
 - DeepSeek 扩展导出工作台与标准 JSON 导出；
 - JSON 导入、校验、重复处理和原始数据落库；
-- 分段、消息覆盖校验、人工接管和任务队列；
-- 标题/摘要生成、Concept 提取、归一化、别名和起源 Concept；
-- Concept/KnowledgeUnit 派生图谱、缩放、筛选和点击展开；
+- Session triage、直接 Session/Message 多主题提取、归一化、别名和起源 Concept；
+- Concept 层级与多归属校验、任务队列和人工接管；
+- Concept/Session/Message/KnowledgeUnit 派生图谱、缩放、筛选和点击展开；
 - Concept 详情、统一搜索、全文搜索；
 - API 模式和 Prompt 粘贴模式；
 - 完整知识库 JSON、图谱快照 JSON、Session JSON 和 Concept Markdown 导出；
@@ -861,7 +885,7 @@ Nexus 采用克制的知识工作台风格，优先信息层级、可读性和�
 ### 14.3 实现里程碑
 
 1. **数据基础**：数据库、迁移、导入、消息/Session 展示、备份和导出；
-2. **自动整理**：分段、校验、标题/摘要、Concept、任务中心；
+2. **自动整理**：Session triage、直接 Concept 多归属、层级校验、任务中心；KnowledgeUnit 按需生成；
 3. **知识浏览**：图谱、Concept 详情、搜索和派生缓存；
 4. **主动探索**：双 LLM 模式、追问、导航树和高亮；
 5. **人工维护**：Concept 编辑/合并/删除、关系编辑、撤销；

@@ -5,10 +5,10 @@
 ## 1. 基本原则
 
 1. 原始 Session 和 Message 先落库，任何 LLM 失败都不能删除或覆盖原始内容。
-2. KnowledgeUnit 是一次 Session 内的具体讨论，不跨 Session 合并。
-3. Concept 是跨 Session 复用的稳定知识主体；同一个 Concept 可以关联多个 Session 的多个 KnowledgeUnit。
-4. Message 最多属于一个 KnowledgeUnit，也可以暂时不属于任何 KnowledgeUnit。
-5. 一个 KnowledgeUnit 可以平等关联多个 Concept，不要求 `primary_concept_id`。
+2. KnowledgeUnit 是一次 Session 内可选的阅读片段/证据包，不跨 Session 合并，也不要求覆盖全部 Message。
+3. Concept 是跨 Session 复用的稳定知识主体；同一个 Concept 可以关联多个 Session、Message 和 KnowledgeUnit。
+4. Message 最多属于一个 KnowledgeUnit，也可以不属于任何 KnowledgeUnit；它可以通过 MessageConcept 同时归属多个 Concept。
+5. Session、Message 和 KnowledgeUnit 都可以平等关联多个 Concept，不要求 `primary_concept_id`。
 6. Concept 的父子关系允许多父节点，但必须是有向无环图。
 7. `GraphNode`/`GraphEdge` 是派生视图，不是自动图谱事实表；缓存可以被删除并重建。
 8. 所有用户可见数据修改必须能持久化；有风险的批量操作必须能撤销。
@@ -96,10 +96,10 @@
 
 不变量：
 
-- `session_id` 必须与 `unit_id` 指向的 KnowledgeUnit.session_id 相同；
+- `session_id` 必须与 `unit_id` 指向的 KnowledgeUnit.session_id 相同；`unit_id` 为空是正常状态，不得视为导入失败；
 - 同一 Session 不能有两个 Message 使用同一 `order_in_session`；
 - Message 删除属于高风险操作，默认只允许从 KnowledgeUnit 解绑，不删除原始消息；
-- 尚未分配的 Message 必须可以被搜索和人工分配。
+- 尚未分配的 Message 必须可以被搜索、直接归属多个 Concept、作为上下文来源，并可在需要时人工整理为 KnowledgeUnit。
 
 ### 3.3 KnowledgeUnit
 
@@ -119,9 +119,11 @@
 
 - 一个 KnowledgeUnit 至少包含一条 Message 才能标记为 `ready`；
 - 一个 KnowledgeUnit 的所有 Message 必须来自同一个 Session；
-- 修改消息边界时 `revision + 1`，受影响标题、摘要和 Concept 任务变为 `stale`；
+- 修改消息边界时 `revision + 1`，只使该单元的可选标题、摘要和 UnitConcept 任务变为 `stale`；
 - KnowledgeUnit 可以没有任何 Concept，显示为待关联内容；
 - KnowledgeUnit 不跨 Session 合并；维护任务只能提出“重新关联”，不能把两个 Session 的单元合并成一个。
+
+KnowledgeUnit 的创建、标题、摘要或边界变化不得使 SessionConcept/MessageConcept 失效，也不得阻塞直接 Concept 提取。
 
 ### 3.4 Concept
 
@@ -238,7 +240,7 @@ Concept ID 导入 `message_concepts`，同时保留 metadata 原文以便回溯�
 | 字段 | 类型 | 必填 | 约束 |
 |---|---|---:|---|
 | `id` | TEXT | 是 | 主键 |
-| `type` | TEXT | 是 | 分段、Concept、标题、摘要、起源、对话或维护 |
+| `type` | TEXT | 是 | `concept_extraction` / `origin_concepts` / `conversation` / `maintenance`；兼容或按需整理可使用 `segmentation` / `title` / `summary` |
 | `mode` | TEXT | 是 | `api`、`prompt_paste` |
 | `provider_id` | TEXT | 否 | API 连接配置 ID |
 | `model` | TEXT | 否 | 实际使用模型 |
@@ -266,34 +268,45 @@ Concept ID 导入 `message_concepts`，同时保留 metadata 原文以便回溯�
 
 ## 4. LLM 结构化结果规则
 
-### 4.1 分段结果
+### 4.1 Session/Message Concept 归属结果
+
+主整理任务不要求把消息互斥地切成 KnowledgeUnit，而是返回 Concept、严格区分的关系和多目标归属：
 
 ```json
 {
-  "units": [
-    { "message_indices": [0, 1], "title_hint": "RDMA 基本原理" }
+  "concepts": [{ "name": "Clos 网络", "summary": "多级无阻塞交换网络结构。", "aliases": [] }],
+  "memberships": [
+    { "target_type": "session", "target_id": "session-id", "concept_ids": ["concept-ref-1"] },
+    { "target_type": "message", "target_id": "message-id", "concept_ids": ["concept-ref-1", "concept-ref-2"] }
   ],
-  "unassigned_message_indices": []
+  "relations": [{ "source": "concept-ref-1", "target": "concept-ref-2", "type": "hierarchy" }]
 }
 ```
 
 强制校验：
 
-- 所有字段存在且类型正确；
-- 所有索引为整数且 `0 <= index < message_count`；
-- 单元之间不能重复索引；
-- `units` 与 `unassigned_message_indices` 的并集必须恰好覆盖 `[0, message_count)`；
-- 不允许空单元；
-- `title_hint` 为空时允许进入后续标题任务，但不能使用完整句子冒充摘要。
+- `target_type` 只能是 `session`、`message` 或兼容的 `unit`，`target_id` 必须属于当前任务范围；
+- 每个目标使用可为空的 `concept_ids` 数组，同一目标和 Concept 不能重复；
+- 同一个 Session、Message 或 KnowledgeUnit 可以归属多个 Concept，不得压缩为单个“主主题”；
+- 新 Concept 的名称、摘要和别名在同一结果中返回；引用现有 Concept 时 ID 必须来自当前目录；
+- `hierarchy` 只表达严格的上位/下位关系并通过 DAG 校验；一般关联使用无向 `related`；
+- `knowledge`、`discussion`、`procedure` 和 `mixed` 都保留原始消息；`mixed` 必须继续执行 Message 级识别，没有稳定知识的目标可以返回空数组。
+
+长 Session 可以使用带重叠上下文的窗口分批提取候选。窗口必须携带全局 Message ID，最终在 Session 级完成去重、归一化、关系校验和归属合并；窗口边界是运行时机制，不得落库为 KnowledgeUnit 或被视为知识边界。
+
+旧版分段结果仍按兼容规则校验：索引必须在输入范围内，不能重复，且 `units` 与 `unassigned_message_indices` 覆盖全部消息。校验失败不得应用部分结果；旧任务可完成、取消或转人工，但新主流程不依赖它。
 
 ### 4.2 Concept 结果
 
-Concept 提取结果必须包含 `concepts` 数组；全部复用目录中已有 Concept 时该数组可以为空，但此时 `concept_ids` 或 `memberships[].concept_ids` 至少需要一项。结果可选返回别名和关系建议。系统必须检查：
+Concept 提取结果必须包含 `concepts` 数组；全部复用目录中已有 Concept 时该数组可以为空，但此时 `concept_ids` 或 `memberships[].concept_ids` 至少需要一项。结果可选返回多目标归属和关系建议。系统必须检查：
 
 - 名称非空且不是泛词；
 - 名称经过归一化后不冲突；
 - 引用的已有 Concept ID 必须存在；
 - 父子关系不能成环；
+- `memberships[].target_type` 只能是 `session`、`message` 或 `unit`，每个目标的 `concept_ids` 必须是去重数组；
+- Session、Message 和 KnowledgeUnit 的归属彼此独立，不能把 Session 归属隐式复制到所有消息；
+- `hierarchy` 和 `related` 必须分别校验，`related` 不得参与根节点、祖先或深度计算；
 - 不确定结果只能保存为 `proposed`，不能自动合并或删除。
 
 ### 4.3 维护建议
@@ -359,7 +372,7 @@ Concept 提取结果必须包含 `concepts` 数组；全部复用目录中已有
 ### 6.2 边
 
 - 每个 Session 汇总其直接、消息级和 KnowledgeUnit 级 Concept 归属，再把隐藏 Concept 投影到最近可见代表节点并去重；任意一对可见代表 Concept 对该 Session 最多贡献 `1` 个共现权重。多个 KnowledgeUnit 或 Message 不会在同一 Session 内重复计数；多个 Session 投影到同一对节点时累加；
-- Concept 与 KnowledgeUnit 之间生成关联边，端点使用同一套代表投影；
+- Concept 与 Session、Message、KnowledgeUnit 之间生成关联边；SessionConcept/MessageConcept 是没有 KnowledgeUnit 时的主要证据边，UnitConcept 作为可选阅读片段边；端点使用同一套代表投影；
 - `hierarchy` 只在父、子两端都可见时输出有向边。隐藏叶节点不能产生指向不可见节点的假边；
 - `related` 始终按无向边处理。若端点折叠，可分别投影到最近可见代表并合并重复边；同一节点的自环丢弃。related 边不参与层级展开、根节点、深度或父子布局；
 - 手动额外边单独保存，只有当前两个端点可见时才进入快照；
@@ -370,7 +383,7 @@ Concept 提取结果必须包含 `concepts` 数组；全部复用目录中已有
 ### 6.3 缓存
 
 - 缓存键至少包含 `graph_revision`、筛选条件、`showUnits`、`showMessages`、`showProposed`、`showRetainedSessions`、排序后的 `expandedConceptIds` 和规范化的 `expandedConceptDepth`；
-- 导入、分段、Concept 关联、关系编辑、合并、删除和恢复成功后递增 `graph_revision`；
+- 导入、直接 Session/Message/Unit Concept 关联、按需 KnowledgeUnit 编辑、关系编辑、合并、删除和恢复成功后递增 `graph_revision`；旧分段任务应用也只在实际改变兼容单元投影时递增；
 - 缓存失效不会影响业务数据；
 - 自动图谱不允许出现无法从业务表重建的事实。
 
@@ -413,7 +426,8 @@ Concept 提取结果必须包含 `concepts` 数组；全部复用目录中已有
 
 - 所有实体字段的必填、枚举、长度和唯一约束；
 - Message 与 KnowledgeUnit 的 Session 一致性；
-- 分段索引的越界、重复、遗漏和全覆盖；
+- Session/Message Concept 多归属的未知 ID、重复项、目标范围和关系类型；
+- 旧版或按需分段索引的越界、重复、遗漏和全覆盖；
 - Concept/别名归一化冲突；
 - ConceptRelation 成环检测、无限深度、多父节点、related 无向语义和 proposed 状态；
 - UnitConcept 去重、手动关联不被自动结果覆盖；
@@ -424,3 +438,13 @@ Concept 提取结果必须包含 `concepts` 数组；全部复用目录中已有
 - 图谱根节点投影、逐层展开/递归收起、隐藏后代代表节点、每 Session 一次的共现聚合、related 不改变层级、派生缓存和 revision 失效；
 - `DISCLOSURE_INDEX` 的根摘要、refID 递归展开、disclosure_requests 本地校验、非法请求拒绝和续跑上限；
 - 导入重复判定、完整导出/导入和 schema 迁移回滚。
+
+## 10. 直接 Concept 流程与兼容迁移
+
+新导入的知识整理以 Session/Message 的直接多主题归属为主：先写入原始 Session/Message，再由 `concept_extraction` 或 `origin_concepts` 任务返回 `memberships[].concept_ids`，分别写入 `session_concepts` 和 `message_concepts`。这些关联不依赖 KnowledgeUnit，也不要求覆盖全部消息。
+
+长会话可以被切成带重叠的运行时窗口以满足模型上下文限制。窗口必须携带原始 Message ID；窗口结果在 Session 级去重、归一化、DAG/related 校验后才可应用。窗口本身不是实体，不能写入 `knowledge_units`，不能改变 `Message.unit_id`，也不能形成新的知识边界。
+
+KnowledgeUnit 仍是合法的可选实体，用于用户选择的一组消息的阅读整理或证据打包。它可以晚于 Concept 提取创建，也可以不存在；其 `UnitConcept` 关联是对直接 Session/Message 归属的补充，不是替代。删除或重做 KnowledgeUnit 只解除其自身关联，不得删除原始内容或直接归属。
+
+旧 schema 和旧任务兼容规则：已有 KnowledgeUnit、`Message.unit_id`、`UnitConcept`、`NavTreeNodeUnit` 继续按原外键和校验规则读取；历史 `segmentation`、`title`、`summary` 任务可以恢复、完成、取消或标记 `stale`。旧分段结果不得自动覆盖手动归属，也不得阻塞新的直接 Concept 任务。导入迁移保留旧任务响应和原始 Prompt，任何无法安全转换的单一 `concept_id` 归属进入 `needs_review`，不能静默选择一个主题。

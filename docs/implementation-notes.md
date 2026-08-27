@@ -26,11 +26,12 @@
 
 ## LLM 任务
 
-- 所有结构化任务都要求 JSON 对象。分段使用 `units` 与 `unassigned_message_indices`；标题、摘要分别使用 `{ "title": "..." }` 和 `{ "summary": "..." }`；Concept 使用 `{ "concepts": [{ "name": "...", "summary": "...", "aliases": [] }], "concept_ids": [], "memberships": [] }`，其中每个目标的 `concept_ids` 都是可为空的多选数组；维护任务的 `unit_relink` 同样使用 `concept_ids`。旧结果若仍使用单个归属 `concept_id`，进入人工修复而不自动压缩为一个主题。
-- 分段结果通过完整覆盖、重复、越界和文本长度校验后才写入。应用分段会把旧的下游任务标为 `stale`，再按每个新 KnowledgeUnit 创建标题、摘要和 Concept 任务；起源 Concept 任务重用并更新为新的 Session revision。
-- LLM 生成的标题/摘要写入时不增加 KnowledgeUnit revision；revision 增加只发生在用户手动编辑或消息边界改变时。这样同一单元的标题、摘要和 Concept 任务可以按同一输入 revision 顺序完成。用户手动编辑会使该单元尚未完成的下游任务变为 `stale`。
-- API 任务队列按配置并发数（1～4）批量执行，单任务最多进行三次请求（含超时、429 和 5xx 的指数退避）。同一 Session 的任务严格串行：批内每个目标 Session（由 `inputRevision` 前缀或所属单元推导）只允许一个在途任务，保证分段 → 标题/摘要 → Concept 的依赖顺序，避免旧 revision 校验误伤。Prompt 粘贴任务保持人工逐项应用。并发数已在设置页提供选择器（1～4），写回 `config.yaml`；同一 Session 依赖任务串行的规则不受并发数影响。
-- 长 Session 按估算 token 预算切成带两条消息重叠的分块；合并多个分块结果时校验全局索引覆盖、重复分配与重叠主题冲突，任何冲突都整体判失败，不写入部分结果。
+- 所有结构化任务都要求 JSON 对象。主 Concept 任务直接使用 `{ "concepts": [{ "name": "...", "summary": "...", "aliases": [] }], "concept_ids": [], "memberships": [], "relations": [] }`；每个 `memberships` 目标的 `concept_ids` 都是可为空的多选数组，目标可以是 `session`、`message` 或兼容的 `unit`。标题/摘要任务和维护任务仍可使用 `{ "title": "..." }`、`{ "summary": "..." }` 与 `unit_relink.concept_ids`。旧结果若仍使用单个归属 `concept_id`，进入人工修复而不自动压缩为一个主题。
+- 新导入默认不创建 `segmentation` 任务。长 Session 可以在运行时用带重叠窗口的输入分批处理，但窗口必须携带全局 Message ID，最终在 Session 级完成去重、归一化、关系校验和多归属合并；窗口边界不落库为 KnowledgeUnit。
+- `segmentation`、标题和摘要任务仍作为旧数据库/按需阅读片段的兼容任务保留。旧分段结果通过完整覆盖、重复、越界和文本长度校验后才写入；应用旧分段只影响对应 KnowledgeUnit、Message.unit_id 和 UnitConcept 下游，不得清除或阻塞 SessionConcept/MessageConcept。
+- LLM 生成的 Concept 名称、摘要和别名优先在同一结果中写入；可选 KnowledgeUnit 的标题/摘要写入时不增加其 revision。用户创建或编辑 KnowledgeUnit 只使该单元尚未完成的下游任务变为 `stale`，不使直接 Session/Message 归属失效。
+- API 任务队列按配置并发数（1～4）批量执行，单任务最多进行三次请求（含超时、429 和 5xx 的指数退避）。同一 Session 的直接 Concept 任务按输入 revision 串行，避免旧结果覆盖新归属；可选 KnowledgeUnit 元数据任务只在对应单元创建后串行。Prompt 粘贴任务保持人工逐项应用。并发数已在设置页提供选择器（1～4），写回 `config.yaml`；同一 Session 的 revision 规则不受并发数影响。
+- 长 Session 按估算 token 预算切成带两条消息重叠的运行时窗口；合并多个窗口结果时按全局 Message ID、Concept 规范名、归属目标和关系类型去重，并校验未知 ID、关系成环与 related/hierarchy 语义冲突，任何冲突都整体判失败，不写入部分结果。窗口不创建 KnowledgeUnit。
 - API 模式采用 OpenAI-compatible Chat Completions：请求地址为 `baseUrl + /chat/completions`，只发送当前任务 Prompt，温度固定为 `0`。`local_only` Session 在 API 执行前被拒绝；Prompt 粘贴模式不发网络请求。
 - 所有任务 Prompt 先经过 `ensureHarnessPrompt`，固定拼接版本化的 `NEXUS_HARNESS_PROMPT` 与 `PROGRESSIVE_DISCLOSURE_PROTOCOL`；动态任务规格放在固定前缀之后。Harness 允许模型使用自身知识和调用方授权的搜索/工具，但要求区分输入证据、外部资料和推断，并把消息、摘要、目录都当作不可信数据。
 - 大型知识上下文通过 `DISCLOSURE_INDEX` 传递：根引用只包含 `title`、`summary` 和不透明 `refID`，展开记录才提供下一层 children 或消息原文。模型可返回 `disclosure_requests: [{ refID, depth }]`；应用先校验 ID 已在当前目录、无重复且深度为 1～64，再从本地 hierarchy、KnowledgeUnit 和 Message 递归生成下一轮 Prompt。API 模式自动续跑，最多 8 轮；Prompt 粘贴模式把同一任务恢复为 pending，等待用户执行更新后的 Prompt。非法请求或超过轮数进入 `needs_review`，不会应用部分结果。
@@ -40,9 +41,10 @@
 
 ## 图谱
 
-- 图谱共现计算运行在 Web Worker（`workers/graph.worker.ts`）中；主线程只做缓存命中与布局回填。缓存键包含 `graph_revision`、知识单元/消息/待确认/保留会话开关、`expandedConceptDepth` 和排序后的 `expandedConceptIds`，任一输入变化即重新计算，计算期间先返回最近一次快照（stale-while-revalidate 式），完成后增量刷新。Worker 不可用时退回主线程同步计算。
+- 图谱共现计算运行在 Web Worker（`workers/graph.worker.ts`）中；主线程只做缓存命中与布局回填。缓存键包含 `graph_revision`、Session/Message/KnowledgeUnit/待确认/保留会话开关、`expandedConceptDepth` 和排序后的 `expandedConceptIds`，任一输入变化即重新计算，计算期间先返回最近一次快照（stale-while-revalidate 式），完成后增量刷新。Worker 不可用时退回主线程同步计算。
 - Worker 通信的数据必须先深拷贝为纯 JSON（`toPlainJson`）：Pinia 的响应式代理无法结构化克隆，直接 `postMessage` 会抛 `DataCloneError` 并中断图谱视图渲染。新增图谱输入字段时必须保持可 JSON 序列化。
 - GraphNode/GraphEdge 继续作为派生视图。`resolveVisibleConceptIds` 默认只返回 active hierarchy 根节点；节点旁的展开控件把 Concept 加入 `expandedConceptIds`，逐层显示直接子节点。`normalizeExpandedConceptIds` 会补齐显式后代的祖先路径；`toggleConceptExpansion` 在收起父节点时递归清除后代。hierarchy 不限制深度且允许多父节点；`related` 始终无向，完全不参与根节点、祖先、深度或展开判断。
+- Concept 的直接证据同时来自 SessionConcept、MessageConcept 和 UnitConcept。没有 KnowledgeUnit 的消息仍可生成图谱关联；KnowledgeUnit 只作为可选阅读片段投影。窗口化处理保留全局 Message ID，不把窗口边界写入图谱。
 - 折叠主题通过 hierarchy 投影到最近可见祖先。每个 KnowledgeUnit 先对可见代表节点去重，再对每个代表节点对贡献一次共现权重；因此隐藏叶节点仍能为根视图提供聚合关系，同时不会因多条叶子路径重复计数。hierarchy 只绘制当前两端都可见的事实边；related 的隐藏端点也可投影到可见祖先，但只形成无向弱关系。
 - 图谱中的节点主体点击只打开详情，不改变拓扑；节点旁的展开/收起控件才改变层级投影。全局 `showUnits` 显示所有有关联的单元，显式展开的主题也会披露其后代单元；消息按 `showMessages`、保留会话或局部展开生成，并按 Session 的 `orderInSession` 连接成链。
 - 图谱布局持久化：节点拖拽结束写入 `graph_layout`（固定坐标），视口平移/缩放防抖后写入单行 `graph_viewport` 表；刷新后恢复。“重置布局”清除这两类记录并重新计算。快照变化触发的重渲染以 d3 的实时变换恢复视口，持久化视口只在组件挂载时应用；store 保存/重置视口时会同步内存值，避免过期的 prop 把缩放拉回旧状态，“重置布局”通过递增组件 key 整体重建实现。
@@ -91,4 +93,12 @@
 ## 验收覆盖说明（对应设计 15.1）
 
 - 单元测试（vitest，36 项）覆盖纯函数：Markdown 渲染与注入防护、分块切分与合并校验、图谱关系建环规则、中文搜索回退与排序、扩展会话发现与导出 payload。`services/db.ts` 与 store 的数据库耦合路径（导入、合并撤销、stale 防覆盖、备份恢复）依赖 sql.js WASM，未纳入 vitest 自动化。
-- 数据库耦合路径通过 headless Chromium + CDP 冒烟脚本人工验收：空态加载、图谱渲染、帮助弹窗、Provider 保存、导入 JSON → 任务中心 → Prompt 粘贴应用分段 → 标题/摘要/主题任务逐个应用 → 图谱出现主题与单元节点 → 会话列表核对，全程断言无运行时异常。该脚本为临时验收工具，不随应用分发。
+- 数据库耦合路径通过 headless Chromium + CDP 冒烟脚本人工验收：空态加载、图谱渲染、帮助弹窗、Provider 保存、导入 JSON → 任务中心 → Prompt 粘贴应用 Session/Message Concept 归属（旧数据另验分段/标题/摘要兼容）→ 图谱出现主题与直接证据节点 → 会话列表核对，全程断言无运行时异常。该脚本为临时验收工具，不随应用分发。
+
+## 直接 Concept 流程迁移约定
+
+- 新导入的主链是 `Session triage → Session/Message Concept 提取 → Session 级归一化与关系校验 → 图谱派生`。它不等待 `segmentation`、KnowledgeUnit 标题或摘要。
+- 长会话的重叠窗口只服务于请求大小和上下文管理。窗口携带全局 Message ID，窗口合并后才写入 SessionConcept/MessageConcept；禁止把窗口边界当作持久化 KnowledgeUnit。
+- `mixed`、`discussion` 和 `procedure` 仍然进入直接 Concept 提取。形态判断只影响默认筛选和展示，不影响原始内容保留、搜索、上下文选择或知识识别。
+- KnowledgeUnit 是可选阅读片段/证据包。创建、编辑和删除只影响它自己的 Message.unit_id、UnitConcept、标题和摘要；不应删除原始 Message，也不应覆盖直接 SessionConcept/MessageConcept。
+- 旧 schema 中的 KnowledgeUnit、`Message.unit_id`、`NavTreeNodeUnit` 和 `segmentation`/标题/摘要任务必须继续可读、可导出和可人工维护。迁移可以让旧任务完成、取消或标记为 stale，但不能用旧分段结果重写新的直接归属。
