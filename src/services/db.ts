@@ -5,9 +5,9 @@ import wasmUrl from 'sql.js/dist/sql-wasm.wasm?url'
 // Vite serves the imported asset URL in the browser. Vitest exposes the same
 // import as `/node_modules/...`; resolve that virtual URL to the workspace file
 // only when a Node process is loading the store directly.
-const nodeProcess = (globalThis as { process?: { versions?: { node?: string } } }).process
-const sqlWasmUrl = nodeProcess?.versions?.node && typeof wasmUrl === 'string' && wasmUrl.startsWith('/node_modules/')
-  ? new URL(`../..${wasmUrl}`, import.meta.url).pathname
+const nodeProcess = (globalThis as { process?: { versions?: { node?: string }; cwd?: () => string } }).process
+const sqlWasmUrl = nodeProcess?.versions?.node
+  ? `${nodeProcess.cwd?.() ?? ''}/node_modules/sql.js/dist/sql-wasm.wasm`
   : wasmUrl
 
 const STORAGE_KEY = 'nexus:sqlite:v1'
