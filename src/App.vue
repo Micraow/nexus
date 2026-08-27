@@ -1213,7 +1213,7 @@ function applyTask(task: LLMTask): void {
     taskFeedback.value = { tone: 'info', text: result.errors.join('；') + '。请复制更新后的 Prompt，完成下一轮回复后再粘贴。' }
   } else if (result.ok) {
     taskFeedback.value = null
-    notify(task.type === 'segmentation' ? '分段结果已校验并写入知识库' : task.type === 'maintenance' ? '维护建议已校验，请逐条确认应用' : '结构化结果已校验并写入知识库')
+    notify(task.type === 'segmentation' ? '旧版对话分组结果已校验并写入知识库' : task.type === 'maintenance' ? '维护建议已校验，请逐条确认应用' : '结构化结果已校验并写入知识库')
     if (task.type !== 'maintenance') selectedTaskId.value = null
   } else taskFeedback.value = { tone: 'error', text: result.errors.join('；') || '校验失败，请按提示修正后重试。' }
 }
@@ -1525,6 +1525,10 @@ watch(activeView, (view, previousView) => {
 watch(fullscreenTarget, (target) => {
   document.body.classList.toggle('fullscreen-active', Boolean(target))
   fullscreenPage.value = 0
+})
+
+watch(fullscreenPageCount, (count) => {
+  fullscreenPage.value = Math.min(fullscreenPage.value, Math.max(0, count - 1))
 })
 
 onMounted(async () => {

@@ -6,6 +6,7 @@
 
 1. 原始 Session 和 Message 先落库，任何 LLM 失败都不能删除或覆盖原始内容。
 2. KnowledgeUnit 是一次 Session 内可选的阅读片段/证据包，不跨 Session 合并，也不要求覆盖全部 Message。
+   它不是 Concept 层级的一部分；当前版本保留该实体用于证据包、上下文选择和旧数据兼容，直接 Session/Message 归属不依赖它。
 3. Concept 是跨 Session 复用的稳定知识主体；同一个 Concept 可以关联多个 Session、Message 和 KnowledgeUnit。
 4. Message 最多属于一个 KnowledgeUnit，也可以不属于任何 KnowledgeUnit；它可以通过 MessageConcept 同时归属多个 Concept。
 5. Session、Message 和 KnowledgeUnit 都可以平等关联多个 Concept，不要求 `primary_concept_id`。

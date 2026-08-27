@@ -568,10 +568,10 @@ body.fullscreen-active { overflow: hidden; }
 .breadcrumb-node::after { content: '›'; margin-left: 7px; color: var(--faint); }
 .breadcrumb-node:last-child::after { content: ''; margin: 0; }
 .breadcrumb-node.current { color: var(--primary-strong); background: var(--primary-soft); }
-.conversation-layout { display: grid; grid-template-columns: minmax(170px, .28fr) minmax(0, 1fr); gap: 18px; min-height: min(710px, calc(100dvh - 280px)); margin-top: 12px; }
-.conversation-minimap { min-width: 0; align-self: start; max-height: min(710px, calc(100dvh - 280px)); overflow: auto; padding: 11px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 7px; }
+.conversation-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(170px, .28fr); gap: 18px; min-height: min(710px, calc(100dvh - 280px)); margin-top: 12px; }
+.conversation-minimap { grid-column: 2; grid-row: 1; min-width: 0; align-self: start; max-height: min(710px, calc(100dvh - 280px)); overflow: auto; padding: 11px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 7px; }
 .minimap-heading { display: flex; align-items: center; gap: 6px; margin-bottom: 9px; color: var(--muted); font-size: calc(11px * var(--app-font-scale)); font-weight: 700; }
-.conversation-scroll { min-width: 0; max-height: min(710px, calc(100dvh - 280px)); overflow: auto; padding: 8px clamp(4px, 3vw, 34px) 26px 4px; }
+.conversation-scroll { grid-column: 1; grid-row: 1; min-width: 0; max-height: min(710px, calc(100dvh - 280px)); overflow: auto; padding: 8px clamp(4px, 3vw, 34px) 26px 4px; }
 .conversation-message { margin: 0 auto 28px; max-width: 860px; }
 .conversation-message.user { max-width: min(760px, 88%); margin-right: 0; padding: 15px 18px; background: var(--primary-soft); border-radius: 9px 9px 3px 9px; }
 .conversation-message.system { padding: 12px 16px; background: var(--amber-soft); border-radius: 8px; }
@@ -589,6 +589,7 @@ body.fullscreen-active { overflow: hidden; }
   .task-filter-count { width: 100%; margin-left: 0; padding-bottom: 0; }
   .prompt-workflow-panel { width: 100%; }
   .conversation-layout { grid-template-columns: 1fr; }
+  .conversation-minimap, .conversation-scroll { grid-column: auto; grid-row: auto; }
   .conversation-minimap { max-height: 220px; }
   .conversation-scroll { max-height: none; }
   .conversation-header-actions .button { padding: 0 10px; }

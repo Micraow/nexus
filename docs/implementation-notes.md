@@ -104,3 +104,11 @@
 - `mixed`、`discussion` 和 `procedure` 仍然进入直接 Concept 提取。形态判断只影响默认筛选和展示，不影响原始内容保留、搜索、上下文选择或知识识别。
 - KnowledgeUnit 是可选阅读片段/证据包。创建、编辑和删除只影响它自己的 Message.unit_id、UnitConcept、标题和摘要；不应删除原始 Message，也不应覆盖直接 SessionConcept/MessageConcept。
 - 旧 schema 中的 KnowledgeUnit、`Message.unit_id`、`NavTreeNodeUnit` 和 `segmentation`/标题/摘要任务必须继续可读、可导出和可人工维护。迁移可以让旧任务完成、取消或标记为 stale，但不能用旧分段结果重写新的直接归属。
+
+## 当前概念层次与状态机（2026-08）
+
+- 事实层次：`Session` 是完整对话容器，`Message` 是不可丢失的原始消息，`Concept` 是跨 Session 复用的知识主题。`KnowledgeUnit` 保留为同一 Session 内可选的阅读片段/证据包，不是主题层级、不是分段前置条件，也不参与根主题判断。
+- 导入链：原始 `Session/Message` 先写入 → 创建 `session_triage` 与 `origin_concepts` 任务 → 任务经历 `pending → running → success`，异常进入 `needs_review/failed`，输入版本变化进入 `stale`；直接主题结果写入 `SessionConcept/MessageConcept`，不等待 KnowledgeUnit。
+- 对话链：本地草稿 → 创建 `conversation` 任务（API 为 `pending → running`，Prompt 粘贴保持 `pending` 等待人工回传）→ 校验结果 → `success` 写入 assistant Message、导航树节点、可选 KnowledgeUnit 和多主题归属；非法结果进入 `needs_review`，重试或版本变化分别回到 `pending` 或 `stale`。
+- 关系链：LLM/维护任务产生 `proposed` → 用户确认变为 `confirmed` 或拒绝变为 `rejected`。只有 `confirmed` 默认参与图谱，`showProposed` 打开时才显示建议关系。
+- 展示层：图谱从事实层实时派生；默认只显示 hierarchy 根主题，Concept 单击同时打开详情并逐层展开/递归收起，`related` 永不改变层级。Sigma.js 评估后暂不替换 D3：现有 SVG 图谱已覆盖缩放、拖拽、悬停高亮、键盘语义、框选和稳定布局，贸然换成 Sigma 会改写测试与交互层；后续若节点规模超过当前阈值，再以独立适配层引入 graphology/Sigma。
