@@ -115,7 +115,7 @@ describe('Session and Message Concept extraction contract', () => {
 
     expect(prompt).toContain('直接从下面的 Session 和 Message')
     expect(prompt).toContain('client_ref')
-    expect(prompt).toContain('"target_type":"session|message"')
+    expect(prompt).toContain('"target_type":"message"')
     expect(prompt).toContain('同一个 Session 或 Message 可以属于多个 Concept')
     expect(prompt).toContain('禁止返回 unit membership')
     expect(prompt).toContain('不要为了生成主题而先把对话分段')

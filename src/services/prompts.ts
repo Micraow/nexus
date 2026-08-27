@@ -359,7 +359,7 @@ Concept 与归属：
 - related 是无向、非层级的稳定语义关系，不存在父子顺序。仅共同出现或都属于本 Session 不足以建立 related；最多返回 2 条最强 related，宁可为空。
 - 关系端点使用已披露的 Concept refID 或本次 concepts 的 client_ref。不要为了把所有 Concept 连起来而补关系。
 
-只返回 JSON：{"concepts":[{"client_ref":"new:1","name":"...","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"memberships":[{"target_type":"session|message","target_id":"原始 ID","concept_ids":["已披露的 Concept refID 或 new:1","另一个 Concept refID 或 client_ref"]}],"relations":[{"source":"Concept refID 或 client_ref","target":"Concept refID 或 client_ref","type":"hierarchy|related"}],"disclosure_requests":[]}`)
+只返回 JSON：{"concepts":[{"client_ref":"new:1","name":"...","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"memberships":[{"target_type":"message","target_id":"上面列出的 Message ID","concept_ids":["已披露的 Concept refID 或 new:1","另一个 Concept refID 或 client_ref"]}],"relations":[{"source":"Concept refID 或 client_ref","target":"Concept refID 或 client_ref","type":"hierarchy"}],"disclosure_requests":[]}`)
 }
 
 export function buildRepairPrompt(originalResponse: string, errors: string[], disclosure?: DisclosureContext): string {
