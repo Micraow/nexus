@@ -280,31 +280,25 @@ export function resolveVisibleConceptIds(
   return { visibleIds, expandedIds, explicitExpandedIds, hierarchy }
 }
 
-/** Return the nearest currently visible ancestor(s) for a Concept. */
+/** Return the first currently visible ancestor on every hierarchy branch. */
 function visibleRepresentatives(
   conceptId: string,
   visibleIds: Set<string>,
   parentsByChild: Map<string, Set<string>>,
 ): string[] {
   if (visibleIds.has(conceptId)) return [conceptId]
-  const queue: Array<{ id: string; distance: number }> = [{ id: conceptId, distance: 0 }]
+  const queue = [conceptId]
   const visited = new Set<string>()
-  let nearest = Infinity
   const representatives = new Set<string>()
   for (let queueIndex = 0; queueIndex < queue.length; queueIndex += 1) {
     const current = queue[queueIndex]
-    if (visited.has(current.id) || current.distance > nearest) continue
-    visited.add(current.id)
-    ;(parentsByChild.get(current.id) ?? new Set<string>()).forEach((parentId) => {
-      const distance = current.distance + 1
+    if (visited.has(current)) continue
+    visited.add(current)
+    ;(parentsByChild.get(current) ?? new Set<string>()).forEach((parentId) => {
       if (visibleIds.has(parentId)) {
-        if (distance < nearest) {
-          nearest = distance
-          representatives.clear()
-        }
-        if (distance === nearest) representatives.add(parentId)
-      } else if (distance < nearest) {
-        queue.push({ id: parentId, distance })
+        representatives.add(parentId)
+      } else if (!visited.has(parentId)) {
+        queue.push(parentId)
       }
     })
   }
@@ -508,18 +502,24 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
     if (input.showUnits) ensureUnitNode(unitId, conceptIds)
   }
 
-  // Project each Session's Concept set to visible ancestors and add one edge
-  // per pair. The edge weight therefore equals the number of Sessions in
-  // which the pair co-occurs, independent of unit/message multiplicity.
+  // Project every distinct Concept pair in a Session to the first visible
+  // ancestor on each hierarchy branch. Pair-first projection matters for a
+  // multi-parent Concept: one Concept must not create a root-to-root edge by
+  // itself, while a real pair still contributes to every root branch it
+  // belongs to. Each visible pair is deduplicated once per Session.
   conceptsBySession.forEach((conceptIds) => {
-    const projectedIds = new Set<string>()
-    conceptIds.forEach((conceptId) => representativesFor(conceptId).forEach((representativeId) => projectedIds.add(representativeId)))
-    const ids = [...projectedIds]
+    const ids = [...conceptIds]
+    const projectedPairs = new Map<string, [string, string]>()
     for (let left = 0; left < ids.length; left += 1) {
       for (let right = left + 1; right < ids.length; right += 1) {
-        ensureEdge(conceptNode(ids[left]), conceptNode(ids[right]), 'co_occurrence')
+        representativesFor(ids[left]).forEach((leftId) => representativesFor(ids[right]).forEach((rightId) => {
+          if (leftId === rightId) return
+          const pair = [leftId, rightId].sort() as [string, string]
+          projectedPairs.set(JSON.stringify(pair), pair)
+        }))
       }
     }
+    projectedPairs.forEach(([leftId, rightId]) => ensureEdge(conceptNode(leftId), conceptNode(rightId), 'co_occurrence'))
   })
 
   if (input.showMessages || input.showRetainedSessions) {

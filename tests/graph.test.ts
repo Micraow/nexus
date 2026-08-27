@@ -381,7 +381,7 @@ describe('derived graph', () => {
     expect(hasPair('concept:a2', 'concept:b')).toBe(true)
   })
 
-  it('projects a hidden multi-parent Concept only to its nearest visible representatives', () => {
+  it('projects a hidden multi-parent Concept to the first visible ancestor on each branch', () => {
     const concepts = [
       { id: 'r1', name: '根一', normalizedName: '根一', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
       { id: 'r2', name: '根二', normalizedName: '根二', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
@@ -406,8 +406,31 @@ describe('derived graph', () => {
       relations,
       revision: 1,
     })
-    expect(snapshot.edges.some((edge) => edge.type === 'co_occurrence' && edge.source === 'concept:r1' && edge.target === 'concept:other')).toBe(true)
-    expect(snapshot.edges.some((edge) => edge.type === 'co_occurrence' && edge.source === 'concept:r2' && edge.target === 'concept:other')).toBe(false)
+    const hasPair = (left: string, right: string) => snapshot.edges.some((edge) => edge.type === 'co_occurrence' && new Set([edge.source, edge.target]).has(left) && new Set([edge.source, edge.target]).has(right))
+    expect(hasPair('concept:r1', 'concept:other')).toBe(true)
+    expect(hasPair('concept:r2', 'concept:other')).toBe(true)
+  })
+
+  it('does not create co-occurrence between roots from one multi-parent Concept alone', () => {
+    const concepts = [
+      { id: 'r1', name: '根一', normalizedName: '根一', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+      { id: 'r2', name: '根二', normalizedName: '根二', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+      { id: 'leaf', name: '共享子主题', normalizedName: '共享子主题', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+    ]
+    const relations = [
+      { id: 'h1', parentConceptId: 'r1', childConceptId: 'leaf', relationType: 'hierarchy' as const, source: 'manual' as const, status: 'confirmed' as const, createdAt: now, updatedAt: now },
+      { id: 'h2', parentConceptId: 'r2', childConceptId: 'leaf', relationType: 'hierarchy' as const, source: 'manual' as const, status: 'confirmed' as const, createdAt: now, updatedAt: now },
+    ]
+    const snapshot = buildGraph({
+      concepts,
+      units: [],
+      messages: [],
+      unitConcepts: [],
+      sessionConcepts: [{ sessionId: 's', conceptId: 'leaf', source: 'llm', createdAt: now }],
+      relations,
+      revision: 1,
+    })
+    expect(snapshot.edges.filter((edge) => edge.type === 'co_occurrence')).toHaveLength(0)
   })
 
   it('collapsing an ancestor removes every expanded descendant but keeps other branches', () => {
