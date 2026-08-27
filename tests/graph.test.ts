@@ -364,7 +364,7 @@ describe('derived graph', () => {
       { id: 'h2', parentConceptId: 'c', childConceptId: 'g', relationType: 'hierarchy' as const, source: 'llm' as const, status: 'proposed' as const, createdAt: now, updatedAt: now },
       { id: 'related', parentConceptId: 'c', childConceptId: 'x', relationType: 'related' as const, source: 'manual' as const, status: 'confirmed' as const, createdAt: now, updatedAt: now },
     ]
-    expect(toggleExpandedConceptIds(['r', 'c', 'g', 'x'], 'r', relations, false).sort()).toEqual(['g', 'x'])
+    expect(toggleExpandedConceptIds(['r', 'c', 'g', 'x'], 'r', relations, false).sort()).toEqual(['x'])
     expect(toggleExpandedConceptIds(['r', 'c', 'g', 'x'], 'r', relations, false, true).sort()).toEqual(['x'])
   })
 

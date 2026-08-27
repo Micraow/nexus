@@ -144,6 +144,8 @@ Concept、Session、Message 和 KnowledgeUnit 是图谱的节点类型，但 `Gr
 
 图谱采用渐进式披露：默认只投影 active hierarchy 的根 Concept；用户点击 Concept 主体后逐层显示其直接子节点。展开祖先路径后，路径上的节点保持可见；收起某个祖先会递归收起其后代，后代的事实关系仍保留在数据库中。`related` 显示不参与层级展开；Session/KnowledgeUnit/Message 开关控制附加节点，不能被 Concept 展开绕过。
 
+知识主题目录左侧使用 hierarchy 树而不是平铺列表；主题行单击打开右侧内容，箭头按钮展开或收起当前分支。过滤主题时保留匹配节点的祖先路径，避免结果脱离层级上下文。
+
 ## 3. 数据模型
 
 ### 3.1 实体关系

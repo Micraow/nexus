@@ -43,8 +43,12 @@ function relationIsVisible(relation: ConceptRelation, showProposed: boolean): bo
   return relation.status === 'confirmed' || (showProposed && relation.status === 'proposed')
 }
 
+function hierarchyRelationIsActive(relation: ConceptRelation): boolean {
+  return relation.relationType === 'hierarchy' && relation.status !== 'rejected'
+}
+
 function hierarchyRelationIsVisible(relation: ConceptRelation, showProposed: boolean): boolean {
-  return relation.relationType === 'hierarchy' && relationIsVisible(relation, showProposed)
+  return hierarchyRelationIsActive(relation) && relationIsVisible(relation, showProposed)
 }
 
 /**
@@ -182,7 +186,10 @@ export function toggleExpandedConceptIds(
 
   const childrenByParent = new Map<string, Set<string>>()
   relations.forEach((relation) => {
-    if (!hierarchyRelationIsVisible(relation, showProposed)) return
+    // Clear descendants even when proposed edges are currently hidden. If the
+    // proposal view is enabled later, a branch the user collapsed must not
+    // reappear because stale expansion ids survived the toggle.
+    if (!hierarchyRelationIsActive(relation)) return
     const children = childrenByParent.get(relation.parentConceptId) ?? new Set<string>()
     children.add(relation.childConceptId)
     childrenByParent.set(relation.parentConceptId, children)

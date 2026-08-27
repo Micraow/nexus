@@ -44,6 +44,7 @@ import {
   X,
 } from 'lucide-vue-next'
 import GraphCanvas from '@/components/GraphCanvas.vue'
+import ConceptTree from '@/components/ConceptTree.vue'
 import NavTree from '@/components/NavTree.vue'
 import nexusLogo from '../src-tauri/icons/icon.svg'
 import { MIN_TOKEN_BUDGET, normalizeTokenBudget, serializeConfig } from '@/services/config'
@@ -82,6 +83,7 @@ const graphShowProposed = ref(false)
 const graphShowRetainedSessions = ref(false)
 const graphSearch = ref('')
 const graphControlsOpen = ref(true)
+const conceptTreeExpandedIds = ref<string[]>([])
 // Concept disclosure is kept in the view, so selecting a node never mutates
 // the graph topology. The store normalizes ancestor visibility and collapses
 // descendants when a parent is closed.
@@ -146,10 +148,10 @@ const fullscreenTarget = ref<FullscreenTarget | null>(null)
 const fullscreenPage = ref(0)
 const fullscreenPageSize = 20
 const detailDrawer = ref<HTMLElement | null>(null)
+const conceptPageDetail = ref<HTMLElement | null>(null)
 const storageInfo = ref<{ dataDir: string; databasePath: string; configPath: string } | null>(null)
 const databasePathDraft = ref('')
 const visibleSessionCount = ref(40)
-const visibleConceptCount = ref(60)
 const visibleCompletedTaskCount = ref(30)
 const taskTypeFilter = ref<TaskType | 'all'>('all')
 const taskStatusFilter = ref<'all' | 'active' | 'review' | 'completed'>('all')
@@ -300,10 +302,58 @@ const maintenanceSuggestions = computed(() => {
     return [] as Array<MaintenanceSuggestion & { applied?: boolean }>
   }
 })
-const filteredConcepts = computed(() => {
+const conceptTreeConcepts = computed(() => {
+  const concepts = store.activeConcepts
   const needle = graphSearch.value.trim().toLocaleUpperCase()
-  if (!needle) return store.activeConcepts
-  return store.activeConcepts.filter((item) => item.name.toLocaleUpperCase().includes(needle))
+  if (!needle) return concepts
+  const matched = new Set(concepts.filter((concept) => concept.name.toLocaleUpperCase().includes(needle)).map((concept) => concept.id))
+  if (!matched.size) return []
+  const byChild = new Map<string, string[]>()
+  store.relations.forEach((relation) => {
+    if (relation.relationType !== 'hierarchy' || relation.status === 'rejected') return
+    const parents = byChild.get(relation.childConceptId) ?? []
+    parents.push(relation.parentConceptId)
+    byChild.set(relation.childConceptId, parents)
+  })
+  const keep = new Set(matched)
+  const pending = [...matched]
+  while (pending.length) {
+    const childId = pending.pop() as string
+    for (const parentId of byChild.get(childId) ?? []) {
+      if (!keep.has(parentId) && concepts.some((concept) => concept.id === parentId)) {
+        keep.add(parentId)
+        pending.push(parentId)
+      }
+    }
+  }
+  return concepts.filter((concept) => keep.has(concept.id))
+})
+const conceptTreeExpandedIdsForView = computed(() => {
+  const expanded = new Set(conceptTreeExpandedIds.value)
+  if (!graphSearch.value.trim()) return [...expanded]
+  const included = new Set(conceptTreeConcepts.value.map((concept) => concept.id))
+  const parentsByChild = new Map<string, string[]>()
+  store.relations.forEach((relation) => {
+    if (relation.relationType !== 'hierarchy' || relation.status === 'rejected') return
+    const parents = parentsByChild.get(relation.childConceptId) ?? []
+    parents.push(relation.parentConceptId)
+    parentsByChild.set(relation.childConceptId, parents)
+  })
+  included.forEach((id) => {
+    const queue = [id]
+    const visited = new Set<string>()
+    while (queue.length) {
+      const childId = queue.pop() as string
+      if (visited.has(childId)) continue
+      visited.add(childId)
+      for (const parentId of parentsByChild.get(childId) ?? []) {
+        if (!included.has(parentId)) continue
+        expanded.add(parentId)
+        queue.push(parentId)
+      }
+    }
+  })
+  return [...expanded]
 })
 const selectedConceptRelations = computed(() => selectedConcept.value ? store.relations.filter((relation) => relation.parentConceptId === selectedConcept.value?.id || relation.childConceptId === selectedConcept.value?.id) : [])
 const selectedSession = computed(() => store.sessions.find((session) => session.id === store.selectedSessionId) ?? null)
@@ -311,39 +361,7 @@ const linkedUnitCount = (conceptId: string): number => {
   const sessionIds = new Set(store.sessionConcepts.filter((link) => link.conceptId === conceptId).map((link) => link.sessionId))
   return store.units.filter((unit) => sessionIds.has(unit.sessionId) || store.unitConcepts.some((link) => link.unitId === unit.id && link.conceptId === conceptId)).length
 }
-const conceptUnitCollator = new Intl.Collator('zh-Hans-CN')
-const selectedConceptUnits = computed(() => {
-  if (!selectedConcept.value) return []
-  const conceptId = selectedConcept.value.id
-  const sessionIds = new Set(store.sessionConcepts.filter((link) => link.conceptId === conceptId).map((link) => link.sessionId))
-  const units = store.units.filter((unit) => sessionIds.has(unit.sessionId) || store.unitConcepts.some((link) => link.unitId === unit.id && link.conceptId === conceptId))
-  return units.sort((left, right) => {
-    if (conceptUnitSort.value === 'title') return conceptUnitCollator.compare(left.title ?? '', right.title ?? '')
-    if (conceptUnitSort.value === 'created') return right.createdAt.localeCompare(left.createdAt)
-    return right.updatedAt.localeCompare(left.updatedAt)
-  })
-})
-const selectedConceptMessages = computed(() => {
-  const unitIds = new Set(selectedConceptUnits.value.map((unit) => unit.id))
-  const conceptId = selectedConcept.value?.id
-  const sessionIds = new Set(conceptId ? store.sessionConcepts.filter((link) => link.conceptId === conceptId).map((link) => link.sessionId) : [])
-  return store.messages.filter((message) => {
-    if (message.unitId && unitIds.has(message.unitId)) return true
-    if (sessionIds.has(message.sessionId)) return true
-    if (!conceptId) return false
-    const declared = parseMetadata(message.metadata).concept_ids
-    const direct = store.messageConcepts.some((link) => link.messageId === message.id && link.conceptId === conceptId)
-    return direct || (Array.isArray(declared) && declared.some((id) => id === conceptId))
-  }).sort((left, right) => {
-    const leftSession = store.sessions.find((session) => session.id === left.sessionId)
-    const rightSession = store.sessions.find((session) => session.id === right.sessionId)
-    const sessionOrder = (leftSession?.updatedAt ?? left.sessionId).localeCompare(rightSession?.updatedAt ?? right.sessionId)
-    return sessionOrder || left.orderInSession - right.orderInSession
-  })
-})
-const selectedConceptSessions = computed(() => {
-  const conceptId = selectedConcept.value?.id
-  if (!conceptId) return []
+const sessionIdsForConcept = (conceptId: string): Set<string> => {
   const ids = new Set(store.sessionConcepts.filter((link) => link.conceptId === conceptId).map((link) => link.sessionId))
   store.unitConcepts.filter((link) => link.conceptId === conceptId).forEach((link) => {
     const unit = store.units.find((item) => item.id === link.unitId)
@@ -357,12 +375,58 @@ const selectedConceptSessions = computed(() => {
     const declared = parseMetadata(message.metadata).concept_ids
     if (Array.isArray(declared) && declared.some((id) => id === conceptId)) ids.add(message.sessionId)
   })
+  return ids
+}
+const conceptSessionIds = (conceptId: string): Set<string> => new Set(store.sessionConcepts.filter((link) => link.conceptId === conceptId).map((link) => link.sessionId))
+const conceptMessageIds = (conceptId: string): Set<string> => {
+  const ids = new Set(store.messageConcepts.filter((link) => link.conceptId === conceptId).map((link) => link.messageId))
+  store.messages.forEach((message) => {
+    const declared = parseMetadata(message.metadata).concept_ids
+    if (Array.isArray(declared) && declared.some((id) => id === conceptId)) ids.add(message.id)
+  })
+  return ids
+}
+const conceptUnitCollator = new Intl.Collator('zh-Hans-CN')
+const selectedConceptUnits = computed(() => {
+  if (!selectedConcept.value) return []
+  const conceptId = selectedConcept.value.id
+  const sessionIds = conceptSessionIds(conceptId)
+  const messageIds = conceptMessageIds(conceptId)
+  const unitIdsFromMessages = new Set(store.messages.filter((message) => messageIds.has(message.id) && message.unitId).map((message) => message.unitId as string))
+  const units = store.units.filter((unit) => sessionIds.has(unit.sessionId) || unitIdsFromMessages.has(unit.id) || store.unitConcepts.some((link) => link.unitId === unit.id && link.conceptId === conceptId))
+  return units.sort((left, right) => {
+    if (conceptUnitSort.value === 'title') return conceptUnitCollator.compare(left.title ?? '', right.title ?? '')
+    if (conceptUnitSort.value === 'created') return right.createdAt.localeCompare(left.createdAt)
+    return right.updatedAt.localeCompare(left.updatedAt)
+  })
+})
+const selectedConceptMessages = computed(() => {
+  const unitIds = new Set(selectedConceptUnits.value.map((unit) => unit.id))
+  const conceptId = selectedConcept.value?.id
+  const sessionIds = conceptId ? conceptSessionIds(conceptId) : new Set<string>()
+  const messageIds = conceptId ? conceptMessageIds(conceptId) : new Set<string>()
+  return store.messages.filter((message) => {
+    if (message.unitId && unitIds.has(message.unitId)) return true
+    if (sessionIds.has(message.sessionId)) return true
+    return messageIds.has(message.id)
+  }).sort((left, right) => {
+    const leftSession = store.sessions.find((session) => session.id === left.sessionId)
+    const rightSession = store.sessions.find((session) => session.id === right.sessionId)
+    const sessionOrder = (leftSession?.updatedAt ?? left.sessionId).localeCompare(rightSession?.updatedAt ?? right.sessionId)
+    return sessionOrder || left.orderInSession - right.orderInSession
+  })
+})
+const selectedConceptSessions = computed(() => {
+  const conceptId = selectedConcept.value?.id
+  if (!conceptId) return []
+  const ids = sessionIdsForConcept(conceptId)
   return store.activeSessions.filter((session) => ids.has(session.id))
 })
 const otherConceptOf = (relation: { parentConceptId: string; childConceptId: string }, conceptId: string): string => (relation.childConceptId === conceptId ? relation.parentConceptId : relation.childConceptId)
-const selectedConceptParents = computed(() => selectedConcept.value ? store.relations.filter((relation) => relation.childConceptId === selectedConcept.value?.id && relation.relationType === 'hierarchy').sort((left, right) => linkedUnitCount(otherConceptOf(right, selectedConcept.value!.id)) - linkedUnitCount(otherConceptOf(left, selectedConcept.value!.id))) : [])
-const selectedConceptChildren = computed(() => selectedConcept.value ? store.relations.filter((relation) => relation.parentConceptId === selectedConcept.value?.id && relation.relationType === 'hierarchy').sort((left, right) => linkedUnitCount(otherConceptOf(right, selectedConcept.value!.id)) - linkedUnitCount(otherConceptOf(left, selectedConcept.value!.id))) : [])
-const selectedConceptRelated = computed(() => selectedConcept.value ? store.relations.filter((relation) => (relation.parentConceptId === selectedConcept.value?.id || relation.childConceptId === selectedConcept.value?.id) && relation.relationType === 'related').sort((left, right) => linkedUnitCount(otherConceptOf(right, selectedConcept.value!.id)) - linkedUnitCount(otherConceptOf(left, selectedConcept.value!.id))) : [])
+const selectedConceptParents = computed(() => selectedConcept.value ? store.relations.filter((relation) => relation.childConceptId === selectedConcept.value?.id && relation.relationType === 'hierarchy' && relation.status !== 'rejected').sort((left, right) => linkedUnitCount(otherConceptOf(right, selectedConcept.value!.id)) - linkedUnitCount(otherConceptOf(left, selectedConcept.value!.id))) : [])
+const selectedConceptChildren = computed(() => selectedConcept.value ? store.relations.filter((relation) => relation.parentConceptId === selectedConcept.value?.id && relation.relationType === 'hierarchy' && relation.status !== 'rejected').sort((left, right) => linkedUnitCount(otherConceptOf(right, selectedConcept.value!.id)) - linkedUnitCount(otherConceptOf(left, selectedConcept.value!.id))) : [])
+const selectedConceptRelated = computed(() => selectedConcept.value ? store.relations.filter((relation) => (relation.parentConceptId === selectedConcept.value?.id || relation.childConceptId === selectedConcept.value?.id) && relation.relationType === 'related' && relation.status !== 'rejected').sort((left, right) => linkedUnitCount(otherConceptOf(right, selectedConcept.value!.id)) - linkedUnitCount(otherConceptOf(left, selectedConcept.value!.id))) : [])
+const selectedConceptHasProposedRelations = computed(() => selectedConceptRelations.value.some((relation) => relation.status === 'proposed'))
 const conceptSearchCandidates = (query: string, excludedIds: Set<string>): Concept[] => {
   const needle = query.trim().toLocaleUpperCase()
   if (!needle) return []
@@ -503,6 +567,25 @@ function toggleGraphConcept(conceptId: string, expanded: boolean): void {
   expandedConceptIds.value = [...next]
 }
 
+function toggleConceptTree(conceptId: string): void {
+  if (!conceptTreeExpandedIds.value.includes(conceptId)) {
+    conceptTreeExpandedIds.value = [...conceptTreeExpandedIds.value, conceptId]
+    return
+  }
+  const descendants = new Set<string>([conceptId])
+  const queue = [conceptId]
+  while (queue.length) {
+    const parentId = queue.shift() as string
+    store.relations.forEach((relation) => {
+      if (relation.relationType !== 'hierarchy' || relation.status === 'rejected' || relation.parentConceptId !== parentId) return
+      if (descendants.has(relation.childConceptId)) return
+      descendants.add(relation.childConceptId)
+      queue.push(relation.childConceptId)
+    })
+  }
+  conceptTreeExpandedIds.value = conceptTreeExpandedIds.value.filter((id) => !descendants.has(id))
+}
+
 function resetGraphLayout(): void {
   store.resetGraphLayout()
   graphLayoutNonce.value += 1
@@ -525,7 +608,8 @@ function openConcept(conceptId: string): void {
   isDetailOpen.value = activeView.value !== 'concepts'
   if (activeView.value !== 'graph' && activeView.value !== 'concepts') setView('graph')
   void nextTick(() => {
-    detailDrawer.value?.scrollTo({ top: 0, behavior: store.config.ui.reducedMotion ? 'auto' : 'smooth' })
+    const detail = activeView.value === 'concepts' ? conceptPageDetail.value : detailDrawer.value
+    detail?.scrollTo({ top: 0, behavior: store.config.ui.reducedMotion ? 'auto' : 'smooth' })
   })
 }
 
@@ -536,6 +620,7 @@ function openUnit(unitId: string, additive = false): void {
   if (!additive) store.reorderContext([unitId])
   else store.selectContext(unitId, !store.selectedContextIds.includes(unitId))
   isDetailOpen.value = true
+  void nextTick(() => detailDrawer.value?.scrollTo({ top: 0, behavior: store.config.ui.reducedMotion ? 'auto' : 'smooth' }))
 }
 
 function addBoxSelectedUnit(unitId: string): void {
@@ -548,6 +633,7 @@ function openMessage(messageId: string): void {
   selectedUnitId.value = null
   selectedMessageId.value = messageId
   isDetailOpen.value = true
+  void nextTick(() => detailDrawer.value?.scrollTo({ top: 0, behavior: store.config.ui.reducedMotion ? 'auto' : 'smooth' }))
 }
 
 function toggleMessageContext(messageId: string): void {
@@ -1674,7 +1760,7 @@ onBeforeUnmount(() => {
 
         <section v-else-if="activeView === 'sessions'" class="view-panel sessions-view"><div class="page-toolbar"><div><span class="eyebrow">SESSION ARCHIVE</span><h2>会话与探索树</h2></div><button class="button secondary-button" @click="triggerImport"><Upload :size="15" />导入更多</button></div><div class="session-list surface-section"><div v-for="session in store.activeSessions.slice(0, visibleSessionCount)" :key="session.id" class="session-block"><div class="session-row-wrap"><button class="session-row" @click="toggleSession(session.id); selectSession(session.id)"><div class="session-avatar"><History :size="16" /></div><div class="row-main"><strong>{{ session.title }}</strong><span>{{ session.platform }} · {{ session.messageCount }} 条消息 · {{ session.unitCount }} 个知识单元</span></div><span v-if="session.localOnly" class="soft-tag">仅本地</span><ChevronDown v-if="expandedSessionIds.includes(session.id)" :size="17" /><ChevronRight v-else :size="17" /></button><button class="icon-button session-fullscreen-button" aria-label="全屏查看会话" title="全屏查看会话" @click.stop="openFullscreenSession(session.id)"><Maximize2 :size="16" /></button></div><div v-if="expandedSessionIds.includes(session.id)" class="session-expanded"><div class="session-meta-line"><span>创建于 {{ new Date(session.createdAt).toLocaleDateString('zh-CN') }}</span><label class="inline-toggle"><input type="checkbox" :checked="session.localOnly" @change="store.toggleSessionLocalOnly(session.id, ($event.target as HTMLInputElement).checked)" />仅本地（禁止 API 任务）</label><button class="text-button" @click.stop="exportSession(session)"><Download :size="14" />导出会话</button></div><div class="unit-timeline"><button v-for="unit in store.units.filter((item) => item.sessionId === session.id)" :key="unit.id" class="timeline-unit" :class="{ selected: selectedUnitId === unit.id }" @click="openUnit(unit.id)"><span class="timeline-dot" /><div><strong>{{ unit.title || '待命名知识单元' }}</strong><span>{{ unit.summary || '等待摘要生成' }}</span><small>{{ store.unitConceptNames(unit.id).join(' · ') || '未关联知识主题' }}</small></div></button><div v-if="!store.units.some((unit) => unit.sessionId === session.id)" class="empty-inline">这个会话还没有生成知识单元，原始消息仍可直接浏览。</div></div></div></div><div v-if="!store.activeSessions.length" class="empty-state session-empty-state"><History :size="30" /><strong>还没有会话</strong><span>导入历史对话后，所有会话和探索树会显示在这里。</span><button class="button secondary-button" @click="triggerImport"><Upload :size="15" />导入历史对话</button></div></div><button v-if="store.activeSessions.length > visibleSessionCount" class="text-button load-more-button" @click="visibleSessionCount += 40">加载更多会话（还有 {{ store.activeSessions.length - visibleSessionCount }} 个）</button></section>
 
-        <section v-else-if="activeView === 'concepts'" class="view-panel concepts-view"><div class="page-toolbar"><div><span class="eyebrow">KNOWLEDGE TOPICS</span><h2>知识主题目录</h2></div><button class="button secondary-button" @click="setView('graph')"><Network :size="15" />在图谱中查看</button></div><div class="concepts-layout"><div class="concept-list surface-section"><div class="list-toolbar"><span>{{ store.activeConcepts.length }} 个知识主题</span><div class="compact-search"><Search :size="14" /><input v-model="graphSearch" placeholder="过滤知识主题" /></div></div><button v-for="concept in filteredConcepts.slice(0, visibleConceptCount)" :key="concept.id" class="concept-list-row" :class="{ selected: selectedConceptId === concept.id }" @click="openConcept(concept.id)"><span class="concept-swatch" /><div><strong>{{ concept.name }}</strong><span>{{ store.units.filter((unit) => store.unitConcepts.some((link) => link.unitId === unit.id && link.conceptId === concept.id)).length }} 个知识单元</span></div><ChevronRight :size="15" /></button><button v-if="filteredConcepts.length > visibleConceptCount" class="text-button load-more-button" @click="visibleConceptCount += 60">加载更多知识主题（还有 {{ filteredConcepts.length - visibleConceptCount }} 个）</button></div><div class="concept-detail surface-section"><template v-if="selectedConcept"><div class="detail-header"><div><span class="eyebrow">KNOWLEDGE TOPIC</span><h3>{{ selectedConcept.name }}</h3></div><button class="icon-button" title="归档知识主题" aria-label="归档知识主题" @click="archiveSelectedConcept"><Archive :size="16" /></button></div><div class="alias-row"><span>别名</span><span v-for="alias in store.aliases.filter((item) => item.conceptId === selectedConcept?.id)" :key="alias.id" class="soft-tag">{{ alias.alias }}</span><span v-if="!store.aliases.some((item) => item.conceptId === selectedConcept?.id)" class="muted">暂无别名</span></div><section class="concept-page-editor" aria-labelledby="concept-page-editor-title"><div class="subsection-title"><strong id="concept-page-editor-title">主题信息</strong><span>本地可编辑</span></div><label class="field-label" for="concept-page-name">名称 <small>唯一标识</small></label><input id="concept-page-name" v-model="conceptDraftName" class="drawer-input" maxlength="120" autocomplete="off" /><label class="field-label" for="concept-page-summary">摘要 <small>≤120 字</small></label><textarea id="concept-page-summary" v-model="conceptDraftSummary" class="drawer-textarea" maxlength="120" placeholder="用一句话概括这个主题的范围和核心结论"></textarea><label class="field-label" for="concept-page-notes">主题说明 / 笔记 <small>Concept.notes</small></label><textarea id="concept-page-notes" v-model="conceptDraftNotes" class="drawer-textarea" placeholder="记录这个主题的长期理解、边界和待核实问题"></textarea><p class="field-hint">摘要用于目录和上下文导航；说明 / 笔记用于记录长期理解。</p><div class="concept-editor-actions"><button class="button primary-button" @click="saveConcept"><Check :size="14" />保存主题</button><button class="button ghost-button" @click="resetConceptDraft">撤销修改</button></div></section><div class="relation-summary"><div><span>父主题</span><strong>{{ selectedConceptParents.length }}</strong></div><div><span>子主题</span><strong>{{ selectedConceptChildren.length }}</strong></div><div><span>关联单元</span><strong>{{ selectedConceptUnits.length }}</strong></div></div><div class="detail-subsection"><div class="subsection-title"><strong>关联知识单元</strong><span class="sort-inline"><select v-model="conceptUnitSort" aria-label="知识单元排序方式"><option value="updated">最近更新</option><option value="created">创建时间</option><option value="title">名称</option></select><span>{{ selectedConceptUnits.length }}</span></span></div><button v-for="unit in selectedConceptUnits" :key="unit.id" class="mini-unit-row" @click="openUnit(unit.id)"><BookOpen :size="14" /><span>{{ unit.title || '待命名知识单元' }}</span><ChevronRight :size="14" /></button><div v-if="!selectedConceptUnits.length" class="empty-inline">还没有关联单元</div></div><div class="detail-subsection"><div class="subsection-title"><strong>维护关系</strong><span>手动确认</span></div><div class="relation-form"><select v-model="relationParentId" :aria-label="relationType === 'hierarchy' ? '父知识主题' : '相关关系一端'"><option value="">{{ relationType === 'hierarchy' ? '选择父知识主题' : '选择相关关系一端' }}</option><option v-for="concept in store.activeConcepts" :key="concept.id" :value="concept.id">{{ concept.name }}</option></select><select v-model="relationChildId" :aria-label="relationType === 'hierarchy' ? '子知识主题' : '相关关系另一端'"><option value="">{{ relationType === 'hierarchy' ? '选择子知识主题' : '选择相关关系另一端' }}</option><option v-for="concept in store.activeConcepts" :key="concept.id" :value="concept.id">{{ concept.name }}</option></select><select v-model="relationType" aria-label="关系类型"><option value="hierarchy">父子</option><option value="related">相关</option></select><button class="button secondary-button" @click="createRelationFromForm"><Link2 :size="14" />建立</button></div></div><div class="detail-subsection"><div class="subsection-title"><strong>合并到</strong><span>可撤销事务</span></div><div class="merge-form"><select v-model="mergeTargetId" aria-label="合并目标"><option value="">选择目标知识主题</option><option v-for="concept in store.activeConcepts.filter((item) => item.id !== selectedConcept?.id)" :key="concept.id" :value="concept.id">{{ concept.name }}</option></select><button class="button danger-button" @click="mergeSelectedConcept"><GitBranch :size="14" />合并</button></div></div></template><div v-else class="empty-detail"><Layers3 :size="30" /><strong>选择一个知识主题</strong><span>查看它关联的知识单元、层级关系和笔记。</span></div></div></div></section>
+        <section v-else-if="activeView === 'concepts'" class="view-panel concepts-view"><div class="page-toolbar"><div><span class="eyebrow">KNOWLEDGE TOPICS</span><h2>知识主题目录</h2></div><button class="button secondary-button" @click="setView('graph')"><Network :size="15" />在图谱中查看</button></div><div class="concepts-layout"><div class="concept-list surface-section"><div class="list-toolbar"><span>{{ store.activeConcepts.length }} 个知识主题</span><div class="compact-search"><Search :size="14" /><input v-model="graphSearch" placeholder="过滤知识主题" aria-label="过滤知识主题" /></div></div><ConceptTree :concepts="conceptTreeConcepts" :relations="store.relations" :selected-id="selectedConceptId" :expanded-ids="conceptTreeExpandedIdsForView" @select="openConcept" @toggle="toggleConceptTree" /></div><div ref="conceptPageDetail" class="concept-detail surface-section"><template v-if="selectedConcept"><div class="detail-header"><div><span class="eyebrow">KNOWLEDGE TOPIC</span><h3>{{ selectedConcept.name }}</h3></div><button class="icon-button" title="归档知识主题" aria-label="归档知识主题" @click="archiveSelectedConcept"><Archive :size="16" /></button></div><div class="alias-row"><span>别名</span><span v-for="alias in store.aliases.filter((item) => item.conceptId === selectedConcept?.id)" :key="alias.id" class="soft-tag">{{ alias.alias }}</span><span v-if="!store.aliases.some((item) => item.conceptId === selectedConcept?.id)" class="muted">暂无别名</span></div><section class="concept-page-editor" aria-labelledby="concept-page-editor-title"><div class="subsection-title"><strong id="concept-page-editor-title">主题信息</strong><span>本地可编辑</span></div><label class="field-label" for="concept-page-name">名称 <small>唯一标识</small></label><input id="concept-page-name" v-model="conceptDraftName" class="drawer-input" maxlength="120" autocomplete="off" /><label class="field-label" for="concept-page-summary">摘要 <small>≤120 字</small></label><textarea id="concept-page-summary" v-model="conceptDraftSummary" class="drawer-textarea" maxlength="120" placeholder="用一句话概括这个主题的范围和核心结论"></textarea><label class="field-label" for="concept-page-notes">主题说明 / 笔记 <small>Concept.notes</small></label><textarea id="concept-page-notes" v-model="conceptDraftNotes" class="drawer-textarea" placeholder="记录这个主题的长期理解、边界和待核实问题"></textarea><p class="field-hint">摘要用于目录和上下文导航；说明 / 笔记用于记录长期理解。</p><div class="concept-editor-actions"><button class="button primary-button" @click="saveConcept"><Check :size="14" />保存主题</button><button class="button ghost-button" @click="resetConceptDraft">撤销修改</button></div></section><p v-if="selectedConceptHasProposedRelations" class="field-hint concept-proposed-note">待确认关系来自主题整理或维护任务的结果；点击主题不会单独发起 API 请求。</p><div class="relation-summary"><div><span>父主题</span><strong>{{ selectedConceptParents.length }}</strong></div><div><span>子主题</span><strong>{{ selectedConceptChildren.length }}</strong></div><div><span>关联单元</span><strong>{{ selectedConceptUnits.length }}</strong></div></div><div class="detail-subsection"><div class="subsection-title"><strong>关联知识单元</strong><span class="sort-inline"><select v-model="conceptUnitSort" aria-label="知识单元排序方式"><option value="updated">最近更新</option><option value="created">创建时间</option><option value="title">名称</option></select><span>{{ selectedConceptUnits.length }}</span></span></div><button v-for="unit in selectedConceptUnits" :key="unit.id" class="mini-unit-row" @click="openUnit(unit.id)"><BookOpen :size="14" /><span>{{ unit.title || '待命名知识单元' }}</span><ChevronRight :size="14" /></button><div v-if="!selectedConceptUnits.length" class="empty-inline">还没有关联单元</div></div><div class="detail-subsection"><div class="subsection-title"><strong>维护关系</strong><span>手动确认</span></div><div class="relation-form"><select v-model="relationParentId" :aria-label="relationType === 'hierarchy' ? '父知识主题' : '相关关系一端'"><option value="">{{ relationType === 'hierarchy' ? '选择父知识主题' : '选择相关关系一端' }}</option><option v-for="concept in store.activeConcepts" :key="concept.id" :value="concept.id">{{ concept.name }}</option></select><select v-model="relationChildId" :aria-label="relationType === 'hierarchy' ? '子知识主题' : '相关关系另一端'"><option value="">{{ relationType === 'hierarchy' ? '选择子知识主题' : '选择相关关系另一端' }}</option><option v-for="concept in store.activeConcepts" :key="concept.id" :value="concept.id">{{ concept.name }}</option></select><select v-model="relationType" aria-label="关系类型"><option value="hierarchy">父子</option><option value="related">相关</option></select><button class="button secondary-button" @click="createRelationFromForm"><Link2 :size="14" />建立</button></div></div><div class="detail-subsection"><div class="subsection-title"><strong>合并到</strong><span>可撤销事务</span></div><div class="merge-form"><select v-model="mergeTargetId" aria-label="合并目标"><option value="">选择目标知识主题</option><option v-for="concept in store.activeConcepts.filter((item) => item.id !== selectedConcept?.id)" :key="concept.id" :value="concept.id">{{ concept.name }}</option></select><button class="button danger-button" @click="mergeSelectedConcept"><GitBranch :size="14" />合并</button></div></div></template><div v-else class="empty-detail"><Layers3 :size="30" /><strong>选择一个知识主题</strong><span>查看它关联的知识单元、层级关系和笔记。</span></div></div></div></section>
 
         <section v-else-if="activeView === 'tasks'" class="view-panel tasks-view"><div class="page-toolbar"><div><span class="eyebrow">LLM TASK QUEUE</span><h2>任务中心</h2></div><div class="task-toolbar-meta"><span class="soft-tag" :class="store.config.llm.mode ? 'tag-active' : 'tag-warning'">{{ store.config.llm.mode ? (store.config.llm.mode === 'api' ? 'API 模式' : 'Prompt 粘贴') : '未选择模式' }}</span><span>{{ store.tasks.length }} 个任务</span></div></div><div v-if="!store.config.llm.mode" class="mode-callout"><Sparkles :size="19" /><div><strong>先选择 LLM 模式</strong><span>原始数据可以继续浏览；选择 API 或 Prompt 粘贴后才能启动整理任务。</span></div><button class="button primary-button" @click="setView('settings')"><Settings2 :size="15" />去设置</button></div><div class="task-layout"><div class="task-list surface-section"><div class="task-list-heading"><div><strong>任务队列</strong><span>正常结果自动落图，异常结果需要检查</span></div><button class="icon-button" title="刷新任务" aria-label="刷新任务" @click="store.refreshFromDb"><RefreshCw :size="16" /></button></div><div v-for="group in [taskGroups.active, taskGroups.review, taskGroups.completed]" :key="group[0]?.status || 'empty'" class="task-group"><button v-for="task in taskGroupSlice(group)" :key="task.id" class="task-row" :class="{ selected: selectedTaskId === task.id }" @click="selectedTaskId = task.id"><div class="task-state" :class="`state-${taskTone(task.status)}`"><LoaderCircle v-if="task.status === 'running'" class="spin" :size="15" /><Check v-else-if="task.status === 'success'" :size="15" /><CircleHelp v-else :size="15" /></div><div class="row-main"><strong>{{ taskTypeLabel(task.type) }}</strong><span>{{ task.scopeLabel || new Date(task.createdAt).toLocaleString('zh-CN') }} · {{ new Date(task.createdAt).toLocaleString('zh-CN') }}</span></div><span class="status-label" :class="`label-${taskTone(task.status)}`">{{ taskStatusLabel(task.status) }}</span><ChevronRight :size="15" /></button></div><div v-if="!store.tasks.length" class="empty-state compact"><ListChecks :size="28" /><strong>还没有任务</strong><span>导入 JSON 后，整理任务会出现在这里。</span></div><button v-if="taskGroups.completed.length > visibleCompletedTaskCount" class="text-button load-more-button" @click="visibleCompletedTaskCount += 30">加载更多历史任务（还有 {{ taskGroups.completed.length - visibleCompletedTaskCount }} 个）</button></div><div class="task-detail surface-section"><template v-if="selectedTask"><div class="detail-header"><div><span class="eyebrow">TASK DETAIL</span><h3>{{ taskTypeLabel(selectedTask.type) }}</h3><span class="detail-subtitle">{{ selectedTask.scopeLabel }}</span></div><span class="status-label" :class="`label-${taskTone(selectedTask.status)}`">{{ taskStatusLabel(selectedTask.status) }}</span></div><div class="task-meta-grid"><div><span>模式</span><strong>{{ selectedTask.mode === 'api' ? 'API' : 'Prompt 粘贴' }}</strong></div><div><span>Prompt 版本</span><strong>{{ selectedTask.promptVersion }}</strong></div><div><span>重试次数</span><strong>{{ selectedTask.retryCount }}</strong></div></div><div class="prompt-box"><div class="subsection-title"><strong>Prompt</strong><button class="text-button" @click="copyTaskPrompt(selectedTask)"><Clipboard :size="14" />复制</button></div><pre>{{ selectedTask.prompt }}</pre></div><div class="response-box"><label for="task-response">粘贴 LLM 返回结果</label><textarea id="task-response" :value="taskResponse(selectedTask)" placeholder="在网页端执行 Prompt 后，将完整响应粘贴到这里" @input="setTaskDraft(selectedTask!.id, ($event.target as HTMLTextAreaElement).value)" /><div class="response-actions"><button class="button primary-button" @click="applyTask(selectedTask)"><Check :size="15" />校验并应用</button><button v-if="selectedTask.status === 'needs_review'" class="button secondary-button" @click="selectedTaskId = selectedTask.id"><RefreshCw :size="15" />生成修复 Prompt</button></div><div v-if="selectedTask.validationErrors" class="validation-errors"><strong>校验问题</strong><span v-for="(error, index) in JSON.parse(selectedTask.validationErrors)" :key="index">{{ error }}</span></div></div></template><div v-else class="empty-detail"><ListChecks :size="30" /><strong>选择一个任务</strong><span>查看 Prompt、原始响应和本地校验结果。</span></div></div></div></section>
 

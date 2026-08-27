@@ -112,3 +112,4 @@
 - 对话链：本地草稿 → 创建 `conversation` 任务（API 为 `pending → running`，Prompt 粘贴保持 `pending` 等待人工回传）→ 校验结果 → `success` 写入 assistant Message、导航树节点、可选 KnowledgeUnit 和多主题归属；非法结果进入 `needs_review`，重试或版本变化分别回到 `pending` 或 `stale`。
 - 关系链：LLM/维护任务产生 `proposed` → 用户确认变为 `confirmed` 或拒绝变为 `rejected`。只有 `confirmed` 默认参与图谱，`showProposed` 打开时才显示建议关系。
 - 展示层：图谱从事实层实时派生；默认只显示 hierarchy 根主题，Concept 单击同时打开详情并逐层展开/递归收起，`related` 永不改变层级。Sigma.js 评估后暂不替换 D3：现有 SVG 图谱已覆盖缩放、拖拽、悬停高亮、键盘语义、框选和稳定布局，贸然换成 Sigma 会改写测试与交互层；后续若节点规模超过当前阈值，再以独立适配层引入 graphology/Sigma。
+- 知识主题页的左栏使用可折叠 hierarchy 树，主题行单击只负责选中并打开右侧内容，箭头按钮负责展开/收起；过滤时保留命中主题的祖先节点，父子跳转后详情列滚动回顶。
