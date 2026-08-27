@@ -5,7 +5,7 @@ import { httpRequest } from '@/services/http'
 import { parseConfigText, readConfigText, writeConfig } from '@/services/config'
 import { buildGraph, graphStats } from '@/services/graph'
 import { buildSearchDocuments, searchKnowledge } from '@/services/search'
-import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildOriginConceptPrompt, buildRepairPrompt, buildSegmentationPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, ensureHarnessPrompt, listedDisclosureRefIds, parseDisclosureContext, PROMPT_VERSION, renderQuickPhrase, replaceDisclosureContext } from '@/services/prompts'
+import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildOriginConceptPrompt, buildRepairPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, ensureHarnessPrompt, listedDisclosureRefIds, parseDisclosureContext, PROMPT_VERSION, renderQuickPhrase, replaceDisclosureContext } from '@/services/prompts'
 import { importPayloadSchema, parseImportPayload, validateConceptIdList, validateConceptMemberships, validateDisclosureRequests, validateSegmentationResult, validateUnitText } from '@/services/validation'
 import type { DisclosureContext } from '@/services/prompts'
 import { combineSegmentationChunks, splitMessageChunks } from '@/utils/chunks'
@@ -899,30 +899,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         chunks.forEach((chunk, chunkIndex) => {
           const chunkSuffix = chunks.length > 1 ? `:chunk:${chunk.start}:${chunk.end}:${chunks.length}` : ''
           const taskId = createTask({
-            type: 'segmentation',
+            type: 'origin_concepts',
             mode: config.value.llm.mode ?? 'prompt_paste',
             providerId: config.value.llm.defaultProvider,
             model: null,
             promptVersion: PROMPT_VERSION,
             inputRevision: `${session.id}:${session.revision}${chunkSuffix}`,
-            prompt: buildSegmentationPrompt(session, chunk.messages, chunks.length > 1 ? `${chunkIndex + 1}/${chunks.length}（全局索引 ${chunk.start}～${chunk.end - 1}，含相邻重叠消息）` : undefined),
+            prompt: buildOriginConceptPrompt(session, chunk.messages, promptDisclosureContext()),
             status: 'pending',
-            scopeLabel: chunks.length > 1 ? `${session.title} · 分段 ${chunkIndex + 1}/${chunks.length}` : session.title,
+            scopeLabel: chunks.length > 1 ? `${session.title} · 起始知识主题 ${chunkIndex + 1}/${chunks.length}` : `${session.title} · 起始知识主题`,
           })
           report.taskIds.push(taskId)
         })
-        const originTaskId = createTask({
-          type: 'origin_concepts',
-          mode: config.value.llm.mode ?? 'prompt_paste',
-          providerId: config.value.llm.defaultProvider,
-          model: null,
-          promptVersion: PROMPT_VERSION,
-          inputRevision: `${session.id}:${session.revision}`,
-          prompt: buildOriginConceptPrompt(session, importedMessages, promptDisclosureContext()),
-          status: 'pending',
-          scopeLabel: `${session.title} · 起始知识主题`,
-        })
-        report.taskIds.push(originTaskId)
         report.importedSessionIds.push(sessionId)
       })
     })
