@@ -62,6 +62,8 @@ describe('GraphCanvas progressive disclosure', () => {
     const node = target.querySelector<SVGGElement>('.graph-node')!
     expect(node.getAttribute('role')).toBe('button')
     expect(node.getAttribute('aria-expanded')).toBe('false')
+    expect(target.querySelector('.graph-node-expand-control')).toBeNull()
+    expect(target.querySelector('.graph-node-expand-toggle')).toBeNull()
     node.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     expect(selectConcept).toHaveBeenCalledWith('root')
     expect(toggleConcept).toHaveBeenCalledWith('root', true)
