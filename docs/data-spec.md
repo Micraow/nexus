@@ -380,7 +380,7 @@ Concept 提取结果必须包含 `concepts` 数组；全部复用目录中已有
 
 ### 6.2 边
 
-- 每个 Session 汇总其直接、消息级和 KnowledgeUnit 级 Concept 归属，再把隐藏 Concept 投影到最近可见代表节点并去重；任意一对可见代表 Concept 对该 Session 最多贡献 `1` 个共现权重。多个 KnowledgeUnit 或 Message 不会在同一 Session 内重复计数；多个 Session 投影到同一对节点时累加；
+- 每个 Session 汇总其直接、消息级和 KnowledgeUnit 级 Concept 归属，再将两个不同的原始 Concept 分别投影到各自每条父链上的第一个可见代表节点并去重；任意一对可见代表 Concept 对该 Session 最多贡献 `1` 个共现权重。单个多父 Concept 不产生自发的根节点共现，多个 KnowledgeUnit 或 Message 不会在同一 Session 内重复计数；多个 Session 投影到同一对节点时累加；
 - Concept 与 Session、Message、KnowledgeUnit 之间生成关联边；SessionConcept/MessageConcept 是没有 KnowledgeUnit 时的主要证据边，UnitConcept 作为可选阅读片段边；端点使用同一套代表投影；
 - `hierarchy` 只在父、子两端都可见时输出有向边。隐藏叶节点不能产生指向不可见节点的假边；
 - `related` 始终按无向边处理。若端点折叠，可分别投影到最近可见代表并合并重复边；同一节点的自环丢弃。related 边不参与层级展开、根节点、深度或父子布局；

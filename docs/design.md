@@ -602,7 +602,7 @@ LLM 只返回建议变更：合并、别名、父子关系、相关关系、重�
 - 收起祖先时递归清理该祖先的后代展开状态，后代回到折叠投影，但不改变事实关系；
 - `expandedConceptDepth` 只用于需要确定性批量预展开的调用方，`0` 表示根节点，不能替代无限层级模型。
 
-折叠层级下仍保留数据密度：隐藏 Concept 通过 hierarchy 向上投影到最近的可见祖先。每个 Session 汇总其直接、消息级和 KnowledgeUnit 级归属；同一 Session 对每一对可见代表 Concept 只贡献一次共现权重，多个单元、消息或隐藏叶节点落在同一对代表节点时不会重复计数，不同 Session 才会累加。KnowledgeUnit 节点仅在全局开关打开时出现，Message 节点仅按消息开关或保留会话筛选出现；这些局部披露不改变 Concept 的层级可见性。
+折叠层级下仍保留数据密度：隐藏 Concept 通过 hierarchy 向上投影到每条父链上的第一个可见祖先。每个 Session 汇总其直接、消息级和 KnowledgeUnit 级归属，再按两个不同的原始 Concept 配对投影；同一 Session 对每一对可见代表 Concept 只贡献一次共现权重，多个单元、消息或隐藏叶节点落在同一对代表节点时不会重复计数，单个多父 Concept 也不会凭空制造根节点共现，不同 Session 才会累加。KnowledgeUnit 节点仅在全局开关打开时出现，Message 节点仅按消息开关或保留会话筛选出现；这些局部披露不改变 Concept 的层级可见性。
 
 `related` 是独立的无向边：可以在可见节点之间绘制，也可以随筛选隐藏，但从不触发祖先路径、子节点展开、根节点计算或 hierarchy 布局约束。待确认关系只有在 `showProposed=true` 时进入派生图谱。
 
