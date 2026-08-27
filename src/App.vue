@@ -51,6 +51,8 @@ import { MIN_TOKEN_BUDGET, normalizeTokenBudget, serializeConfig } from '@/servi
 import { saveTextFile } from '@/services/files'
 import type { SaveFileRequest } from '@/services/files'
 import { conversationTaskForNode, suggestedExplorationQuestion, unfinishedConversationTask } from '@/services/conversation'
+import { resolveConceptEvidence } from '@/services/concept-evidence'
+import { paginateMessages } from '@/services/message-pagination'
 import { renderMarkdown } from '@/services/markdown'
 import { copyToClipboard } from '@/services/clipboard'
 import { parseMetadata } from '@/utils/metadata'
@@ -286,7 +288,7 @@ const fullscreenMessages = computed<Message[]>(() => {
     return message ? [message] : []
   }
   if (target.kind === 'concept') {
-    return selectedConceptMessages.value
+    return conceptEvidenceFor(target.conceptId).messages
   }
   return store.messages.filter((message) => message.sessionId === target.sessionId).sort((left, right) => left.orderInSession - right.orderInSession)
 })
@@ -363,6 +365,15 @@ const conceptTreeExpandedIdsForView = computed(() => {
 })
 const selectedConceptRelations = computed(() => selectedConcept.value ? store.relations.filter((relation) => relation.parentConceptId === selectedConcept.value?.id || relation.childConceptId === selectedConcept.value?.id) : [])
 const selectedSession = computed(() => store.sessions.find((session) => session.id === store.selectedSessionId) ?? null)
+const conceptEvidenceFor = (conceptId: string) => resolveConceptEvidence({
+  conceptId,
+  sessions: store.sessions,
+  messages: store.messages,
+  units: store.units,
+  sessionConcepts: store.sessionConcepts,
+  messageConcepts: store.messageConcepts,
+  unitConcepts: store.unitConcepts,
+})
 const linkedUnitCount = (conceptId: string): number => {
   const sessionIds = new Set(store.sessionConcepts.filter((link) => link.conceptId === conceptId).map((link) => link.sessionId))
   return store.units.filter((unit) => sessionIds.has(unit.sessionId) || store.unitConcepts.some((link) => link.unitId === unit.id && link.conceptId === conceptId)).length
@@ -396,12 +407,7 @@ const conceptMessageIds = (conceptId: string): Set<string> => {
 }
 const conceptUnitCollator = new Intl.Collator('zh-Hans-CN')
 const selectedConceptUnits = computed(() => {
-  if (!selectedConcept.value) return []
-  const conceptId = selectedConcept.value.id
-  const sessionIds = conceptSessionIds(conceptId)
-  const messageIds = conceptMessageIds(conceptId)
-  const unitIdsFromMessages = new Set(store.messages.filter((message) => messageIds.has(message.id) && message.unitId).map((message) => message.unitId as string))
-  const units = store.units.filter((unit) => sessionIds.has(unit.sessionId) || unitIdsFromMessages.has(unit.id) || store.unitConcepts.some((link) => link.unitId === unit.id && link.conceptId === conceptId))
+  const units = selectedConcept.value ? [...conceptEvidenceFor(selectedConcept.value.id).units] : []
   return units.sort((left, right) => {
     if (conceptUnitSort.value === 'title') return conceptUnitCollator.compare(left.title ?? '', right.title ?? '')
     if (conceptUnitSort.value === 'created') return right.createdAt.localeCompare(left.createdAt)
@@ -409,27 +415,9 @@ const selectedConceptUnits = computed(() => {
   })
 })
 const selectedConceptMessages = computed(() => {
-  const unitIds = new Set(selectedConceptUnits.value.map((unit) => unit.id))
-  const conceptId = selectedConcept.value?.id
-  const sessionIds = conceptId ? conceptSessionIds(conceptId) : new Set<string>()
-  const messageIds = conceptId ? conceptMessageIds(conceptId) : new Set<string>()
-  return store.messages.filter((message) => {
-    if (message.unitId && unitIds.has(message.unitId)) return true
-    if (sessionIds.has(message.sessionId)) return true
-    return messageIds.has(message.id)
-  }).sort((left, right) => {
-    const leftSession = store.sessions.find((session) => session.id === left.sessionId)
-    const rightSession = store.sessions.find((session) => session.id === right.sessionId)
-    const sessionOrder = (leftSession?.updatedAt ?? left.sessionId).localeCompare(rightSession?.updatedAt ?? right.sessionId)
-    return sessionOrder || left.orderInSession - right.orderInSession
-  })
+  return selectedConcept.value ? conceptEvidenceFor(selectedConcept.value.id).messages : []
 })
-const selectedConceptSessions = computed(() => {
-  const conceptId = selectedConcept.value?.id
-  if (!conceptId) return []
-  const ids = sessionIdsForConcept(conceptId)
-  return store.activeSessions.filter((session) => ids.has(session.id))
-})
+const selectedConceptSessions = computed(() => selectedConcept.value ? conceptEvidenceFor(selectedConcept.value.id).sessions : [])
 const otherConceptOf = (relation: { parentConceptId: string; childConceptId: string }, conceptId: string): string => (relation.childConceptId === conceptId ? relation.parentConceptId : relation.childConceptId)
 const selectedConceptParents = computed(() => selectedConcept.value ? store.relations.filter((relation) => relation.childConceptId === selectedConcept.value?.id && relation.relationType === 'hierarchy' && relation.status !== 'rejected').sort((left, right) => linkedUnitCount(otherConceptOf(right, selectedConcept.value!.id)) - linkedUnitCount(otherConceptOf(left, selectedConcept.value!.id))) : [])
 const selectedConceptChildren = computed(() => selectedConcept.value ? store.relations.filter((relation) => relation.parentConceptId === selectedConcept.value?.id && relation.relationType === 'hierarchy' && relation.status !== 'rejected').sort((left, right) => linkedUnitCount(otherConceptOf(right, selectedConcept.value!.id)) - linkedUnitCount(otherConceptOf(left, selectedConcept.value!.id))) : [])
