@@ -22,7 +22,7 @@ afterEach(() => {
 function mountTree(
   nodes: NavTreeNode[],
   allNodes: NavTreeNode[] = nodes,
-  listeners: { onSelectNode?: (node: NavTreeNode) => void; onAsk?: (node: NavTreeNode) => void } = {},
+  listeners: { onSelectNode?: (node: NavTreeNode) => void; onAsk?: (node: NavTreeNode) => void; showActions?: boolean } = {},
 ): HTMLElement {
   const target = document.createElement('div')
   document.body.appendChild(target)
@@ -73,5 +73,14 @@ describe('NavTree hierarchy', () => {
 
     expect(target.querySelectorAll('.nav-tree-label')).toHaveLength(2)
     expect([...target.querySelectorAll('.nav-tree-label')].map((label) => label.textContent)).toEqual(['根节点', '子节点'])
+  })
+
+  it('supports a compact branch navigator without per-node ask actions', async () => {
+    const target = mountTree([root], [root, child, grandchild], { showActions: false })
+    await nextTick()
+
+    expect(target.querySelectorAll('.nav-tree-ask')).toHaveLength(0)
+    expect(target.querySelector<HTMLElement>('[role="treeitem"]')?.getAttribute('aria-expanded')).toBe('true')
+    expect(target.querySelector<HTMLElement>('[role="treeitem"]')?.getAttribute('aria-selected')).toBe('false')
   })
 })

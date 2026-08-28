@@ -253,6 +253,47 @@ const activeConversationNodes = computed(() => activeConversationSessionId.value
   ? store.navNodes.filter((node) => node.sessionId === activeConversationSessionId.value)
   : [])
 const activeConversationRoot = computed(() => activeConversationNodes.value.find((node) => !node.parentId) ?? null)
+/**
+ * A Session can contain several exploration branches. The conversation
+ * surface shows the selected branch path as stacked cards instead of replaying
+ * every message in creation order. This keeps switching topics non-linear
+ * while preserving the original rows for search and export.
+ */
+const activeConversationPathNodeIds = computed(() => {
+  const selected = activeConversationNodes.value.find((node) => node.id === selectedNavNodeId.value)
+    ?? activeConversationNodes.value.slice().sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]
+  if (!selected) return [] as string[]
+  const byId = new Map(activeConversationNodes.value.map((node) => [node.id, node]))
+  const path: string[] = []
+  const seen = new Set<string>()
+  let current: NavTreeNode | undefined = selected
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id)
+    path.unshift(current.id)
+    current = current.parentId ? byId.get(current.parentId) : undefined
+  }
+  return path
+})
+const activeConversationBranchCards = computed(() => {
+  const pathIds = activeConversationPathNodeIds.value
+  const byId = new Map(activeConversationNodes.value.map((node) => [node.id, node]))
+  const messages = activeConversationMessages.value
+  return pathIds.map((nodeId) => {
+    const node = byId.get(nodeId)
+    if (!node) return null
+    // User input is recorded on the node it branches from; the resulting
+    // assistant answer is recorded on the newly-created child node. Keeping
+    // those facts separate prevents sibling branches from leaking messages
+    // into one another while still showing the root's opening question.
+    const cardMessages = messages.filter((message) => {
+      const metadata = parseMetadata(message.metadata)
+      if (message.role === 'assistant') return metadata.navNodeId === nodeId
+      if (message.role === 'user') return metadata.parentNodeId === nodeId
+      return false
+    }).sort((left, right) => left.orderInSession - right.orderInSession)
+    return cardMessages.length ? { node, messages: cardMessages } : null
+  }).filter((card): card is { node: NavTreeNode; messages: Message[] } => Boolean(card))
+})
 const conversationNavTrail = computed(() => {
   const selected = activeConversationNodes.value.find((node) => node.id === selectedNavNodeId.value) ?? activeConversationRoot.value
   if (!selected) return [] as NavTreeNode[]
@@ -1800,11 +1841,14 @@ onBeforeUnmount(() => {
               </header>
               <nav v-if="conversationNavTrail.length" class="conversation-breadcrumbs" aria-label="探索路径"><button v-for="node in conversationNavTrail" :key="node.id" class="breadcrumb-node" :class="{ current: node.id === selectedNavNodeId }" @click="selectConversationNode(node)">{{ node.label }}</button></nav>
               <div class="conversation-layout">
-                <aside class="conversation-minimap" aria-label="探索树小地图"><div class="minimap-heading"><GitBranch :size="14" /><span>探索树</span></div><NavTree :nodes="activeConversationNodes.filter((node) => !node.parentId)" :all-nodes="activeConversationNodes" :node-units="store.navNodeUnits" :units="store.units" :selected-node-id="selectedNavNodeId" @select-node="selectConversationNode" @ask="openNodeComposer" /></aside>
+                <aside class="conversation-minimap" aria-label="探索树小地图"><div class="minimap-heading"><GitBranch :size="14" /><span>探索树</span></div><NavTree :nodes="activeConversationNodes.filter((node) => !node.parentId)" :all-nodes="activeConversationNodes" :node-units="store.navNodeUnits" :units="store.units" :selected-node-id="selectedNavNodeId" :show-actions="false" @select-node="selectConversationNode" /></aside>
                 <div class="conversation-scroll" role="log" aria-live="polite">
-                  <article v-for="message in activeConversationMessages" :key="message.id" :data-conversation-message="message.id" class="conversation-message" :class="message.role"><div class="conversation-message-meta"><strong>{{ message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : '系统' }}</strong><span>消息 #{{ message.orderInSession + 1 }}</span></div><div class="md-body" v-html="renderedMessageContent(message.content)" @click="handleRenderedClick($event, message)" @keydown.enter.prevent="handleRenderedClick($event, message)" /></article>
+                  <section v-for="(card, cardIndex) in activeConversationBranchCards" :key="card.node.id" class="conversation-branch-card" :class="{ current: card.node.id === selectedNavNodeId }" :style="{ '--branch-index': cardIndex }" :aria-label="`探索分支 ${cardIndex + 1}：${card.node.label}`">
+                    <button class="conversation-branch-card-title" type="button" @click="selectConversationNode(card.node)"><span class="branch-card-dot" aria-hidden="true" /><strong>{{ card.node.label }}</strong><span class="branch-card-depth">第 {{ card.node.depth + 1 }} 层</span></button>
+                    <article v-for="message in card.messages" :key="message.id" :data-conversation-message="message.id" class="conversation-message" :class="message.role"><div class="conversation-message-meta"><strong>{{ message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : '系统' }}</strong><span>消息 #{{ message.orderInSession + 1 }}</span></div><div class="md-body" v-html="renderedMessageContent(message.content)" @click="handleRenderedClick($event, message)" @keydown.enter.prevent="handleRenderedClick($event, message)" /></article>
+                  </section>
                   <div v-if="activeConversationTask?.status === 'running'" class="conversation-thinking"><LoaderCircle class="spin" :size="16" />AI 正在处理这次提问…</div>
-                  <div v-if="!activeConversationMessages.length" class="empty-state compact"><MessageSquare :size="26" /><strong>等待第一条回答</strong><span>回答完成后会显示在这里。</span></div>
+                  <div v-if="!activeConversationBranchCards.length" class="empty-state compact"><MessageSquare :size="26" /><strong>等待第一条回答</strong><span>回答完成后会显示在这里。</span></div>
                   <div class="conversation-composer"><textarea v-model="composerQuestion" rows="3" aria-label="继续当前对话" placeholder="继续追问…" :disabled="Boolean(activeConversationUnfinishedTask)" @keydown.ctrl.enter.prevent="startConversationFollowUp" @keydown.meta.enter.prevent="startConversationFollowUp" /><div class="conversation-composer-footer"><span>{{ activeConversationUnfinishedTask ? '请先完成上一轮回答' : store.config.llm.mode === 'api' ? 'API 会直接执行' : 'Prompt 会在右侧浮层中处理' }}</span><button class="send-button" aria-label="发送追问" :disabled="!composerQuestion.trim() || Boolean(activeConversationUnfinishedTask)" @click="startConversationFollowUp"><Send :size="17" /></button></div></div>
                 </div>
               </div>
