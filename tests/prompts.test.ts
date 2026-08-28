@@ -53,6 +53,7 @@ describe('conversation prompt', () => {
     expect(prompt).toContain('只有确无合适上位主题才允许暂作根')
     expect(prompt).toContain('"type":"hierarchy|related","status":"proposed"')
     expect(prompt).toContain('回答中实际出现的词组')
+    expect(prompt).toContain('编号列表、项目符号和表格')
     expect(prompt).toContain('严禁使用“原文”“正文”“主题名称”等占位文字')
     expect(prompt).not.toContain(']]原文[[/nexus]]')
   })
