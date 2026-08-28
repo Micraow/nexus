@@ -8,20 +8,22 @@ describe('derived graph', () => {
     expect(cleanGraphText('## [[nexus:existing:RoCE]]RoCE[[/nexus]] · `token`')).toBe('RoCE · token')
   })
 
-  it('encodes direct hierarchy child count on Concept nodes', () => {
+  it('encodes stable direct-child and descendant counts on Concept nodes', () => {
     const snapshot = buildGraph({
       concepts: [
         { id: 'root', name: '根', normalizedName: '根', notes: '', status: 'active', createdAt: now, updatedAt: now },
         { id: 'c1', name: '子一', normalizedName: '子一', notes: '', status: 'active', createdAt: now, updatedAt: now },
         { id: 'c2', name: '子二', normalizedName: '子二', notes: '', status: 'active', createdAt: now, updatedAt: now },
+        { id: 'g1', name: '孙', normalizedName: '孙', notes: '', status: 'active', createdAt: now, updatedAt: now },
       ],
       units: [], messages: [], unitConcepts: [], revision: 1,
       relations: [
         { id: 'h1', parentConceptId: 'root', childConceptId: 'c1', relationType: 'hierarchy', source: 'manual', status: 'confirmed', createdAt: now, updatedAt: now },
         { id: 'h2', parentConceptId: 'root', childConceptId: 'c2', relationType: 'hierarchy', source: 'manual', status: 'confirmed', createdAt: now, updatedAt: now },
+        { id: 'h3', parentConceptId: 'c1', childConceptId: 'g1', relationType: 'hierarchy', source: 'manual', status: 'confirmed', createdAt: now, updatedAt: now },
       ],
     })
-    expect(snapshot.nodes.find((node) => node.refId === 'root')?.childCount).toBe(2)
+    expect(snapshot.nodes.find((node) => node.refId === 'root')).toMatchObject({ childCount: 2, descendantCount: 3 })
   })
   it('never reuses a more disclosed or differently filtered Worker snapshot', () => {
     expect(graphViewFallbackIsCompatible(

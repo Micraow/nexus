@@ -332,6 +332,8 @@ export interface GraphNode {
   hasChildren?: boolean
   /** Number of direct hierarchy children (used for graph sizing). */
   childCount?: number
+  /** Number of unique hierarchy descendants below this Concept. */
+  descendantCount?: number
   /** Whether this Concept is currently in the expansion set. */
   expanded?: boolean
 }

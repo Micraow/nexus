@@ -300,7 +300,9 @@ function conceptHasChildren(node: GraphNode, edges: GraphEdge[]): boolean {
 
 function nodeRadius(node: GraphNode): number {
   return node.type === 'concept'
-    ? Math.min(40, 15 + Math.sqrt(node.unitCount + 1) * 3.4 + Math.log2((node.childCount ?? 0) + 1) * 4.2 + Math.sqrt(node.degree) * 0.45)
+    // Hierarchy counts stay stable while disclosure moves evidence and
+    // co-occurrence edges between a hidden descendant and its visible parent.
+    ? Math.min(42, 16 + Math.log2((node.descendantCount ?? node.childCount ?? 0) + 1) * 5.5 + Math.log2((node.childCount ?? 0) + 1) * 2)
     : node.type === 'unit' ? 11 : 7
 }
 
@@ -492,6 +494,7 @@ function render(): void {
       const target = typeof edge.target === 'string' ? edge.target : String(edge.target)
       return `graph-link${source.startsWith('unit:') || target.startsWith('unit:') ? ' graph-link-unit' : ''}`
     })
+    .attr('data-edge-id', (edge) => edge.id)
     .attr('data-edge-type', (edge) => edge.type)
     .attr('stroke', edgeColor)
     .attr('stroke-width', edgeWidth)

@@ -193,4 +193,41 @@ describe('GraphCanvas progressive disclosure', () => {
     link.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }))
     expect(link.getAttribute('class')).not.toContain('is-hovered')
   })
+
+  it('sizes Concept nodes by stable hierarchy scope instead of transient evidence degree', async () => {
+    const target = mountSnapshot({
+      revision: 8,
+      nodes: [
+        { id: 'concept:parent', type: 'concept', refId: 'parent', label: '父', degree: 0, unitCount: 0, childCount: 2, descendantCount: 6 },
+        { id: 'concept:leaf', type: 'concept', refId: 'leaf', label: '叶', degree: 20, unitCount: 20, childCount: 0, descendantCount: 0 },
+      ],
+      edges: [],
+    })
+    await nextTick()
+    const parentRadius = Number(target.querySelector<SVGCircleElement>('[data-ref-id="parent"] circle')?.getAttribute('r'))
+    const leafRadius = Number(target.querySelector<SVGCircleElement>('[data-ref-id="leaf"] circle')?.getAttribute('r'))
+    expect(parentRadius).toBeGreaterThan(leafRadius)
+    expect(leafRadius).toBe(16)
+  })
+
+  it('makes stronger semantic links darker and slightly thicker', async () => {
+    const target = mountSnapshot({
+      revision: 9,
+      nodes: [
+        { id: 'concept:a', type: 'concept', refId: 'a', label: '甲', degree: 2, unitCount: 0 },
+        { id: 'concept:b', type: 'concept', refId: 'b', label: '乙', degree: 2, unitCount: 0 },
+        { id: 'concept:c', type: 'concept', refId: 'c', label: '丙', degree: 2, unitCount: 0 },
+      ],
+      edges: [
+        { id: 'edge:weak', source: 'concept:a', target: 'concept:b', type: 'co_occurrence', weight: 1 },
+        { id: 'edge:strong', source: 'concept:a', target: 'concept:c', type: 'co_occurrence', weight: 12 },
+      ],
+    })
+    await nextTick()
+    const weak = target.querySelector<SVGLineElement>('[data-edge-id="edge:weak"]')!
+    const strong = target.querySelector<SVGLineElement>('[data-edge-id="edge:strong"]')!
+    expect(Number(strong.getAttribute('stroke-width'))).toBeGreaterThan(Number(weak.getAttribute('stroke-width')))
+    const luminance = (hex: string) => Number.parseInt(hex.slice(1, 3), 16) + Number.parseInt(hex.slice(3, 5), 16) + Number.parseInt(hex.slice(5, 7), 16)
+    expect(luminance(strong.getAttribute('stroke') ?? '#ffffff')).toBeLessThan(luminance(weak.getAttribute('stroke') ?? '#ffffff'))
+  })
 })

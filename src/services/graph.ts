@@ -461,6 +461,21 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
   const { visibleIds, expandedIds, hierarchy } = resolveVisibleConceptIds(activeConcepts, input.relations, input)
   const visibleConcepts = activeConcepts.filter((concept) => visibleIds.has(concept.id))
   const visibleRepresentativesCache = new Map<string, string[]>()
+  const descendantCountCache = new Map<string, number>()
+  const descendantCountFor = (conceptId: string): number => {
+    const cached = descendantCountCache.get(conceptId)
+    if (cached != null) return cached
+    const descendants = new Set<string>()
+    const queue = [...(hierarchy.childrenByParent.get(conceptId) ?? [])]
+    for (let index = 0; index < queue.length; index += 1) {
+      const childId = queue[index]
+      if (childId === conceptId || descendants.has(childId)) continue
+      descendants.add(childId)
+      ;(hierarchy.childrenByParent.get(childId) ?? new Set<string>()).forEach((nextId) => queue.push(nextId))
+    }
+    descendantCountCache.set(conceptId, descendants.size)
+    return descendants.size
+  }
   const representativesFor = (conceptId: string): string[] => {
     const cached = visibleRepresentativesCache.get(conceptId)
     if (cached) return cached
@@ -486,6 +501,7 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
       rootIds: hierarchy.rootIdsByConcept.get(concept.id) ?? [concept.id],
       hasChildren: childCount > 0,
       childCount,
+      descendantCount: descendantCountFor(concept.id),
       expanded: expandedIds.has(concept.id),
     }
   })
