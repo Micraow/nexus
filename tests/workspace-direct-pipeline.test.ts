@@ -935,6 +935,77 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.units).toContainEqual(expect.objectContaining({ title: '披露结果片段' }))
   })
 
+  it('applies a complete second-round answer when the provider repeats an already expanded ref', async () => {
+    const vueId = store.createConcept('Vue')
+    const reactivityId = store.createConcept('响应式原理')
+    store.createRelation(vueId, reactivityId, 'hierarchy')
+    const responses = [
+      JSON.stringify({ answer: '需要先列出 Vue 的直接子主题。', units: [], memberships: [], disclosure_requests: [{ refID: vueId, depth: 1 }] }),
+      JSON.stringify({
+        answer: 'Vue 的直接子主题包括响应式原理。',
+        concepts: [],
+        memberships: [],
+        relations: [],
+        units: [{ title: 'Vue 直接子主题', summary: '列出 Vue 已披露的直接子主题。', concept_ids: [vueId, reactivityId], concepts: [] }],
+        disclosure_requests: [{ refID: vueId, depth: 1 }],
+      }),
+    ]
+    let requestIndex = 0
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: responses[requestIndex++] } }] }),
+    } as Response)))
+    store.updateConfig({
+      llm: {
+        ...store.config.llm,
+        mode: 'api',
+        defaultProvider: 'repeated-disclosure-provider',
+        providers: [{ id: 'repeated-disclosure-provider', name: 'Repeated disclosure', baseUrl: 'https://example.test/v1', model: 'disclosure-model', apiKey: 'test-key' }],
+      },
+    })
+
+    const sessionId = store.createConversationTask({ question: '列出 Vue 的直接子主题', topicId: vueId })
+    const task = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
+    await expect(store.executeTask(task.id)).resolves.toEqual({ ok: true })
+
+    expect(requestIndex).toBe(2)
+    expect(store.tasks.find((item) => item.id === task.id)).toEqual(expect.objectContaining({ status: 'success' }))
+    expect(store.tasks.find((item) => item.id === task.id)?.prompt).toContain('"round": 1')
+    expect(store.units).toContainEqual(expect.objectContaining({ title: 'Vue 直接子主题' }))
+    expect(store.messages).toContainEqual(expect.objectContaining({ sessionId, role: 'assistant', content: 'Vue 的直接子主题包括响应式原理。' }))
+  })
+
+  it('rejects a repeated expanded ref when the second round still has no complete answer', async () => {
+    const rootId = store.createConcept('重复披露根主题')
+    const childId = store.createConcept('重复披露子主题')
+    store.createRelation(rootId, childId, 'hierarchy')
+    const repeatedRequest = JSON.stringify({ answer: '仍需展开。', units: [], memberships: [], disclosure_requests: [{ refID: rootId, depth: 1 }] })
+    let requestCount = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      requestCount += 1
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: repeatedRequest } }] }),
+      } as Response
+    }))
+    store.updateConfig({
+      llm: {
+        ...store.config.llm,
+        mode: 'api',
+        defaultProvider: 'incomplete-disclosure-provider',
+        providers: [{ id: 'incomplete-disclosure-provider', name: 'Incomplete disclosure', baseUrl: 'https://example.test/v1', model: 'disclosure-model', apiKey: 'test-key' }],
+      },
+    })
+
+    const sessionId = store.createConversationTask({ question: '查看直接子主题', topicId: rootId })
+    const task = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
+    await expect(store.executeTask(task.id)).resolves.toEqual({ ok: false, error: expect.stringContaining('请求的引用已经展开') })
+
+    expect(requestCount).toBe(2)
+    expect(store.tasks.find((item) => item.id === task.id)).toEqual(expect.objectContaining({ status: 'needs_review' }))
+    expect(store.units.filter((unit) => unit.sessionId === sessionId)).toHaveLength(0)
+  })
+
   it('exposes maintenance MCP tools and normalizes tool calls through the suggestion validator', async () => {
     const conceptId = store.createConcept('工具调用主题')
     let requestBody: Record<string, unknown> | undefined

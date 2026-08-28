@@ -2132,6 +2132,27 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   const disclosureTaskTypes = new Set<LLMTask['type']>(['concept_extraction', 'origin_concepts', 'conversation', 'maintenance'])
 
+  function hasDisclosureCompletionPayload(task: LLMTask, data: Record<string, unknown>): boolean {
+    if (task.type === 'conversation') {
+      return typeof data.answer === 'string' && data.answer.trim().length > 0
+        && Array.isArray(data.units) && data.units.length > 0
+    }
+    if (task.type === 'maintenance') {
+      return typeof data.reason === 'string' && data.reason.trim().length > 0
+        && Array.isArray(data.suggestions)
+    }
+    if (task.type === 'concept_extraction' || task.type === 'origin_concepts') {
+      if (!Array.isArray(data.concepts) || !Array.isArray(data.memberships)) return false
+      const hasDeclaredConcept = data.concepts.length > 0
+        || (Array.isArray(data.concept_ids) && data.concept_ids.length > 0)
+        || data.memberships.some((item) => item && typeof item === 'object' && !Array.isArray(item)
+          && Array.isArray((item as Record<string, unknown>).concept_ids)
+          && ((item as Record<string, unknown>).concept_ids as unknown[]).length > 0)
+      return hasDeclaredConcept
+    }
+    return false
+  }
+
   /** Queue a follow-up turn when the model asks to inspect known references. */
   function continueDisclosureTask(task: LLMTask, responseText: string, data: Record<string, unknown>): TaskApplyResult | null {
     // Tasks without a disclosure field must ignore an extra model key. This
@@ -2193,7 +2214,20 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const nextContext: DisclosureContext = { roots: current.roots, expansions: [...expansionMap.values()], round: currentRound + 1 }
     const nextPrompt = replaceDisclosureContext(task.prompt, nextContext)
     if (expandedThisTurn.size === 0 || !changedExpansion || nextPrompt === task.prompt) {
-      const errors = ['请求的引用没有产生新的可披露内容，请检查 refID 或改用已有目录']
+      const requestsAreAlreadyExpanded = requests.every((request) => expansionMap.has(request.refID.trim()))
+      if (!changedExpansion && requestsAreAlreadyExpanded && hasDisclosureCompletionPayload(task, data)) {
+        // Providers sometimes repeat the request that produced the current
+        // round while also returning a complete result. The catalog already
+        // contains that expansion, so treat only the redundant request as
+        // empty and let the normal task-specific validator apply the result.
+        data.disclosure_requests = []
+        return null
+      }
+      const errors = expandedThisTurn.size === 0
+        ? [`请求的引用当前没有可披露内容：${requested.join('、')}。请依据现有目录完成结果，或检查 refID 是否仍有效。`]
+        : !changedExpansion && requestsAreAlreadyExpanded
+          ? [`请求的引用已经展开：${requested.join('、')}。请清空 disclosure_requests，并依据当前目录返回完整结果。`]
+          : ['请求的引用没有推进披露目录，请检查 refID、depth 或改用已有目录']
       markTask(task.id, 'needs_review', responseText, errors)
       return { ok: false, errors }
     }
