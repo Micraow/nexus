@@ -212,6 +212,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const queuePaused = ref(false)
   const queueActiveCount = ref(0)
   const abortControllers = new Map<string, AbortController>()
+  // Streaming conversation responses are kept separately from the durable
+  // assistant Message. The partial payload is usually an incomplete JSON
+  // object, so the UI extracts only the answer text for a readable preview.
+  const streamingTaskText = ref<Record<string, string>>({})
   // A task can be started from both the queue and the task detail view. Keep
   // an in-process guard so those entry points cannot issue duplicate requests.
   const executingTaskIds = new Set<string>()
@@ -339,6 +343,29 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       units: units.value.filter((unit) => activeSessionIds.value.has(unit.sessionId)),
       messages: messages.value.filter((message) => activeSessionIds.value.has(message.sessionId)),
     }))
+  }
+
+  function setStreamingTaskText(taskId: string, value: string): void {
+    streamingTaskText.value = { ...streamingTaskText.value, [taskId]: value }
+  }
+
+  function clearStreamingTaskText(taskId: string): void {
+    if (!(taskId in streamingTaskText.value)) return
+    const next = { ...streamingTaskText.value }
+    delete next[taskId]
+    streamingTaskText.value = next
+  }
+
+  function streamingTaskPreview(taskId: string): string {
+    const raw = streamingTaskText.value[taskId] ?? ''
+    if (!raw) return ''
+    const match = raw.match(/"answer"\s*:\s*"((?:\\.|[^"\\])*)/)
+    if (!match) return ''
+    try {
+      return JSON.parse(`"${match[1]}"`) as string
+    } catch {
+      return match[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+    }
   }
 
   async function init(): Promise<void> {
@@ -2402,13 +2429,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const hasSessionSummary = Object.prototype.hasOwnProperty.call(data, 'session_summary')
       const sessionTitle = typeof data.session_title === 'string' ? data.session_title.trim() : ''
       const sessionSummary = typeof data.session_summary === 'string' ? data.session_summary.trim() : ''
+      const conversationSession = sessions.value.find((item) => item.id === targetId)
+      const existingSessionUnits = units.value.filter((item) => item.sessionId === targetId)
       if (typeof answer !== 'string' || !answer.trim()) errors.push('answer 必须是非空字符串')
       if (!Array.isArray(rawUnits)) errors.push('units 必须是数组；没有稳定知识片段时可返回空数组')
       if (hasSessionTitle && !sessionTitle) errors.push('session_title 必须是非空字符串')
       if (hasSessionSummary && !sessionSummary) errors.push('session_summary 必须是非空字符串')
       if (Array.from(sessionTitle).length > 60) errors.push('session_title 不能超过 60 个字符')
       if (Array.from(sessionSummary).length > 120) errors.push('session_summary 不能超过 120 个字符')
-      const conversationSession = sessions.value.find((item) => item.id === targetId)
       const userMessage = messages.value.find((message) => {
         if (message.sessionId !== targetId || message.role !== 'user') return false
         return parseMetadata(message.metadata).taskId === task.id
@@ -2436,6 +2464,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         const value = item && typeof item === 'object' ? item as Record<string, unknown> : {}
         const concepts = Array.isArray(value.concepts) ? value.concepts : []
         return {
+          unitId: typeof value.unit_id === 'string' ? value.unit_id.trim() : '',
           title: typeof value.title === 'string' ? value.title.trim() : '',
           summary: typeof value.summary === 'string' ? value.summary.trim() : '',
           conceptIds: Array.isArray(value.concept_ids) ? value.concept_ids.filter((id): id is string => typeof id === 'string').map((id) => id.trim()) : [],
@@ -2445,14 +2474,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         }
       }) : []
       normalizedUnits.forEach((unit) => {
-        if (!unit.title) errors.push('对话知识单元标题不能为空')
-        if (validateUnitText(unit.title, unit.summary).length) errors.push('对话知识单元标题或摘要超出长度限制')
+        if (!unit.unitId && !unit.title) errors.push('新建对话阅读片段标题不能为空')
+        if (!unit.unitId && validateUnitText(unit.title, unit.summary).length) errors.push('新建对话阅读片段标题或摘要超出长度限制')
         unit.concepts.forEach((concept) => {
           if (!normalizeText(concept.name)) errors.push('对话返回的知识主题名称不能为空')
           if (concept.summary.length > 120) errors.push('对话返回的知识主题摘要不能超过 120 个字符')
         })
         if (unit.conceptIdsProvided) {
           errors.push(...validateConceptIdList(unit.conceptIdsRaw, promptConceptIds(task)).map((issue) => `${issue.path}: ${issue.message}`))
+        }
+        if (unit.unitId) {
+          const existingUnit = units.value.find((candidate) => candidate.id === unit.unitId)
+          if (!existingUnit || existingUnit.sessionId !== targetId) errors.push(`unit_id ${unit.unitId} 不属于当前 Session`)
         }
       })
       const conversationTargetIds = [
@@ -2578,10 +2611,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           db.run('INSERT OR IGNORE INTO concept_relations(id, parent_concept_id, child_concept_id, relation_type, source, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [relation.id, parentId, childId, relationType, 'llm', 'proposed', now, now])
         })
         normalizedUnits.forEach((item, index) => {
-          const unitId = createId('unit')
-          db.run('INSERT INTO knowledge_units(id, session_id, title, summary, order_in_session, status, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)', [unitId, targetId, item.title, item.summary || null, unitOffset + index, 'ready', now, now])
+          const unitId = item.unitId || createId('unit')
+          if (!item.unitId) {
+            db.run('INSERT INTO knowledge_units(id, session_id, title, summary, order_in_session, status, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)', [unitId, targetId, item.title, item.summary || null, unitOffset + index, 'ready', now, now])
+          }
           if (index === 0 && userMessage) db.run('UPDATE messages SET unit_id = ? WHERE id IN (?, ?)', [unitId, userMessage.id, assistantMessageId])
-          db.run('INSERT INTO nav_tree_node_units(node_id, unit_id, order_in_node) VALUES (?, ?, ?)', [branchNodeId, unitId, index])
+          db.run('INSERT OR IGNORE INTO nav_tree_node_units(node_id, unit_id, order_in_node) VALUES (?, ?, ?)', [branchNodeId, unitId, index])
           const explicitIds = [...new Set([...declaredTopLevelConceptIds, ...item.conceptIds])]
           explicitIds.forEach((conceptId) => db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [unitId, conceptId, 'llm', now]))
           item.concepts.forEach((candidate) => {
@@ -2639,6 +2674,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const ownerUnit = units.value.find((item) => item.id === targetId)
     const session = sessions.value.find((item) => item.id === (ownerUnit?.sessionId ?? targetId))
     executingTaskIds.add(taskId)
+    clearStreamingTaskText(taskId)
     try {
       mutate(() => db.run("UPDATE llm_tasks SET status = 'running', updated_at = ? WHERE id = ? AND status = 'pending'", [isoNow(), taskId]))
       const started = tasks.value.find((item) => item.id === taskId)
@@ -2713,7 +2749,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
                 try {
                   const delta = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string | null } }> }
                   const text = delta.choices?.[0]?.delta?.content
-                  if (typeof text === 'string') streamed += text
+                  if (typeof text === 'string') {
+                    streamed += text
+                    setStreamingTaskText(taskId, streamed)
+                  }
                 } catch {
                   // Providers occasionally split a JSON event across chunks;
                   // keep it in the next buffer and continue collecting output.
@@ -2727,7 +2766,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
               try {
                 const delta = JSON.parse(tail) as { choices?: Array<{ delta?: { content?: string | null } }> }
                 const text = delta.choices?.[0]?.delta?.content
-                if (typeof text === 'string') streamed += text
+                if (typeof text === 'string') {
+                  streamed += text
+                  setStreamingTaskText(taskId, streamed)
+                }
               } catch {
                 // Ignore an incomplete trailing SSE frame.
               }
@@ -2752,6 +2794,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           }
           if (!content) throw new Error('Provider 没有返回可用内容')
           const result = applyTaskResult(taskId, content)
+          clearStreamingTaskText(taskId)
           if (result.continued) {
             // Disclosure continuation re-queues the same task. Release this
             // request's guard before immediately starting the next round.
@@ -2773,11 +2816,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         }
       }
       const message = lastError?.message ?? 'API 请求失败'
+      clearStreamingTaskText(taskId)
       markTask(taskId, 'failed', undefined, [message])
       return { ok: false, error: message }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'API 请求失败'
       const current = tasks.value.find((item) => item.id === taskId)
+      clearStreamingTaskText(taskId)
       if (current?.status !== 'cancelled') markTask(taskId, 'failed', undefined, [message])
       return { ok: false, error: message }
     } finally {
@@ -3119,7 +3164,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       }
       const rootId = createId('nav')
       db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [rootId, targetSessionId, null, input.topicId ?? null, topic ? `围绕 ${topic}` : '新的知识对话', 0, now])
-      const taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${targetSessionId}:1`, prompt: buildConversationPrompt({ question, topic, context, targetSessionId, targetMessageId: messageId, targetAssistantMessageId: assistantMessageId, navigationPath: `1. ${topic ? `围绕 ${topic}` : '新的知识对话'}`, conversationHistory: '', sessionTitle: topic ? `围绕 ${topic} 的新对话` : '新的知识对话', sessionSummary: '', conceptLimit: config.value.llm.conceptLimit, disclosure: promptDisclosureContext({ unitIds: sourceUnitIds, messageIds: sourceMessageIds, includeFullContent: input.includeFullContent ?? false }) }), status: 'pending', scopeLabel: `新对话 · ${topic || '知识探索'}` })
+      const taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${targetSessionId}:1`, prompt: buildConversationPrompt({ question, topic, context, targetSessionId, targetMessageId: messageId, targetAssistantMessageId: assistantMessageId, navigationPath: `1. ${topic ? `围绕 ${topic}` : '新的知识对话'}`, conversationHistory: '', sessionTitle: topic ? `围绕 ${topic} 的新对话` : '新的知识对话', sessionSummary: '', availableUnits: [], conceptLimit: config.value.llm.conceptLimit, disclosure: promptDisclosureContext({ unitIds: sourceUnitIds, messageIds: sourceMessageIds, includeFullContent: input.includeFullContent ?? false }) }), status: 'pending', scopeLabel: `新对话 · ${topic || '知识探索'}` })
       db.run('UPDATE messages SET metadata = ? WHERE id = ?', [JSON.stringify({ mode: 'new', topicId: input.topicId ?? null, parentNodeId: rootId, taskId, answerMessageId: assistantMessageId, sourceSessionId: sourceSession ?? null }), messageId])
       writeSourceReferences(targetSessionId, sourceUnitIds, sourceMessageIds, input.includeFullContent ?? false)
     })
@@ -3172,7 +3217,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         db.run('INSERT OR IGNORE INTO message_concepts(message_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [messageId, input.topicId, 'manual', now])
       }
       db.run('UPDATE sessions SET message_count = message_count + 1, updated_at = ? WHERE id = ?', [now, session.id])
-      taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${session.id}:${revision}`, prompt: buildConversationPrompt({ question, topic, context, navigationPath: buildNavigationPath(session.id, parentNode.id), conversationHistory: buildConversationHistory(session.id, 40, parentNode.id, messageId), sessionTitle: session.title, sessionSummary: session.summary ?? '', conceptLimit: config.value.llm.conceptLimit, targetSessionId: session.id, targetMessageId: messageId, targetAssistantMessageId: assistantMessageId, disclosure: promptDisclosureContext({ unitIds: input.sourceUnitIds ?? [], messageIds: input.sourceMessageIds ?? [], includeFullContent: input.includeFullContent ?? false }) }), status: 'pending', scopeLabel: `${session.title} · 追问` })
+      taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${session.id}:${revision}`, prompt: buildConversationPrompt({ question, topic, context, navigationPath: buildNavigationPath(session.id, parentNode.id), conversationHistory: buildConversationHistory(session.id, 40, parentNode.id, messageId), sessionTitle: session.title, sessionSummary: session.summary ?? '', availableUnits: units.value.filter((unit) => unit.sessionId === session.id).map((unit) => ({ id: unit.id, title: unit.title ?? '', summary: unit.summary ?? '' })), conceptLimit: config.value.llm.conceptLimit, targetSessionId: session.id, targetMessageId: messageId, targetAssistantMessageId: assistantMessageId, disclosure: promptDisclosureContext({ unitIds: input.sourceUnitIds ?? [], messageIds: input.sourceMessageIds ?? [], includeFullContent: input.includeFullContent ?? false }) }), status: 'pending', scopeLabel: `${session.title} · 追问` })
       db.run('UPDATE messages SET metadata = ? WHERE id = ?', [JSON.stringify({ mode: 'follow_up', topicId: input.topicId ?? null, parentNodeId: parentNode.id, taskId, answerMessageId: assistantMessageId }), messageId])
       writeSourceReferences(session.id, input.sourceUnitIds ?? [], input.sourceMessageIds ?? [], input.includeFullContent ?? false)
     })
@@ -3254,6 +3299,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     queueRunning,
     queuePaused,
     queueActiveCount,
+    streamingTaskText,
+    streamingTaskPreview,
     activeSessions,
     activeConcepts,
     pendingTaskCount,

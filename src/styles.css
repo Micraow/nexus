@@ -650,6 +650,9 @@ body.fullscreen-active { overflow: hidden; }
 .branch-card-close { flex: 0 0 auto; }
 .conversation-branch-card-title:hover, .conversation-branch-card-title:focus-visible { color: var(--text); }
 .conversation-branch-card-title strong { min-width: 0; overflow: hidden; color: inherit; font-size: calc(14px * var(--app-font-scale)); text-overflow: ellipsis; white-space: nowrap; }
+.conversation-card-units { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 10px 0 2px; color: var(--muted); font-size: calc(11px * var(--app-font-scale)); }
+.conversation-unit-link { padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--primary); background: var(--primary-soft); font-size: inherit; }
+.conversation-unit-link:hover, .conversation-unit-link:focus-visible { border-color: var(--primary); text-decoration: underline; }
 .branch-card-dot { width: 12px; height: 12px; flex: 0 0 auto; border: 2px solid var(--primary); border-radius: 50%; background: var(--surface); box-shadow: 0 0 0 3px var(--primary-soft); }
 .conversation-branch-card.current .branch-card-dot { background: var(--primary); }
 .branch-card-depth { margin-left: auto; color: var(--faint); font-size: calc(10px * var(--app-font-scale)); white-space: nowrap; }

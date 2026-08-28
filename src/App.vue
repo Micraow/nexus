@@ -305,11 +305,18 @@ const activeConversationBranchCards = computed(() => {
     .filter((node): node is NavTreeNode => Boolean(node))
     .map((node) => {
       const branchMessages = conversationMessagesForNode(node.id, messages)
+      const unitIds = store.navNodeUnits
+        .filter((link) => link.nodeId === node.id)
+        .sort((left, right) => left.orderInNode - right.orderInNode)
+        .map((link) => link.unitId)
+      const units = unitIds
+        .map((unitId) => store.units.find((unit) => unit.id === unitId))
+        .filter((unit): unit is KnowledgeUnit => Boolean(unit))
       // Imported sessions predate navigation metadata. Their synthetic root
       // still needs to render the complete transcript so a restored session
       // feels continuous and can be continued from that card.
-      if (!branchMessages.length && !node.parentId && messages.length) return { node, messages }
-      return { node, messages: branchMessages }
+      if (!branchMessages.length && !node.parentId && messages.length) return { node, messages, units }
+      return { node, messages: branchMessages, units }
     })
 })
 const conversationNavTrail = computed(() => {
@@ -333,6 +340,10 @@ const activeConversationTask = computed(() => activeConversationSessionId.value
         ? pendingConversationBranch.value.parentId
         : selectedNavNodeId.value)
   : null)
+const activeConversationStreamingPreview = computed(() => {
+  const task = activeConversationTask.value ?? activeConversationUnfinishedTask.value
+  return task?.type === 'conversation' ? store.streamingTaskPreview(task.id) : ''
+})
 const activeConversationStatus = computed(() => {
   const task = activeConversationTask.value
   if (!task) return activeConversationUnfinishedTask.value ? '其他分支等待处理' : '本地会话'
@@ -2023,11 +2034,13 @@ onBeforeUnmount(() => {
                       <section v-for="(card, cardIndex) in activeConversationBranchCards" :key="card.node.id" class="conversation-branch-card" :class="{ current: cardIndex === activeConversationBranchCards.length - 1, ancestor: cardIndex < activeConversationBranchCards.length - 1 }" :aria-hidden="cardIndex < activeConversationBranchCards.length - 1 ? 'true' : undefined" :aria-label="`${cardIndex === activeConversationBranchCards.length - 1 ? '当前' : '祖先'}探索分支：${card.node.label}`" :style="{ '--stack-depth': activeConversationBranchCards.length - cardIndex - 1 }">
                         <div v-if="cardIndex === activeConversationBranchCards.length - 1" class="conversation-branch-card-title current-title"><button class="branch-card-title-main" type="button" @click="selectConversationNode(card.node)"><span class="branch-card-dot" aria-hidden="true" /><strong>{{ card.node.label }}</strong><span class="branch-card-depth">第 {{ card.node.depth + 1 }} 层</span></button><button v-if="pendingConversationBranch?.id === card.node.id" class="icon-button branch-card-close" type="button" aria-label="关闭这条未开始的探索分支" title="关闭分支" @click="closePendingConversationBranch"><X :size="15" /></button></div>
                         <div v-else class="conversation-branch-card-title" aria-hidden="true"><span class="branch-card-dot" aria-hidden="true" /><strong>{{ card.node.label }}</strong><span class="branch-card-depth">第 {{ card.node.depth + 1 }} 层</span></div>
+                        <div v-if="card.units.length" class="conversation-card-units" aria-label="当前阅读片段"><BookOpen :size="13" /><span>阅读片段：</span><button v-for="unit in card.units" :key="unit.id" type="button" class="conversation-unit-link" @click="openUnit(unit.id)">{{ unit.title || '未命名阅读片段' }}</button></div>
                         <article v-for="message in card.messages" :key="message.id" :data-conversation-message="message.id" class="conversation-message" :class="message.role"><div class="conversation-message-meta"><strong>{{ message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : '系统' }}</strong><span>消息 #{{ message.orderInSession + 1 }}</span></div><div class="md-body" v-html="renderedMessageContent(message.content, message)" @click="handleRenderedClick($event, message)" @keydown.enter.prevent="handleRenderedClick($event, message)" /></article>
                       </section>
                     </TransitionGroup>
                   </div>
                   <div v-if="activeConversationTask?.status === 'running'" class="conversation-thinking"><LoaderCircle class="spin" :size="16" />AI 正在处理这次提问…</div>
+                  <article v-if="activeConversationStreamingPreview" class="conversation-message assistant streaming-message" aria-live="polite"><div class="conversation-message-meta"><strong>AI</strong><span>实时输出</span></div><div class="md-body" v-html="renderMarkdown(activeConversationStreamingPreview)" /></article>
                   <div v-if="!activeConversationCurrentCard?.messages.length" class="empty-state compact"><MessageSquare :size="26" /><strong>{{ activeConversationCurrentCard ? '这一分支还没有回答' : '等待第一条回答' }}</strong><span>{{ activeConversationCurrentCard ? '提交问题后，回答会留在当前分支。' : '回答完成后会显示在这里。' }}</span></div>
                   <div class="conversation-composer"><textarea v-model="composerQuestion" rows="3" aria-label="继续当前对话" placeholder="继续追问…" :disabled="Boolean(activeConversationUnfinishedTask)" @keydown.ctrl.enter.prevent="startConversationFollowUp" @keydown.meta.enter.prevent="startConversationFollowUp" /><div class="conversation-composer-footer"><span>{{ activeConversationUnfinishedTask ? '请先完成上一轮回答' : store.config.llm.mode === 'api' ? 'API 会直接执行' : 'Prompt 会在右侧浮层中处理' }}</span><button class="send-button" aria-label="发送追问" :disabled="!composerQuestion.trim() || Boolean(activeConversationUnfinishedTask)" @click="startConversationFollowUp"><Send :size="17" /></button></div></div>
                 </div>
