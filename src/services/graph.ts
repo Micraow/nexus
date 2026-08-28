@@ -78,12 +78,16 @@ function indexHierarchy(concepts: Concept[], relations: ConceptRelation[], showP
   const childrenByParent = new Map<string, Set<string>>()
 
   relations.forEach((relation) => {
-    if (!hierarchyRelationIsVisible(relation, showProposed)) return
+    // A non-rejected hierarchy relation still defines structural ancestry even
+    // while its proposed edge is hidden. This prevents a child with a pending
+    // parent suggestion from being promoted to a root in the default view.
+    if (!hierarchyRelationIsActive(relation)) return
     if (!activeIds.has(relation.parentConceptId) || !activeIds.has(relation.childConceptId)) return
     if (relation.parentConceptId === relation.childConceptId) return
     const parents = parentsByChild.get(relation.childConceptId) ?? new Set<string>()
     parents.add(relation.parentConceptId)
     parentsByChild.set(relation.childConceptId, parents)
+    if (!hierarchyRelationIsVisible(relation, showProposed)) return
     const children = childrenByParent.get(relation.parentConceptId) ?? new Set<string>()
     children.add(relation.childConceptId)
     childrenByParent.set(relation.parentConceptId, children)
@@ -118,7 +122,7 @@ function indexHierarchy(concepts: Concept[], relations: ConceptRelation[], showP
   // Concepts in an isolated cycle were not reached from a root fallback path;
   // expose them as roots so a damaged import remains inspectable.
   concepts.forEach((concept) => {
-    if (!depthByConcept.has(concept.id)) {
+    if (!depthByConcept.has(concept.id) && !parentsByChild.has(concept.id)) {
       roots.add(concept.id)
       depthByConcept.set(concept.id, 0)
       rootIdsByConcept.set(concept.id, new Set([concept.id]))
@@ -262,21 +266,6 @@ export function resolveVisibleConceptIds(
       queue.push(childId)
     })
   }
-  // If a malformed cycle or a non-root expansion escaped the normal traversal,
-  // include its ancestor path and the requested node rather than dropping it.
-  expandedIds.forEach((id) => {
-    if (!activeIds.has(id)) return
-    visibleIds.add(id)
-    let current = id
-    const seen = new Set<string>()
-    while (!seen.has(current)) {
-      seen.add(current)
-      const parentId = [...(hierarchy.parentsByChild.get(current) ?? [])][0]
-      if (!parentId || !activeIds.has(parentId)) break
-      visibleIds.add(parentId)
-      current = parentId
-    }
-  })
   return { visibleIds, expandedIds, explicitExpandedIds, hierarchy }
 }
 

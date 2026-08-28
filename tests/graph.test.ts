@@ -306,7 +306,9 @@ describe('derived graph', () => {
     ]
 
     const hidden = buildGraph({ concepts, units: [], messages: [], unitConcepts: [], relations, revision: 1 })
-    expect(hidden.nodes.filter((node) => node.type === 'concept').map((node) => node.refId)).toEqual(['root', 'child', 'other'])
+    // A pending hierarchy parent still makes `child` non-root. The proposal
+    // stays hidden until explicitly enabled, so only the true roots render.
+    expect(hidden.nodes.filter((node) => node.type === 'concept').map((node) => node.refId)).toEqual(['root', 'other'])
     expect(hidden.edges).toHaveLength(0)
 
     const visible = buildGraph({
@@ -322,6 +324,16 @@ describe('derived graph', () => {
     expect(visible.nodes.filter((node) => node.type === 'concept').map((node) => node.refId)).toEqual(['root', 'child', 'other'])
     expect(visible.edges.filter((edge) => edge.type === 'hierarchy')).toHaveLength(1)
     expect(visible.edges.filter((edge) => edge.type === 'related')).toHaveLength(1)
+  })
+
+  it('does not leak a proposed child when stale expansion state is present', () => {
+    const concepts = [
+      { id: 'root', name: '根', normalizedName: '根', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+      { id: 'child', name: '待确认子主题', normalizedName: '待确认子主题', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+    ]
+    const relations = [{ id: 'h', parentConceptId: 'root', childConceptId: 'child', relationType: 'hierarchy' as const, source: 'llm' as const, status: 'proposed' as const, createdAt: now, updatedAt: now }]
+    const snapshot = buildGraph({ concepts, units: [], messages: [], unitConcepts: [], relations, revision: 1, expandedConceptIds: ['child'] })
+    expect(snapshot.nodes.filter((node) => node.type === 'concept').map((node) => node.refId)).toEqual(['root'])
   })
 
   it('reveals one hierarchy level per expanded ancestor', () => {
