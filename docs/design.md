@@ -523,6 +523,8 @@ LLM 返回 Concept 名称、别名和建议关系。系统按以下顺序寻找�
 
 LLM 只返回建议变更：合并、别名、创建/编辑/软删除（归档）/恢复/移动 Concept、添加/删除/修改 hierarchy 或 related、解除 hierarchy、Session/Message/KnowledgeUnit 直接归属重绑和阅读片段标题/摘要修订。`delete_concept` 只改变 Concept 状态，不删除数据库行；`restore_concept` 只恢复 archived Concept。每条动作都要求明确目标 ID、reason 和参数，所有写入在独立快照事务中执行并可撤销。普通 Concept 提取和对话不返回 related，相关信号由共享 Session/Message 归属派生。
 
+维护动作目录同时暴露为 MCP `tools/list` 兼容的 `nexus_maintenance_*` 工具：每个工具只有 `name`、`description` 和严格的 `inputSchema`，其中 `additionalProperties=false`；应用层仍保留带兼容别名和审核说明的完整目录。`create_concept` 可在一次原子调用中提交别名及一个或多个直接父主题；`set_hierarchy_parents` 可整体替换多父 DAG。所有工具调用都必须带非空 `reason`，未知工具、未知字段、重复别名、关系自环和层级成环在事务前拒绝。
+
 ## 7. 功能模块
 
 ### M1 数据导入

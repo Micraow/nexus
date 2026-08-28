@@ -322,7 +322,7 @@ Concept 提取结果必须包含 `concepts` 数组；全部复用目录中已有
 
 ### 4.3 维护建议
 
-维护任务扫描整个 active Concept 图谱；选中的主题、会话或知识单元只作为关注提示，不构成输入边界。任务只允许返回建议变更，不允许返回“直接执行 SQL”或不可追溯的自由文本命令。机器可读 `MAINTENANCE_ACTION_API` 为每个动作提供 MCP 标准 `inputSchema`（`additionalProperties=false`，可空字段使用标准 JSON Schema 类型数组），并提供 `input_schema` 兼容字段、必填字段、效果和审核边界。维护结果支持 `create_concept`、`update_concept`、`delete_concept`、`restore_concept`、`merge`、`alias`、`remove_alias`、`add_relation`、`update_relation`、`delete_relation`、`set_relation_status`、`confirm_relation`、`reject_relation`、`move_concept`、`set_hierarchy_parents`、`remove_hierarchy`、`membership_relink`、兼容用的 `relation`/`remove_relation`/`archive_concept`/`unit_relink` 和 `unit_revision`；每条建议必须有目标 ID 与可审计 reason，应用前验证端点、名称、目标类型、归属 ID 和 DAG 成环，所有写入走可撤销快照事务。未知动作或字段一律拒绝。
+维护任务扫描整个 active Concept 图谱；选中的主题、会话或知识单元只作为关注提示，不构成输入边界。任务只允许返回建议变更，不允许返回“直接执行 SQL”或不可追溯的自由文本命令。机器可读 `MAINTENANCE_ACTION_API` 为每个动作提供 MCP 标准 `inputSchema`（`additionalProperties=false`，可空字段使用标准 JSON Schema 类型数组），并提供 `input_schema` 兼容字段、必填字段、效果和审核边界；`listMaintenanceMcpTools()` 返回可直接用于 `tools/list` 的 `{name, description, inputSchema}` 数组。维护结果支持 `create_concept`、`update_concept`、`delete_concept`、`restore_concept`、`merge`、`alias`、`remove_alias`、`add_relation`、`update_relation`、`delete_relation`、`set_relation_status`、`confirm_relation`、`reject_relation`、`move_concept`、`set_hierarchy_parents`、`remove_hierarchy`、`membership_relink`、兼容用的 `relation`/`remove_relation`/`archive_concept`/`unit_relink` 和 `unit_revision`；`create_concept` 可原子提交 `aliases` 与 `parent_concept_ids`（或兼容的单个 `parent_concept_id`）。每条建议必须有目标 ID 与可审计 reason，应用前验证端点、名称、目标类型、归属 ID、别名唯一性和 DAG 成环，所有写入走可撤销快照事务。未知动作或字段一律拒绝。
 
 `create_concept`/`move_concept` 的 `parent_concept_id` 表示直接父主题，`null` 仅在没有充分层级证据、确需提升为根时使用；`set_hierarchy_parents` 用 `parent_concept_ids` 一次性替换全部父主题，空数组表示根，支持多父 DAG。新主题应优先挂到已有或同批次中最窄且有直接语义包含证据的父主题。`remove_hierarchy` 只删除指定父子引用，不删除 Concept；`delete_concept`/`archive_concept` 只把 active Concept 标为 archived，保留关系、归属和证据，重复删除幂等；`restore_concept` 只恢复 archived，merged 主题不可恢复。维护产生的 hierarchy 关系默认写入 `proposed`，等待用户确认；related 由维护动作显式编辑，按无向边规范化。`set_relation_status` 及其确认/拒绝别名仅在任务明确要求审核时使用，普通扫描不得越过用户确认。
 
@@ -330,7 +330,7 @@ Concept 提取结果必须包含 `concepts` 数组；全部复用目录中已有
 
 ### 4.4 Prompt Harness 与渐进式披露
 
-- 每个生成的 Prompt 必须以前缀稳定、带版本号的 harness 开始；当前版本使用 `NEXUS_HARNESS_PROMPT`、`PROGRESSIVE_DISCLOSURE_PROTOCOL` 和 `PROMPT_VERSION=2026-08-v4-direct-concepts`。任务规格和数据追加在固定前缀之后，续跑不得改写固定前缀；
+- 每个生成的 Prompt 必须以前缀稳定、带版本号的 harness 开始；当前版本使用 `NEXUS_HARNESS_PROMPT`、`PROGRESSIVE_DISCLOSURE_PROTOCOL` 和 `PROMPT_VERSION=2026-08-v5-hierarchy-aware`。任务规格和数据追加在固定前缀之后，续跑不得改写固定前缀；
 - `DISCLOSURE_INDEX.roots[]` 每项必须包含 `{ refID, title, summary }`。`refID` 是本地实体的不透明标识；模型不得创造、改写或拼接；
 - `DISCLOSURE_INDEX.expansions[]` 以已有 `refID` 为键，可包含下一层 `children[]`，以及明确披露的 `content`。`children` 仍是摘要目录，只有 `content` 可以表示知识单元或 Message 原文；
 - 支持递归链路 `Concept → 子 Concept → KnowledgeUnit → Message 原文`。实现可以按实体类型分步披露，但任何层级都必须先出现在当前目录，才能成为下一次请求目标；

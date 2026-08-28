@@ -403,7 +403,13 @@ const conceptTreeExpandedIdsForView = computed(() => {
   })
   return [...expanded]
 })
-const selectedConceptRelations = computed(() => selectedConcept.value ? store.relations.filter((relation) => relation.parentConceptId === selectedConcept.value?.id || relation.childConceptId === selectedConcept.value?.id) : [])
+// Legacy LLM-authored related rows are not actionable relations. Related
+// signals are derived from shared evidence; only hierarchy proposals and
+// explicit maintenance edits belong in the review surface.
+const isReviewableConceptRelation = (relation: ConceptRelation): boolean => relation.relationType === 'hierarchy' || relation.source === 'maintenance'
+const selectedConceptRelations = computed(() => selectedConcept.value
+  ? store.relations.filter((relation) => (relation.parentConceptId === selectedConcept.value?.id || relation.childConceptId === selectedConcept.value?.id) && isReviewableConceptRelation(relation))
+  : [])
 const selectedSession = computed(() => store.sessions.find((session) => session.id === store.selectedSessionId) ?? null)
 const conceptEvidenceFor = (conceptId: string) => resolveConceptEvidence({
   conceptId,
@@ -500,6 +506,7 @@ const selectedConceptRelated = computed<RelatedConceptView[]>(() => {
 const selectedConceptHasProposedRelations = computed(() => selectedConceptRelations.value.some((relation) => relation.status === 'proposed'))
 const proposedConceptRelations = computed(() => store.relations
   .filter((relation) => relation.status === 'proposed')
+  .filter(isReviewableConceptRelation)
   .filter((relation) => store.activeConcepts.some((concept) => concept.id === relation.parentConceptId))
   .filter((relation) => store.activeConcepts.some((concept) => concept.id === relation.childConceptId))
   .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)))

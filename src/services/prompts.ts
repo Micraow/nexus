@@ -609,8 +609,8 @@ export function buildMaintenancePrompt(input: {
       }),
     }))
   const actionApi = `
-动作 API（每条 suggestion 只能执行一个原子动作，应用前会校验并以可撤销事务写入）：
-- create_concept：创建主题。参数 name、summary、notes、parent_concept_id（无父级用 null）；父级关系会以 proposed 等待确认。
+动作 API（MCP tools/list 兼容）：机器目录中的每个 name 都是一个可调用工具，调用参数就是 inputSchema 允许的 JSON 对象。每条 suggestion 只能执行一个原子动作，应用前会校验并以可撤销事务写入；不要返回 SQL、脚本或未列出的字段。
+- create_concept：创建主题。参数 name、summary、notes、aliases（可为空字符串数组）、parent_concept_id（无父级用 null）或 parent_concept_ids（可为空数组，二者不能同时出现）；父级关系会以 proposed 等待确认。
 - update_concept：编辑主题。参数 concept_id，及要改变的 name、summary、notes（未提供的字段保持不变）。
 - delete_concept：删除主题的用户语义是归档，参数 concept_id；原始证据保留，可用 restore_concept 恢复。
 - restore_concept：恢复已归档主题，参数 concept_id。
@@ -659,5 +659,5 @@ ${disclosureText}
 {"suggestions":[{"type":"create_concept|update_concept|delete_concept|restore_concept|merge|alias|remove_alias|add_relation|relation|update_relation|delete_relation|remove_relation|set_relation_status|confirm_relation|reject_relation|move_concept|set_hierarchy_parents|remove_hierarchy|membership_relink|unit_relink|unit_revision|archive_concept","reason":"可审计的事实依据","...":"严格使用动作 API 定义的参数"}],"disclosure_requests":[]}
 只返回确有依据的建议；关系建议最多 2 条，不能仅凭共同出现推断 related；新主题优先匹配已有或同批次中最窄且有直接证据的父主题，只有没有足够层级证据时才允许成为根；不要把所有主题平铺为一级。没有建议时返回空数组。不要输出解释文字。
 
-动作响应的规范格式：{"suggestions":[{"type":"create_concept|update_concept|delete_concept|restore_concept|merge|alias|remove_alias|add_relation|relation|update_relation|delete_relation|remove_relation|set_relation_status|confirm_relation|reject_relation|move_concept|set_hierarchy_parents|remove_hierarchy|membership_relink|unit_relink|unit_revision|archive_concept","reason":"可审计的事实依据","...":"严格使用上方动作 API 定义的参数"}],"disclosure_requests":[]}。`)
+动作响应的规范格式：{"suggestions":[{"type":"create_concept|update_concept|delete_concept|restore_concept|merge|alias|remove_alias|add_relation|relation|update_relation|delete_relation|remove_relation|set_relation_status|confirm_relation|reject_relation|move_concept|set_hierarchy_parents|remove_hierarchy|membership_relink|unit_relink|unit_revision|archive_concept","reason":"可审计的事实依据","...":"严格使用上方动作 API 定义的参数"}],"disclosure_requests":[]}。每条 suggestion 的 type 与参数必须能一一映射到机器目录中的 nexus_maintenance_* 工具；没有变更时返回空 suggestions。`)
 }
