@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { conversationMessageBranchNodeId, conversationMessagesForNode, conversationTaskForNode, suggestedExplorationQuestion, unfinishedConversationTask } from '@/services/conversation'
+import { conversationCardMessages } from '@/components/conversation-card-messages'
 import type { LLMTask, Message } from '@/types/domain'
 
 const task = (id: string, status: LLMTask['status'], createdAt: string): LLMTask => ({
@@ -75,5 +76,17 @@ describe('conversation branch task mapping', () => {
 
     expect(conversationMessagesForNode('branch-a', messages).map((item) => item.id).sort()).toEqual(['answer-a', 'opening'])
     expect(conversationMessagesForNode('branch-b', messages).map((item) => item.id).sort()).toEqual(['answer-b', 'question-b'])
+  })
+
+  it('shows an unanswered suggested follow-up only on its temporary branch card', () => {
+    const messages = [
+      message('opening', 'user', { mode: 'new', parentNodeId: 'root', taskId: 'task-a' }),
+      message('answer-a', 'assistant', { taskId: 'task-a', navNodeId: 'root' }),
+      message('suggested-question', 'user', { mode: 'follow_up', parentNodeId: 'root', taskId: 'task-pending', answerMessageId: 'answer-pending' }),
+    ].map((item, index) => ({ ...item, orderInSession: index }))
+    const pending = { id: 'pending-nav', taskId: 'task-pending' }
+
+    expect(conversationCardMessages('root', messages, pending).map((item) => item.id)).toEqual(['opening', 'answer-a'])
+    expect(conversationCardMessages('pending-nav', messages, pending).map((item) => item.id)).toEqual(['suggested-question'])
   })
 })
