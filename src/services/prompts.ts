@@ -312,8 +312,8 @@ KnowledgeUnit：${unit.title ?? '待命名'}（ID：${unit.id}）
 消息：${messages.map((message) => `${message.id} · ${message.role}: ${message.content}`).join('\n')}
 ${disclosureText}
 
-如果 DISCLOSURE_INDEX 中已有一级父主题与子主题引用，请先判断是否应复用已有主题；需要更多层级时按固定协议返回 disclosure_requests，不要自行创造 refID。
-关系与层级：对每个新 Concept，优先查找 DISCLOSURE_INDEX 或本批次中语义范围最窄且直接包含它的父主题；只有确无合适上位主题才允许暂作根，不要把候选全部并列。hierarchy 使用 source 作为父主题、target 作为子主题；related 只是两个主题之间的无向关联，不存在父子顺序。
+ 如果 DISCLOSURE_INDEX 中已有一级父主题与子主题引用，请先判断是否应复用已有主题；需要更多层级时按固定协议返回 disclosure_requests，不要自行创造 refID。
+ 关系与层级：对每个新 Concept，优先查找 DISCLOSURE_INDEX 或本批次中语义范围最窄且直接包含它的父主题；只有确无合适上位主题才允许暂作根，不要把候选全部并列。hierarchy 使用 source 作为父主题、target 作为子主题；related 只是两个主题之间的无向关联，不存在父子顺序。
 关系必须有消息中的直接证据：不要因为两个 Concept 同时出现、属于同一知识单元或“看起来有关”就建立关系。每个 KnowledgeUnit 最多返回 0～2 条关系，宁可为空；不要为了凑数建立 related。只保留最强、最明确的关系。
 
 输出中的 memberships 是可选的细粒度归属声明；同一目标可以列出多个 Concept，必须使用 concept_ids 数组。只能引用 DISCLOSURE_INDEX 中已经出现的 Concept refID；新提取的 Concept 由 concepts 数组定义，应用会按本 KnowledgeUnit 的范围建立多对多关联。如果全部复用现有 Concept，concepts 可以返回空数组，但 concept_ids 不能同时为空。
@@ -420,7 +420,7 @@ ${disclosureText}
 - 每个新主题必须至少归属于用户或 assistant Message；只有主题确实概括整个会话时才同时归属于 Session。不要把 Session 归属隐式复制给所有 Message。
 - 即使 units 为空，也要通过顶层 concepts 与 memberships 写明本轮确有证据的新主题或复用主题。没有新的稳定主题时 concepts 可以为空；没有直接归属时 memberships 可以为空。
 - units 只表示可选阅读片段。units[].concept_ids 只能引用已披露的已有主题；units[].concepts 可以定义只属于该阅读片段的新主题，但不能替代 Message/Session 的直接证据归属。
-- 对每个新 Concept，优先在 DISCLOSURE_INDEX 中找语义范围最窄的已有直接父主题，并检查本轮 concepts 是否存在更合适的直接父主题。目录层级不足时请求展开；找到合适父主题必须通过 relations 返回 hierarchy，只有确无合适上位主题才允许暂作根。不要把本轮 Concept 默认并列。
+ - 对每个新 Concept，优先在 DISCLOSURE_INDEX 中找语义范围最窄的已有直接父主题，并检查本轮 concepts 是否存在更合适的直接父主题。目录层级不足时请求展开；找到合适父主题必须通过 relations 返回 hierarchy，只有确无合适上位主题才允许暂作根。不要把本轮 Concept 默认并列。
 - relations 可以表达 hierarchy 或 related。hierarchy 的 source 是父主题、target 是子主题；related 是无向且不改变根节点。关系端点只能是已披露 Concept refID 或本轮 client_ref；status 只能省略或为 proposed，绝不能写 confirmed/rejected。不要为了连接所有 Concept 编造关系。
 
 请只返回 JSON，格式如下：
