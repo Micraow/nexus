@@ -595,7 +595,7 @@ LLM 只返回建议变更：合并、别名、创建/编辑/移动/归档 Concep
 - ConceptRelation related：相关关系；
 - ManualGraphEdge：用户明确创建的额外边。
 
-默认只显示 active hierarchy 的根 Concept 和已确认关系。根是“没有可见 hierarchy 父节点”的 Concept；`related` 边永远不参与根判断。`showProposed=false` 时 proposed hierarchy/related 均不参与根、祖先、展开和投影；侧边栏可以切换 KnowledgeUnit、Message、父子边、共现边、相关/手动边、待确认关系和保留的探讨/流程会话。
+默认只显示 active hierarchy 的根 Concept 和已确认关系。根是“没有未拒绝 hierarchy 父节点”的 Concept；`related` 边永远不参与根判断。`showProposed=false` 时 proposed hierarchy/related 不绘制，但未拒绝的 proposed hierarchy 仍参与结构父级判定，因此不会把待确认子主题错误提升为一级根；侧边栏可以切换 KnowledgeUnit、Message、父子边、共现边、相关/手动边、待确认关系和保留的探讨/流程会话。
 
 层级展开不设固定深度：
 
