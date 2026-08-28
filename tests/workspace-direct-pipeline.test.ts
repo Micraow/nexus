@@ -440,6 +440,15 @@ describe('direct concept extraction import pipeline', () => {
     expect(invalid.ok).toBe(false)
     expect(invalid.errors.join('; ')).toContain('unexpected 不是 delete_concept 允许的字段')
 
+    const strictRelationTaskId = store.createMaintenanceTask()
+    const strictRelationTask = store.tasks.find((item) => item.id === strictRelationTaskId)!
+    const strictRelation = store.applyTaskResult(strictRelationTask.id, JSON.stringify({
+      suggestions: [{ type: 'add_relation', parent_concept_id: conceptId, child_concept_id: conceptId, relation_type: 'related', reason: 'canonical schema 不应接受兼容字段' }],
+      disclosure_requests: [],
+    }))
+    expect(strictRelation.ok).toBe(false)
+    expect(strictRelation.errors.join('; ')).toContain('parent_concept_id 不是 add_relation 允许的字段')
+
     const sessionId = store.createConversationTask({ question: '生成一个可维护阅读片段' })
     const conversationTask = store.tasks.find((task) => task.type === 'conversation' && task.inputRevision.startsWith(`${sessionId}:`))!
     const answer = store.applyTaskResult(conversationTask.id, JSON.stringify({
@@ -462,6 +471,18 @@ describe('direct concept extraction import pipeline', () => {
     expect(relinkResult.ok, relinkResult.errors.join('; ')).toBe(true)
     expect(store.applyMaintenanceSuggestion(relinkTaskId, 0).ok).toBe(true)
     expect(store.unitConcepts).not.toContainEqual(expect.objectContaining({ unitId: unit.id, conceptId }))
+  })
+
+  it('rejects null for optional non-nullable maintenance fields', () => {
+    const conceptId = store.createConcept('严格字段主题')
+    const taskId = store.createMaintenanceTask()
+    const task = store.tasks.find((item) => item.id === taskId)!
+    const result = store.applyTaskResult(task.id, JSON.stringify({
+      suggestions: [{ type: 'update_concept', concept_id: conceptId, summary: null, reason: '测试 schema 类型边界' }],
+      disclosure_requests: [],
+    }))
+    expect(result.ok).toBe(false)
+    expect(result.errors.join('; ')).toContain('summary 类型不符合动作 API')
   })
 
   it('supports explicit relation edits and Session/Message/Unit membership relinking', () => {

@@ -1634,7 +1634,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         return
       }
       const allowed = new Set(['type', 'reason', 'applied', ...Object.keys(definition.properties)])
-      if (inputType === 'relation' || inputType === 'add_relation') {
+      // Legacy parent/child endpoint names are accepted only by the
+      // deprecated `relation` alias. Canonical `add_relation` stays aligned
+      // with its MCP inputSchema and rejects those extra fields.
+      if (inputType === 'relation') {
         ;['parent_concept_id', 'child_concept_id', 'target_concept_id', 'source_concept_id'].forEach((field) => allowed.add(field))
       }
       if (inputType === 'update_relation') {
@@ -1646,18 +1649,23 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (typeof raw.reason !== 'string' || !raw.reason.trim()) errors.push(`suggestions.${index}.reason 必须是非空字符串`)
       if (Object.prototype.hasOwnProperty.call(raw, 'applied') && typeof raw.applied !== 'boolean') errors.push(`suggestions.${index}.applied 必须是布尔值`)
       definition.required.forEach((field) => {
-        const compatibilityPresent = (inputType === 'relation' || inputType === 'add_relation')
+        const compatibilityPresent = inputType === 'relation'
           && ((field === 'source_concept_id' && raw.parent_concept_id !== undefined) || (field === 'target_concept_id' && raw.child_concept_id !== undefined))
         if (!compatibilityPresent && (!Object.prototype.hasOwnProperty.call(raw, field) || raw[field] === undefined)) errors.push(`suggestions.${index}.${field} 为必填字段`)
       })
       Object.entries(definition.properties).forEach(([field, expected]) => {
-        if (!Object.prototype.hasOwnProperty.call(raw, field) || raw[field] === undefined || raw[field] === null) return
+        if (!Object.prototype.hasOwnProperty.call(raw, field) || raw[field] === undefined) return
         const actual = raw[field]
-        const valid = expected === 'string' || expected === 'string?' ? typeof actual === 'string'
-          : expected === 'string[]' ? Array.isArray(actual) && actual.every((item) => typeof item === 'string')
-            : expected === 'boolean' ? typeof actual === 'boolean'
-            : Array.isArray(expected) ? typeof actual === 'string' && expected.includes(actual as never)
-              : true
+        const valid = expected === 'string' || expected === 'string?'
+          ? typeof actual === 'string'
+          : expected === 'string|null' || expected === 'string|null?'
+            ? actual === null || typeof actual === 'string'
+            : expected === 'string[]'
+              ? Array.isArray(actual) && actual.every((item) => typeof item === 'string')
+              : expected === 'boolean'
+                ? typeof actual === 'boolean'
+                : Array.isArray(expected) ? typeof actual === 'string' && expected.includes(actual as never)
+                  : false
         if (!valid) errors.push(`suggestions.${index}.${field} 类型不符合动作 API`)
       })
       if (raw.parent_concept_id !== undefined && raw.parent_concept_id !== null && typeof raw.parent_concept_id !== 'string') errors.push(`suggestions.${index}.parent_concept_id 类型不符合动作 API`)

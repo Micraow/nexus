@@ -99,6 +99,8 @@ describe('maintenance prompt', () => {
     })
     expect(actions.get('set_hierarchy_parents')?.input_schema.properties.parent_concept_ids).toMatchObject({ type: 'array', items: { type: 'string' } })
     expect(actions.get('create_concept')?.input_schema.properties.parent_concept_id).toMatchObject({ type: ['string', 'null'] })
+    expect(actions.get('update_concept')?.inputSchema.properties.summary).toMatchObject({ type: 'string', maxLength: 120 })
+    expect(actions.get('unit_revision')?.inputSchema.properties.title).toMatchObject({ type: 'string', maxLength: 30 })
     expect(actions.get('set_hierarchy_parents')?.input_schema.properties.parent_concept_ids).toMatchObject({ uniqueItems: true })
     expect(actions.get('remove_alias')?.input_schema.required).toContain('alias_id')
     expect(actions.get('set_relation_status')?.input_schema.properties.status).toMatchObject({ enum: ['proposed', 'confirmed', 'rejected'] })

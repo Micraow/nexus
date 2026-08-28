@@ -67,13 +67,13 @@ export interface MaintenanceActionDefinition {
   deprecated?: boolean
 }
 
-function maintenanceSchemaProperty(value: MaintenanceProperty): MaintenanceSchemaProperty {
+function maintenanceSchemaProperty(value: MaintenanceProperty, fieldName?: string): MaintenanceSchemaProperty {
   if (Array.isArray(value)) return { type: 'string', enum: value }
   if (value === 'string[]') return { type: 'array', items: { type: 'string', minLength: 1 }, uniqueItems: true }
   if (value === 'boolean') return { type: 'boolean' }
   if (value === 'string|null' || value === 'string|null?') return { type: ['string', 'null'] }
   const schema: MaintenanceSchemaProperty = { type: 'string', minLength: 1 }
-  if (value === 'string') schema.maxLength = 120
+  if (value === 'string' || value === 'string?') schema.maxLength = fieldName === 'title' ? 30 : 120
   return schema
 }
 
@@ -85,7 +85,7 @@ function maintenanceAction(
   review?: string,
 ): MaintenanceActionDefinition {
   const schemaProperties: Record<string, MaintenanceSchemaProperty> = {}
-  Object.entries(properties).forEach(([key, value]) => { schemaProperties[key] = maintenanceSchemaProperty(value) })
+  Object.entries(properties).forEach(([key, value]) => { schemaProperties[key] = maintenanceSchemaProperty(value, key) })
   schemaProperties.reason = { type: 'string', minLength: 1 }
   return {
     type,
