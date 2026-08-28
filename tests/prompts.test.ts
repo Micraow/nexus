@@ -19,6 +19,7 @@ import {
   MAINTENANCE_ACTION_API,
   parseDisclosureContext,
   PROGRESSIVE_DISCLOSURE_PROTOCOL,
+  PROMPT_VERSION,
   replaceDisclosureContext,
 } from '@/services/prompts'
 
@@ -272,6 +273,29 @@ describe('prompt harness and progressive disclosure', () => {
     expect(prompt).toContain('最多只能返回 3 个 Concept')
     expect(prompt).toContain('client_ref 只能使用 new:1 到 new:3')
     expect(prompt).toContain('不需要为前缀匹配另开 API 调用')
+  })
+
+  it('requires a mechanical per-name self-check before Concept JSON is returned', () => {
+    const messages = [{ id: 'm', sessionId: 's', role: 'user' as const, content: '比较 DCQCN、PFC 和 PathTable/FlowTable', orderInSession: 0 }]
+    const prompts = [
+      buildConceptPrompt(session, unit, messages, []),
+      buildOriginConceptPrompt(session, messages),
+      buildConversationPrompt({ question: '继续比较', context: '', topic: 'RDMA' }),
+    ]
+
+    expect(PROMPT_VERSION).toBe('2026-08-v8-concept-name-self-check')
+    prompts.forEach((prompt) => {
+      expect(prompt).toContain('逐个扫描 concepts[i].name 的全部 Unicode 字符')
+      expect(prompt).toContain('出现“与”“和”“及”“、”“/”“／”任一字符')
+      expect(prompt).toContain('没有技术术语、固定搭配或比较场景例外')
+      expect(prompt).toContain('禁止仅删除连接词后仍把多个主题塞在同一个 name 中')
+      expect(prompt).toContain('PathTable/FlowTable 设计')
+      expect(prompt).toContain('"name":"RDMA 网络控制"')
+      expect(prompt).toContain('new:1→new:2、new:1→new:3 的 hierarchy')
+      expect(prompt).toContain('输出前再次逐项检查')
+      expect(prompt).toContain('最终 JSON 门禁：输出前逐项扫描 concepts[].name')
+      expect(prompt).toContain('不能输出后依赖软件拒绝')
+    })
   })
 })
 

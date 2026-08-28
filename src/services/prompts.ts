@@ -6,7 +6,20 @@ import { DEFAULT_CONCEPT_LIMIT, normalizeConceptLimit } from '@/services/config'
  * lets provider-side prompt caches reuse the behavioural contract while each
  * task appends its own spec and data below it.
  */
-export const PROMPT_VERSION = '2026-08-v7-concept-quality-and-scope'
+export const PROMPT_VERSION = '2026-08-v8-concept-name-self-check'
+
+const CONCEPT_NAME_QUALITY_CONTRACT = `
+Concept 名称输出前机械自检（硬限制，必须逐项执行）：
+1. 草拟最终 JSON 后，逐个扫描 concepts[i].name 的全部 Unicode 字符。
+2. 只要 name 中出现“与”“和”“及”“、”“/”“／”任一字符，该名称就无条件不合格；这条字符检查没有技术术语、固定搭配或比较场景例外，必须在输出前改正。
+3. 如果不合格名称实际包含多个独立主题，必须拆成多个 concepts 对象，各自使用短而独立的名称；禁止仅删除连接词后仍把多个主题塞在同一个 name 中。
+4. 拆分出的主题若有共同的稳定上位主题，应创建或复用该单一父主题，并用 hierarchy 组织父→子；比较、并列或共同出现本身不能冒充 hierarchy。若拆分后会超过 Concept 数量上限，只保留证据最充分的单一主题，绝不能重新合并。
+5. 输出前再次逐项检查：每个 name 最长 24 个 Unicode 字符，只表达一个主题，并且不含上述六种禁用字符；任一项失败都不得输出该 JSON。
+反例（禁止）："DCQCN 与 PFC"、"PathTable/FlowTable 设计"、"CONGA、MP-RDMA 方案对比"。
+正例：把共同上位主题和独立子主题分别声明为 {"client_ref":"new:1","name":"RDMA 网络控制","summary":"RDMA 网络中的流量调节主题。","aliases":[]}、{"client_ref":"new:2","name":"DCQCN 拥塞控制","summary":"基于 ECN 反馈的端到端拥塞控制。","aliases":[]}、{"client_ref":"new:3","name":"PFC 逐跳反压","summary":"按优先级暂停链路流量的逐跳机制。","aliases":[]}，再返回 new:1→new:2、new:1→new:3 的 hierarchy；不得把三个名称重新拼成一个 Concept。
+`
+
+const CONCEPT_NAME_FINAL_GATE = '最终 JSON 门禁：输出前逐项扫描 concepts[].name；含“与”“和”“及”“、”“/”“／”任一字符就先拆成独立 Concept，不能输出后依赖软件拒绝，也不能只删连接词继续合并。'
 
 function promptConceptLimit(value: unknown): number {
   return normalizeConceptLimit(value, DEFAULT_CONCEPT_LIMIT)
@@ -493,6 +506,7 @@ export function buildConceptPrompt(session: Session, unit: KnowledgeUnit, messag
   const disclosureText = formatDisclosureContext(disclosure)
   const limit = promptConceptLimit(conceptLimit)
   return buildHarnessPrompt(`请从下面的 KnowledgeUnit 提取 1～${limit} 个稳定、可复用的 Concept。最多只能返回 ${limit} 个 Concept，超过部分必须舍弃；这个数量上限是硬约束。每个 Concept 名称最长 24 个字符（按 Unicode 字符计数），必须像教材章节的大标题或小标题，是单一、凝练、可区分的主题词组（通常 1～6 个关键词）；标题中禁止用“与/和/及/、/”拼接多个主题，不要写“甲与乙关系”“甲/乙对比”“甲方案谱系”等复合标题，多个独立概念必须分别返回。优先返回具体知识主体，不要返回“问题”“回答”“内容”等泛词；已有 Concept 只作为候选参考，不要强行合并。
+${CONCEPT_NAME_QUALITY_CONTRACT}
 
 Session：${session.title}
 Session ID：${session.id}
@@ -509,6 +523,7 @@ ${disclosureAvailability(disclosure)}
 
 输出中的 memberships 是可选的细粒度归属声明；同一目标可以列出多个 Concept，必须使用 concept_ids 数组。只标记有直接证据的消息，不要为了覆盖全部消息、凑满数量或重复同一主题而逐条复制 membership。只能引用 DISCLOSURE_INDEX 中已经出现的 Concept refID；新提取的 Concept 由 concepts 数组定义，应用会按本 KnowledgeUnit 的范围建立多对多关联。如果全部复用现有 Concept，concepts 可以返回空数组，但 concept_ids 不能同时为空。
 
+${CONCEPT_NAME_FINAL_GATE}
  只返回 JSON：{"concepts":[{"name":"...","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"concept_ids":["已列出的 Concept refID"],"memberships":[{"target_type":"unit|message|session","target_id":"原始 ID","concept_ids":["Concept refID", "另一个 Concept refID"]}],"relations":[{"source":"直接父 Concept 名称或 refID","target":"直接子 Concept 名称或 refID","type":"hierarchy","status":"proposed"}],"disclosure_requests":[]}`)
 }
 
@@ -534,6 +549,7 @@ export function buildOriginConceptPrompt(
     : '输入范围：完整 Session。'
 
   return buildHarnessPrompt(`请直接从下面的 Session 和 Message 提取 1～${limit} 个稳定、可复用的核心 Concept（包括复用已有 Concept 与新候选），最多只能返回 ${limit} 个 Concept，超过部分必须舍弃；这个数量上限是硬约束。每个 Concept 名称最长 24 个字符（按 Unicode 字符计数），必须像教材章节的大标题或小标题，是单一、凝练、可区分的主题词组（通常 1～6 个关键词）；标题中禁止用“与/和/及/、/”拼接多个主题，不要写“甲与乙关系”“甲/乙对比”“甲方案谱系”等复合标题，多个独立概念必须分别返回。并建立可追溯的多对多归属。但是现在你只能建立hierarchy关系。探讨、比较或操作流程也可以包含稳定知识；不要为了生成主题而先把对话分段。
+${CONCEPT_NAME_QUALITY_CONTRACT}
 
 Session：${session.title}
 Session ID：${session.id}
@@ -558,6 +574,7 @@ Concept 与归属：
 - related 是无向、非层级的稳定语义关系，不存在父子顺序；它由软件根据共享 Session/Message 事实自动派生，普通 Concept 提取和对话响应绝不能返回 related。只有知识维护动作 API 可以显式添加、修改或删除持久化 related。
 - 关系端点使用已披露的 Concept refID 或本次 concepts 的 client_ref。普通提取只能返回 hierarchy 建议，status 只能省略或为 proposed，绝不能写 confirmed/rejected；应用会在本地去重、做 DAG 环检测，用户确认后才会改变状态。不要为了把所有 Concept 连起来而补关系。
 
+${CONCEPT_NAME_FINAL_GATE}
 只返回 JSON：{"concepts":[{"client_ref":"new:1","name":"...","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"memberships":[{"target_type":"message","target_id":"上面列出的 Message ID","concept_ids":["已披露的 Concept refID 或 new:1","另一个 Concept refID 或 client_ref"]}],"relations":[{"source":"Concept refID 或 client_ref","target":"Concept refID 或 client_ref","type":"hierarchy","status":"proposed"}],"disclosure_requests":[]}`)
 }
 
@@ -633,6 +650,7 @@ ${disclosureAvailability(input.disclosure)}
 
 知识主题与事实归属同步：
 - 顶层 concepts 用于本轮回答中新识别出的稳定知识主题；最多 ${conceptLimit} 项，每个候选必须提供本响应唯一的 client_ref（new:1 到 new:${conceptLimit}）。每个 Concept 名称最长 24 个字符（按 Unicode 字符计数），必须像教材章节的大标题或小标题，是单一、凝练、可区分的主题词组（通常 1～6 个关键词）；标题中禁止用“与/和/及/、/”拼接多个主题，不要把多个主题合并成“甲与乙关系”“甲/乙对比”“甲方案谱系”等复合标题，多个独立概念必须分别返回。只是值得继续探索、证据尚不足的黄色建议不要创建为 Concept。
+${CONCEPT_NAME_QUALITY_CONTRACT}
 - 顶层 memberships 只能使用上面给出的 Session ID、用户 Message ID 或 assistant Message ID，target_type 只能是 session 或 message。引用已有主题时使用 DISCLOSURE_INDEX 已列出的 Concept refID；引用本轮新主题时使用 client_ref。
 - 每个新主题必须至少归属于用户或 assistant Message；只标记有直接证据的消息，不要为了覆盖全部消息、凑满数量或重复同一主题而逐条复制 membership。只有主题确实概括整个会话时才同时归属于 Session。不要把 Session 归属隐式复制给所有 Message。
 - units 表示本轮回答所属的阅读片段。当前 Session 没有片段时必须创建一个；已有片段时优先填写已有 unit_id 复用，只有证据边界发生变化才新建。每轮回答至少复用一个已有片段或创建一个新片段。复用时 unit_id 必须逐字引用上方“当前 Session 可复用的阅读片段”中的真实 ID，title/summary 可省略；新建时必须省略 unit_id，严禁自行生成、猜测或使用占位 ID，并且 title/summary 必须填写。units[].concept_ids 只能引用已披露的已有主题；units[].concepts 可以定义只属于该阅读片段的新主题，但不能替代 Message/Session 的直接证据归属。
@@ -640,6 +658,7 @@ ${disclosureAvailability(input.disclosure)}
 - relations 只表达 hierarchy。source 是直接父主题，target 是直接子主题；只有 target 的语义范围严格包含于 source，或 source 是明确的类别而 target 是其成员时才可建立。支持/依赖/实现/使用/比较/同会话出现不是 hierarchy；方向不确定时省略关系。related 不由对话模型返回，而由软件根据共享 Session/Message 自动计算。关系端点只能是已披露 Concept refID 或本轮 client_ref；status 只能省略或为 proposed，绝不能写 confirmed/rejected。不要为了连接所有 Concept 编造 hierarchy。hierarchy 必须像思维导图一样表达清晰、可导航的直接上下位结构。
 - 推荐词选择与主题层级保持同样的粒度：使用类似教材章节大标题/小标题的短词组；回答中出现多个清晰的概念词时可以分别标记它们，但不要把整句或多个概念拼成一个推荐词。
 
+${CONCEPT_NAME_FINAL_GATE}
 结构化响应硬约束：最外层只能返回一个 JSON 对象，禁止 Markdown 围栏；answer 的值可以包含普通 Markdown，但不得把整个 JSON 或另一份 JSON 嵌套在代码围栏中。Nexus 标记只能出现在 answer 字符串中，绝不能出现在 session_title、session_summary、concepts、memberships、relations、units 或 disclosure_requests 的任何字段。顶层 concepts 必须是对象数组（每项含 client_ref、name、summary、aliases），units[].concepts 也必须是对象数组（每项含 name、summary、aliases）；这两个 concepts 字段都严禁返回字符串数组、Nexus 标记碎片、标签元组或其他数组。memberships 必须是含 target_type、target_id、concept_ids 的对象数组，relations 必须是含 source、target、type、status 的对象数组，禁止用字符串数组或 parent/child 替代字段。只有 DISCLOSURE_INDEX 或当前 Concept 明确列出的主题才能使用 existing；没有目录证据的独立概念一律使用 suggested，不要把未确认概念标成蓝色。
 
 请只返回 JSON，格式如下：
