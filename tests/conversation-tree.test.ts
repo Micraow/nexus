@@ -74,4 +74,23 @@ describe('ConversationTree', () => {
     root.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     expect(selected).toEqual(['root'])
   })
+
+  it('opens labels away from the tree edge so they do not cover the inspected circle', async () => {
+    const target = await mountTree()
+    const left = target.querySelector<SVGGElement>('[data-node-id="left"]')!
+    const right = target.querySelector<SVGGElement>('[data-node-id="right"]')!
+
+    right.dispatchEvent(new MouseEvent('mouseenter'))
+    await nextTick()
+    const leftwardTooltip = target.querySelector<HTMLElement>('.conversation-tree-tooltip')!
+    expect(leftwardTooltip.classList.contains('place-left')).toBe(true)
+    expect(Number.parseFloat(leftwardTooltip.style.left)).toBe(Number(right.dataset.x) - 26)
+
+    right.dispatchEvent(new MouseEvent('mouseleave'))
+    left.dispatchEvent(new MouseEvent('mouseenter'))
+    await nextTick()
+    const rightwardTooltip = target.querySelector<HTMLElement>('.conversation-tree-tooltip')!
+    expect(rightwardTooltip.classList.contains('place-right')).toBe(true)
+    expect(Number.parseFloat(rightwardTooltip.style.left)).toBe(Number(left.dataset.x) + 26)
+  })
 })

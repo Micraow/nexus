@@ -807,7 +807,8 @@ body.fullscreen-active { overflow: hidden; }
 .conversation-tree-node.is-pending:not(.is-current) .conversation-tree-node-circle { stroke-dasharray: 4 3; }
 .conversation-tree-node:hover .conversation-tree-node-halo, .conversation-tree-node:focus-visible .conversation-tree-node-halo { fill: color-mix(in srgb, var(--primary) 10%, transparent); stroke: color-mix(in srgb, var(--primary) 35%, transparent); }
 .conversation-tree-node:focus-visible .conversation-tree-node-circle { stroke-width: 3; }
-.conversation-tree-tooltip { position: absolute; z-index: 6; max-width: 220px; padding: 6px 9px; overflow-wrap: anywhere; color: var(--text); background: #fff; border: 1px solid var(--line-strong); border-radius: 6px; box-shadow: var(--shadow-md); font-size: calc(11px * var(--app-font-scale)); font-weight: 650; line-height: 1.4; pointer-events: none; transform: translateY(-50%); white-space: normal; }
+.conversation-tree-tooltip { position: absolute; z-index: 6; width: max-content; max-width: min(280px, calc(100vw - 48px)); padding: 6px 9px; overflow-wrap: anywhere; color: var(--text); background: #fff; border: 1px solid var(--line-strong); border-radius: 6px; box-shadow: var(--shadow-md); font-size: calc(11px * var(--app-font-scale)); font-weight: 650; line-height: 1.4; pointer-events: none; transform: translateY(-50%); white-space: normal; }
+.conversation-tree-tooltip.place-left { transform: translate(-100%, -50%); }
 .add-inline .search-select { flex: 1; }
 
 .concepts-layout, .task-layout, .units-layout { gap: var(--workspace-section-gap); }

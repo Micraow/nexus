@@ -13,6 +13,7 @@ const emit = defineEmits<{
 }>()
 
 const NODE_RADIUS = 18
+const TOOLTIP_GAP = 8
 const HORIZONTAL_GAP = 72
 const VERTICAL_GAP = 78
 const PADDING_X = 28
@@ -118,6 +119,16 @@ const pathNodeIds = computed(() => {
 })
 const inspectedNodeId = ref<string | null>(null)
 const inspectedNode = computed(() => layout.value.nodes.find((item) => item.node.id === inspectedNodeId.value) ?? null)
+const inspectedNodeTooltip = computed(() => {
+  const item = inspectedNode.value
+  if (!item) return null
+  const placeLeft = item.x > layout.value.width / 2
+  return {
+    item,
+    placement: placeLeft ? 'left' : 'right',
+    left: placeLeft ? item.x - NODE_RADIUS - TOOLTIP_GAP : item.x + NODE_RADIUS + TOOLTIP_GAP,
+  }
+})
 const nodeLabel = (node: NavTreeNode): string => cleanGraphText(node.label) || '未命名探索节点'
 
 function edgeOnPath(edge: PositionedEdge): boolean {
@@ -172,11 +183,12 @@ function edgeOnPath(edge: PositionedEdge): boolean {
       </g>
     </svg>
     <div
-      v-if="inspectedNode"
+      v-if="inspectedNodeTooltip"
       class="conversation-tree-tooltip"
+      :class="`place-${inspectedNodeTooltip.placement}`"
       role="tooltip"
-      :style="{ left: `${inspectedNode.x + NODE_RADIUS + 8}px`, top: `${inspectedNode.y}px` }"
-    >{{ nodeLabel(inspectedNode.node) }}</div>
+      :style="{ left: `${inspectedNodeTooltip.left}px`, top: `${inspectedNodeTooltip.item.y}px` }"
+    >{{ nodeLabel(inspectedNodeTooltip.item.node) }}</div>
     <p v-if="!layout.nodes.length" class="empty-inline">这个会话还没有探索节点。</p>
   </div>
 </template>
