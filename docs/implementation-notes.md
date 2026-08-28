@@ -130,7 +130,7 @@
 
 - 事实层次：`Session` 是完整对话容器，`Message` 是不可丢失的原始消息，`Concept` 是跨 Session 复用的知识主题。`KnowledgeUnit` 保留为同一 Session 内可选的阅读片段/证据包，不是主题层级、不是分段前置条件，也不参与根主题判断。
 - 导入链：原始 `Session/Message` 先写入 → 创建 `session_triage` 与 `origin_concepts` 任务 → 任务经历 `pending → running → success`，异常进入 `needs_review/failed`，输入版本变化进入 `stale`；直接主题结果写入 `SessionConcept/MessageConcept`，不等待 KnowledgeUnit。
-- 对话链：本地草稿 → 创建 `conversation` 任务（API 为 `pending → running`，Prompt 粘贴保持 `pending` 等待人工回传）→ 校验结果 → `success` 写入 assistant Message、导航树节点和多主题归属；`units` 可以为空或包含多个本轮可选阅读片段。非法结果进入 `needs_review`，重试或版本变化分别回到 `pending` 或 `stale`。没有摘要的已应用片段仍为 `ready`，不再伪装成等待分段。
+- 对话链：本地草稿 → 创建 `conversation` 任务（API 为 `pending → running`，Prompt 粘贴保持 `pending` 等待人工回传）→ 校验结果 → `success` 写入 assistant Message、导航树节点和本轮阅读片段归属。首轮没有片段时必须创建新片段，后续可用 `unit_id` 复用或创建新片段；卡片顶部显示当前片段。旧 `units: []` 仅兼容历史响应，导入消息缺片段时由维护 `unit_create` 补建。API 流式对话会把 SSE 增量暂存于任务状态并实时显示在当前卡片，完成后再以完整 JSON 校验落库。非法结果进入 `needs_review`，重试或版本变化分别回到 `pending` 或 `stale`。没有摘要的已应用片段仍为 `ready`，不再伪装成等待分段。
 - 关系链：普通 Concept/对话任务只能产生 `hierarchy` `proposed`，由用户确认变为 `confirmed` 或拒绝变为 `rejected`；`related` 默认由软件从共享 Session/Message 事实派生，维护任务才可通过动作 API 显式添加、修改或删除持久化 related。只有 `confirmed` 默认参与图谱绘制；未拒绝的 hierarchy proposal 仍参与根节点结构判定，`showProposed` 打开时才显示建议关系。
 - 展示层：图谱从事实层实时派生；默认只显示 hierarchy 根主题，Concept 单击同时打开详情并逐层展开/递归收起，`related` 永不改变层级。Sigma.js 评估后暂不替换 D3：现有 SVG 图谱已覆盖缩放、拖拽、悬停高亮、键盘语义、框选和稳定布局，贸然换成 Sigma 会改写测试与交互层；后续若节点规模超过当前阈值，再以独立适配层引入 graphology/Sigma。
 - 知识主题页的左栏使用可折叠 hierarchy 树，主题行单击选中并打开右侧内容，树节点的独立折叠控件负责展开/收起；过滤时保留命中主题的祖先节点，父子跳转后详情列滚动回顶。会话探索树使用大圆点、细连接线和悬停/聚焦标签，切换分支时只替换当前前景卡片。图谱主题节点不提供独立 `+/-` 控件，主体单击同时打开详情并展开/收起，新增或移除的节点通过透明度和稳定坐标过渡。

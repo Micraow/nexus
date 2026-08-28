@@ -190,7 +190,7 @@ describe('direct concept extraction import pipeline', () => {
     expect(initial.nodes.filter((node) => node.type === 'concept').map((node) => node.refId)).toEqual([rootId])
   })
 
-  it('accepts a conversation answer without creating a KnowledgeUnit', () => {
+  it('requires the first conversation answer to create a KnowledgeUnit', () => {
     const sessionId = store.createConversationTask({ question: '只回答一个即时问题，不沉淀知识片段' })
     const task = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
     store.refreshFromDb()
@@ -199,13 +199,13 @@ describe('direct concept extraction import pipeline', () => {
       answer: '这是一次即时回答。',
       session_title: '即时问题讨论',
       session_summary: '本会话回答一个无需沉淀为知识单元的即时问题。',
-      units: [],
+      units: [{ title: '即时问题片段', summary: '本轮即时回答的可复用证据。', concept_ids: [], concepts: [] }],
       memberships: [],
       disclosure_requests: [],
     }))
 
     expect(result.ok, result.errors.join('; ')).toBe(true)
-    expect(store.units).toHaveLength(0)
+    expect(store.units).toHaveLength(1)
     expect(store.sessions.find((session) => session.id === sessionId)).toMatchObject({ title: '即时问题讨论', summary: '本会话回答一个无需沉淀为知识单元的即时问题。' })
     const conversationMessages = store.messages.filter((message) => message.sessionId === sessionId)
     expect(conversationMessages.map((message) => message.role)).toEqual(['user', 'assistant'])
@@ -243,7 +243,7 @@ describe('direct concept extraction import pipeline', () => {
         { target_type: 'message', target_id: answerMessageId, concept_ids: ['new:1', existingConceptId] },
         { target_type: 'session', target_id: sessionId, concept_ids: ['new:1', existingConceptId] },
       ],
-      units: [],
+      units: [{ title: '网络拓扑片段', summary: '讨论网络拓扑和主题归属。', concept_ids: [], concepts: [] }],
       disclosure_requests: [],
     }))
 
@@ -251,7 +251,7 @@ describe('direct concept extraction import pipeline', () => {
     const created = store.concepts.find((concept) => concept.name === '新型叶脊拓扑')!
     const answer = store.messages.find((message) => message.id === answerMessageId)
     expect(answer?.role).toBe('assistant')
-    expect(store.units).toHaveLength(0)
+    expect(store.units).toHaveLength(1)
     expect(store.messageConcepts).toEqual(expect.arrayContaining([
       expect.objectContaining({ messageId: answerMessageId, conceptId: created.id }),
       expect.objectContaining({ messageId: answerMessageId, conceptId: existingConceptId }),
@@ -284,7 +284,7 @@ describe('direct concept extraction import pipeline', () => {
         { source: 'new:2', target: existingParentId, type: 'related' },
         { source: existingParentId, target: 'new:2', type: 'related' },
       ],
-      units: [],
+      units: [{ title: '传输控制片段', summary: '记录传输控制协议层级关系。', concept_ids: [], concepts: [] }],
       disclosure_requests: [],
     }))
 
@@ -302,7 +302,7 @@ describe('direct concept extraction import pipeline', () => {
         { source: existingParentId, target: 'new:1', type: 'hierarchy', status: 'proposed' },
         { source: 'new:1', target: 'new:2', type: 'hierarchy' },
       ],
-      units: [],
+      units: [{ title: '路由协议片段', summary: '记录路由协议主题。', concept_ids: [], concepts: [] }],
       disclosure_requests: [],
     }))
 
@@ -333,7 +333,7 @@ describe('direct concept extraction import pipeline', () => {
       concepts: [],
       memberships: [{ target_type: 'message', target_id: answerMessageId, concept_ids: [childId] }],
       relations: [{ source: parentId, target: childId, type: 'hierarchy', status: 'proposed' }],
-      units: [],
+      units: [{ title: '无证据片段', summary: '用于校验主题证据规则。', concept_ids: [], concepts: [] }],
       disclosure_requests: [],
     }))
 
@@ -350,7 +350,7 @@ describe('direct concept extraction import pipeline', () => {
       answer: '回答',
       concepts: [{ client_ref: 'new:1', name: '无消息证据主题', summary: '', aliases: [] }],
       memberships: [{ target_type: 'session', target_id: sessionId, concept_ids: ['new:1'] }],
-      units: [],
+      units: [{ title: '未知 ID 片段', summary: '用于校验未知主题 ID。', concept_ids: [], concepts: [] }],
       disclosure_requests: [],
     }))
 
@@ -363,7 +363,7 @@ describe('direct concept extraction import pipeline', () => {
     store.createConcept('已有主题')
     const sessionId = store.createConversationTask({ question: '验证归属' })
     const task = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
-    const result = store.applyTaskResult(task.id, JSON.stringify({ answer: '回答', units: [], concept_ids: ['missing'], memberships: [], disclosure_requests: [] }))
+    const result = store.applyTaskResult(task.id, JSON.stringify({ answer: '回答', units: [{ title: '未知 ID 片段', summary: '用于校验未知主题 ID。', concept_ids: [], concepts: [] }], concept_ids: ['missing'], memberships: [], disclosure_requests: [] }))
 
     expect(result.ok).toBe(false)
     expect(result.errors.some((error) => error.includes('Concept ID 不在当前目录中'))).toBe(true)
@@ -374,7 +374,7 @@ describe('direct concept extraction import pipeline', () => {
   it('keeps follow-up context and accurate message counts, and blocks duplicate application', () => {
     const sessionId = store.createConversationTask({ question: '第一轮问题' })
     const firstTask = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
-    expect(store.applyTaskResult(firstTask.id, JSON.stringify({ answer: '第一轮回答', units: [], memberships: [], disclosure_requests: [] })).ok).toBe(true)
+    expect(store.applyTaskResult(firstTask.id, JSON.stringify({ answer: '第一轮回答', units: [{ title: '第一轮片段', summary: '第一轮回答证据。', concept_ids: [], concepts: [] }], memberships: [], disclosure_requests: [] })).ok).toBe(true)
     const sessionAfterFirst = store.sessions.find((session) => session.id === sessionId)!
     expect(sessionAfterFirst.messageCount).toBe(2)
     const root = store.navNodes.find((node) => node.sessionId === sessionId && !node.parentId)!
@@ -382,10 +382,10 @@ describe('direct concept extraction import pipeline', () => {
     const followUpTask = store.tasks.find((item) => item.id === followUpTaskId)!
     expect(followUpTask.prompt).toContain('第一轮回答')
     expect(followUpTask.prompt).toContain(root.label)
-    expect(store.applyTaskResult(followUpTaskId, JSON.stringify({ answer: '第二轮回答', units: [], memberships: [], disclosure_requests: [] })).ok).toBe(true)
+    expect(store.applyTaskResult(followUpTaskId, JSON.stringify({ answer: '第二轮回答', units: [{ unit_id: store.units[0].id }], memberships: [], disclosure_requests: [] })).ok).toBe(true)
     expect(store.sessions.find((session) => session.id === sessionId)?.messageCount).toBe(4)
     const messageCount = store.messages.filter((message) => message.sessionId === sessionId).length
-    const duplicate = store.applyTaskResult(followUpTaskId, JSON.stringify({ answer: '重复回答', units: [], memberships: [], disclosure_requests: [] }))
+    const duplicate = store.applyTaskResult(followUpTaskId, JSON.stringify({ answer: '重复回答', units: [{ unit_id: store.units[0].id }], memberships: [], disclosure_requests: [] }))
     expect(duplicate.ok).toBe(false)
     expect(store.messages.filter((message) => message.sessionId === sessionId)).toHaveLength(messageCount)
   })
@@ -393,7 +393,7 @@ describe('direct concept extraction import pipeline', () => {
   it('allows only one unfinished follow-up per Session', () => {
     const sessionId = store.createConversationTask({ question: '第一轮问题' })
     const initialTask = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
-    expect(store.applyTaskResult(initialTask.id, JSON.stringify({ answer: '第一轮回答', units: [], memberships: [], disclosure_requests: [] })).ok).toBe(true)
+    expect(store.applyTaskResult(initialTask.id, JSON.stringify({ answer: '第一轮回答', units: [{ title: '第一轮片段', summary: '第一轮回答证据。', concept_ids: [], concepts: [] }], memberships: [], disclosure_requests: [] })).ok).toBe(true)
     const root = store.navNodes.find((node) => node.sessionId === sessionId && !node.parentId)!
     store.createFollowUpTask({ sessionId, parentNodeId: root.id, question: '第一次追问' })
     expect(() => store.createFollowUpTask({ sessionId, parentNodeId: root.id, question: '重复追问' })).toThrow('待完成')
@@ -424,10 +424,10 @@ describe('direct concept extraction import pipeline', () => {
   })
 
   it('lets graph maintenance create a reading unit from unassigned messages', () => {
-    const sessionId = store.createConversationTask({ question: '导入消息片段' })
-    const task = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
-    expect(store.applyTaskResult(task.id, JSON.stringify({ answer: '可复用的说明', units: [], memberships: [], disclosure_requests: [] })).ok).toBe(true)
+    const report = store.importJsonText(JSON.stringify(payload()))
+    const sessionId = store.sessions[0].id
     const messages = store.messages.filter((message) => message.sessionId === sessionId)
+    expect(report.taskIds.length).toBeGreaterThan(0)
     expect(messages.every((message) => !message.unitId)).toBe(true)
     const maintenanceId = store.createMaintenanceTask()
     const maintenance = store.tasks.find((item) => item.id === maintenanceId)!
@@ -454,7 +454,7 @@ describe('direct concept extraction import pipeline', () => {
       concepts: [{ client_ref: 'new:1', name: '具体网络主题', summary: '网络基础下的具体主题。', aliases: [] }],
       memberships: [{ target_type: 'message', target_id: answerMessageId, concept_ids: ['new:1'] }],
       relations: [{ source: parentId, target: 'new:1', type: 'hierarchy' }],
-      units: [],
+      units: [{ title: '网络层级片段', summary: '记录网络主题的层级建议。', concept_ids: [], concepts: [] }],
       disclosure_requests: [],
     }))
 
@@ -697,10 +697,55 @@ describe('direct concept extraction import pipeline', () => {
 
     resolveFetch?.({
       ok: true,
-      json: async () => ({ choices: [{ message: { content: JSON.stringify({ answer: '唯一回答', units: [], disclosure_requests: [] }) } }] }),
+      json: async () => ({ choices: [{ message: { content: JSON.stringify({ answer: '唯一回答', units: [{ title: 'API 片段', summary: 'API 回答证据。', concept_ids: [], concepts: [] }], disclosure_requests: [] }) } }] }),
     } as Response)
     await expect(first).resolves.toEqual({ ok: true })
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('exposes incremental conversation text while parsing an SSE response', async () => {
+    let releaseTail: (() => void) | undefined
+    const firstFrame = 'data: {"choices":[{"delta":{"content":"{\\"answer\\":\\"实时"}}]}\n\n'
+    const tailFrame = 'data: {"choices":[{"delta":{"content":"输出\\",\\"units\\":[{\\"title\\":\\"实时片段\\",\\"summary\\":\\"流式回答证据\\",\\"concept_ids\\":[],\\"concepts\\":[]}],\\"disclosure_requests\\":[]}"}}]}\n\ndata: [DONE]\n\n'
+    const body = {
+      getReader: () => ({
+        read: async () => {
+          if ((body as { step?: number }).step === undefined) {
+            ;(body as { step?: number }).step = 1
+            return { done: false, value: new TextEncoder().encode(firstFrame) }
+          }
+          if ((body as { step?: number }).step === 1) {
+            ;(body as { step?: number }).step = 2
+            await new Promise<void>((resolve) => { releaseTail = resolve })
+            return { done: false, value: new TextEncoder().encode(tailFrame) }
+          }
+          return { done: true, value: undefined }
+        },
+      }),
+    } as unknown as ReadableStream<Uint8Array> & { step?: number }
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+      body,
+    } as Response)))
+    store.updateConfig({
+      llm: {
+        ...store.config.llm,
+        mode: 'api',
+        stream: true,
+        defaultProvider: 'stream-provider',
+        providers: [{ id: 'stream-provider', name: 'Stream', baseUrl: 'https://example.test/v1', model: 'stream-model', apiKey: 'test-key' }],
+      },
+    })
+    const sessionId = store.createConversationTask({ question: '检查流式回答' })
+    const task = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
+    const pending = store.executeTask(task.id)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(store.streamingTaskPreview(task.id)).toBe('实时')
+    releaseTail?.()
+    await expect(pending).resolves.toEqual({ ok: true })
+    expect(store.streamingTaskPreview(task.id)).toBe('')
+    expect(store.units).toContainEqual(expect.objectContaining({ title: '实时片段' }))
   })
 
   it('exposes maintenance MCP tools and normalizes tool calls through the suggestion validator', async () => {

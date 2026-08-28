@@ -6,7 +6,7 @@
 
 - 新对话和追问提交后都会清空输入草稿；离开会话或重新打开 composer 也会重置草稿。
 - 新对话原子化写入 Session、根导航节点、用户 Message、conversation task，以及用户预选主题的 SessionConcept/MessageConcept 归属。追问写入已有 Session，并保留 `parentNodeId`、`taskId` 和源上下文引用。
-- conversation 结果先校验 `answer`、可选 `units`、Session/Message 归属、Concept ID、标题/摘要和版本；成功后在同一事务中写入 assistant Message、导航树分支、可选 KnowledgeUnit、多主题归属、Session 标题/滚动摘要和准确计数。`units: []` 合法。
+- conversation 结果先校验 `answer`、本轮 `units`（首轮新建或后续复用/新建）、Session/Message 归属、Concept ID、标题/摘要和版本；成功后在同一事务中写入 assistant Message、导航树分支、阅读片段关联、多主题归属、Session 标题/滚动摘要和准确计数。历史 `units: []` 仅保留兼容路径，新的 Prompt 要求每轮明确片段。
 - `applyTaskResult()` 拒绝对 `success`、`cancelled`、`stale` 等终态任务重复应用；需要再次处理时必须先重新排队。任务详情仅对 `pending`、`running`、`needs_review` 显示“校验并应用”。
 - API 任务只在明确执行或启动队列时发出请求；Prompt 粘贴任务保持待处理，需人工粘贴并应用结果。导入提示使用“创建待处理任务”，不暗示已经发起网络请求。
 - API task 从任务中心和队列同时启动时由单 task in-flight 护栏合并为一次请求；`pending → running` 使用条件更新，取消不会被并发启动覆盖。

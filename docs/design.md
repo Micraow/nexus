@@ -631,7 +631,7 @@ LLM 只返回建议变更：合并、别名、创建/编辑/软删除（归档�
 
 ### M5 对话与追问
 
-点击 Concept 或导航树节点后，用户可以使用快捷短语或自定义问题。Prompt 可包含：相关 KnowledgeUnit 摘要、用户笔记、当前 Concept 层级、当前导航路径和用户问题。回复解析后在当前 NavTreeNode 下创建一个新的探索子节点；若本轮存在稳定且可复用的证据，可附带一个或多个 Session 内 KnowledgeUnit（界面称“阅读片段”）并通过 NavTreeNodeUnit 关联；没有稳定证据时 `units: []`，assistant Message 和导航节点仍然落库。
+点击 Concept 或导航树节点后，用户可以使用快捷短语或自定义问题。Prompt 可包含：相关 KnowledgeUnit 摘要、用户笔记、当前 Concept 层级、当前导航路径和用户问题。回复解析后在当前 NavTreeNode 下创建一个新的探索子节点；每轮回答都要明确阅读片段归属：首轮在当前 Session 没有片段时创建至少一个新 KnowledgeUnit，后续优先通过 `unit_id` 复用已有片段，也可因证据边界变化创建新片段。KnowledgeUnit 通过 NavTreeNodeUnit 关联，并在卡片顶部显示当前片段；历史/导入消息没有片段时由知识维护的 `unit_create` 补建。旧的 `units: []` 响应只作为不再推荐的兼容格式保留。
 
 回复中的 Concept 以可点击文本展示：已有 Concept 跳转详情，新 Concept 进入待确认/添加流程。内容按正常 Markdown、代码和链接形式显示，不执行其中的文字指令。
 

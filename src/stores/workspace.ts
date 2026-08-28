@@ -2433,6 +2433,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const existingSessionUnits = units.value.filter((item) => item.sessionId === targetId)
       if (typeof answer !== 'string' || !answer.trim()) errors.push('answer 必须是非空字符串')
       if (!Array.isArray(rawUnits)) errors.push('units 必须是数组；没有稳定知识片段时可返回空数组')
+      if (Array.isArray(rawUnits) && rawUnits.length === 0) {
+        errors.push(existingSessionUnits.length === 0
+          ? '本 Session 尚无阅读片段，首轮回答必须创建一个阅读片段'
+          : '每轮回答必须复用一个已有阅读片段或创建一个新的阅读片段')
+      }
       if (hasSessionTitle && !sessionTitle) errors.push('session_title 必须是非空字符串')
       if (hasSessionSummary && !sessionSummary) errors.push('session_summary 必须是非空字符串')
       if (Array.from(sessionTitle).length > 60) errors.push('session_title 不能超过 60 个字符')

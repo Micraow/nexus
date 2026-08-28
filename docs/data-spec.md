@@ -17,7 +17,7 @@
 10. 所有跨实体关系使用内部 ID；来源平台 ID 只用于导入去重和追溯。
 11. 对话答案中的 `[[nexus:existing:...]]...[[/nexus]]` 与 `[[nexus:suggested:...]]...[[/nexus]]` 是展示标记，不是数据库归属字段；应用渲染时分别使用已有主题和建议主题样式。
 12. 新对话创建时用户预选的 Concept 立即记录为该 Session 和首条用户 Message 的直接归属；它不依赖 KnowledgeUnit 或后续 LLM 结果。归档 Session 的直接归属仍保留在事实表，但不参与默认图谱派生。
-13. 对话任务的 `units` 是可选阅读片段；没有稳定知识片段时允许为空数组，assistant Message、Session 和导航树仍必须落库。
+13. 对话任务的 `units` 表示本轮回答所属的阅读片段。首轮 Session 没有片段时必须创建至少一个新片段；后续应通过 `unit_id` 复用已有片段或创建新片段，应用会把首个片段关联到本轮用户/assistant Message 并挂到导航节点。旧的 `units: []` 仅作兼容输入，不再作为新 Prompt 的推荐结果；导入或历史消息缺片段时由维护 `unit_create` 补建。
 
 ## 2. 命名与格式
 
