@@ -2475,7 +2475,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           conceptIds: Array.isArray(value.concept_ids) ? value.concept_ids.filter((id): id is string => typeof id === 'string').map((id) => id.trim()) : [],
           conceptIdsRaw: value.concept_ids,
           conceptIdsProvided: Object.prototype.hasOwnProperty.call(value, 'concept_ids'),
-          concepts: concepts.map((concept) => typeof concept === 'string' ? { name: concept, summary: '', aliases: [] as string[] } : concept && typeof concept === 'object' ? { name: typeof (concept as Record<string, unknown>).name === 'string' ? String((concept as Record<string, unknown>).name) : '', summary: typeof (concept as Record<string, unknown>).summary === 'string' ? String((concept as Record<string, unknown>).summary).trim() : '', aliases: Array.isArray((concept as Record<string, unknown>).aliases) ? ((concept as Record<string, unknown>).aliases as unknown[]).filter((alias): alias is string => typeof alias === 'string') : [] } : { name: '', summary: '', aliases: [] as string[] }),
+          // Unit-local concepts are optional. Providers occasionally echo
+          // malformed marker fragments (arrays or tag tuples) inside this
+          // field; ignore those fragments rather than rejecting an otherwise
+          // usable answer and reading excerpt.
+          concepts: concepts.flatMap((concept) => {
+            if (typeof concept === 'string') return [{ name: concept, summary: '', aliases: [] as string[] }]
+            if (!concept || typeof concept !== 'object' || Array.isArray(concept)) return []
+            const item = concept as Record<string, unknown>
+            if (typeof item.name !== 'string' || !item.name.trim()) return []
+            return [{ name: item.name, summary: typeof item.summary === 'string' ? item.summary.trim() : '', aliases: Array.isArray(item.aliases) ? item.aliases.filter((alias): alias is string => typeof alias === 'string') : [] }]
+          }),
         }
       }) : []
       normalizedUnits.forEach((unit) => {
