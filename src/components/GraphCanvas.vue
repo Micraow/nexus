@@ -55,7 +55,6 @@ const props = withDefaults(
     selectedUnitIds: () => [],
     reducedMotion: false,
     viewport: () => ({ x: 0, y: 0, scale: 1, layoutVersion: 1 }),
-    expandedConceptIds: () => [],
     visibleNodeLevels: undefined,
     maxVisibleLevel: undefined,
     expandedConceptDepth: undefined,
@@ -378,11 +377,14 @@ function render(): void {
   const topologyChanged = nodeSignature !== lastNodeSignature
   const previousVisibleNodeIds = lastVisibleNodeIds
 
-  // Keep a non-interactive copy of the old topology below the new one. This
-  // is what makes collapsing a branch visible: removed nodes can fade out
-  // instead of disappearing when the new data join is rendered.
-  const previousViewport = root.select<SVGGElement>('.graph-viewport').node()
-  const previousTransitionLayer = !props.reducedMotion && topologyChanged && previousViewport
+  // Preserve the old topology only while disclosing new nodes. A collapse
+  // must remove descendants immediately, including from the accessibility
+  // tree, and a previous transition clone must never become the next source.
+  const nextVisibleNodeIds = new Set(snapshot.nodes.map((node) => node.id))
+  const topologyExpanded = snapshot.nodes.some((node) => !previousVisibleNodeIds.has(node.id))
+  const topologyContracted = [...previousVisibleNodeIds].some((id) => !nextVisibleNodeIds.has(id))
+  const previousViewport = root.select<SVGGElement>('.graph-viewport:not(.graph-transition-old)').node()
+  const previousTransitionLayer = !props.reducedMotion && topologyExpanded && !topologyContracted && previousViewport
     ? previousViewport.cloneNode(true) as SVGGElement
     : null
   root.selectAll('*').remove()
@@ -594,7 +596,10 @@ function render(): void {
   }
 
   const expanded = expandedConceptSet()
-  const isExpanded = (node: GraphNode): boolean => expanded.has(node.refId) || node.expanded === true
+  const hasAuthoritativeExpansionState = props.expandedConceptIds !== undefined
+  const isExpanded = (node: GraphNode): boolean => hasAuthoritativeExpansionState
+    ? expanded.has(node.refId)
+    : node.expanded === true
   const nodeSelection = nodeLayer
     .selectAll<SVGGElement, GraphNode & d3.SimulationNodeDatum>('g')
     .data(nodes, (node) => node.id)

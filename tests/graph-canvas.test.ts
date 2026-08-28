@@ -441,4 +441,60 @@ describe('GraphCanvas progressive disclosure', () => {
     await nextTick()
     expect(animated.target.querySelector('.graph-transition-old')).toBeTruthy()
   })
+
+  it('recursively collapses descendants after three consecutive node clicks', async () => {
+    const initialSnapshot: GraphSnapshot = {
+      revision: 15,
+      nodes: [
+        { id: 'concept:vue', type: 'concept', refId: 'vue', label: 'Vue', degree: 1, unitCount: 0, parentIds: [], childCount: 1, descendantCount: 2, hasChildren: true, expanded: false },
+        { id: 'concept:reactivity', type: 'concept', refId: 'reactivity', label: '响应式系统', degree: 2, unitCount: 0, parentIds: ['vue'], childCount: 1, descendantCount: 1, hasChildren: true, expanded: false },
+        { id: 'concept:scheduler', type: 'concept', refId: 'scheduler', label: '依赖收集/调度器', degree: 1, unitCount: 0, parentIds: ['reactivity'], childCount: 0, descendantCount: 0, expanded: false },
+      ],
+      edges: [
+        { id: 'edge:vue-reactivity', source: 'concept:vue', target: 'concept:reactivity', type: 'hierarchy', weight: 1, status: 'confirmed' },
+        { id: 'edge:reactivity-scheduler', source: 'concept:reactivity', target: 'concept:scheduler', type: 'hierarchy', weight: 1, status: 'confirmed' },
+      ],
+    }
+    let stateRef: Record<string, unknown>
+    const mountedGraph = mountReactiveSnapshot(initialSnapshot, {
+      expandedConceptIds: [],
+      hierarchyRelations: [
+        { parentConceptId: 'vue', childConceptId: 'reactivity', relationType: 'hierarchy', status: 'confirmed' },
+        { parentConceptId: 'reactivity', childConceptId: 'scheduler', relationType: 'hierarchy', status: 'confirmed' },
+      ],
+      reducedMotion: false,
+      onToggleConcept: (id: string, expanded: boolean) => {
+        const current = stateRef.expandedConceptIds as string[]
+        const next = expanded
+          ? [...new Set([...current, id])]
+          : id === 'vue' ? [] : current.filter((conceptId) => conceptId !== id)
+        stateRef.expandedConceptIds = next
+        // Worker snapshots can trail local disclosure state by one render.
+        // Keep the last expanded flags on collapse to exercise that boundary.
+        if (expanded) {
+          stateRef.snapshot = {
+            ...initialSnapshot,
+            nodes: initialSnapshot.nodes.map((node) => ({ ...node, expanded: next.includes(node.refId) })),
+          }
+        }
+      },
+    })
+    stateRef = mountedGraph.state
+    const currentNode = (id: string) => mountedGraph.target.querySelector<SVGGElement>(`.graph-viewport:not(.graph-transition-old) [data-ref-id="${id}"]`)
+    await nextTick()
+
+    currentNode('vue')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    expect(currentNode('reactivity')).toBeTruthy()
+
+    currentNode('reactivity')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    expect(currentNode('scheduler')).toBeTruthy()
+
+    currentNode('vue')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    expect([...mountedGraph.target.querySelectorAll<SVGGElement>('.graph-node')].map((node) => node.dataset.refId)).toEqual(['vue'])
+    expect(currentNode('vue')?.getAttribute('aria-expanded')).toBe('false')
+    expect(currentNode('vue')?.getAttribute('aria-label')).toContain('展开子主题')
+  })
 })
