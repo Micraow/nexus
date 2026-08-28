@@ -864,6 +864,36 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.units).toContainEqual(expect.objectContaining({ title: '实时片段' }))
   })
 
+  it('automatically runs a second API round after a valid disclosure request', async () => {
+    const rootId = store.createConcept('披露根主题')
+    const childId = store.createConcept('披露子主题')
+    store.createRelation(rootId, childId, 'hierarchy')
+    const responses = [
+      JSON.stringify({ answer: '需要检查子主题。', units: [], memberships: [], disclosure_requests: [{ refID: rootId, depth: 1 }] }),
+      JSON.stringify({ answer: '子主题已确认。', units: [{ title: '披露结果片段', summary: '第二轮证据。', concept_ids: [childId], concepts: [] }], memberships: [], disclosure_requests: [] }),
+    ]
+    let requestIndex = 0
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: responses[requestIndex++] } }] }),
+    } as Response)))
+    store.updateConfig({
+      llm: {
+        ...store.config.llm,
+        mode: 'api',
+        defaultProvider: 'disclosure-provider',
+        providers: [{ id: 'disclosure-provider', name: 'Disclosure', baseUrl: 'https://example.test/v1', model: 'disclosure-model', apiKey: 'test-key' }],
+      },
+    })
+    const sessionId = store.createConversationTask({ question: '请先查看目录再回答' })
+    const task = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
+    await expect(store.executeTask(task.id)).resolves.toEqual({ ok: true })
+    expect(requestIndex).toBe(2)
+    expect(store.tasks.find((item) => item.id === task.id)?.prompt).toContain(childId)
+    expect(store.tasks.find((item) => item.id === task.id)?.prompt).toContain('"round": 1')
+    expect(store.units).toContainEqual(expect.objectContaining({ title: '披露结果片段' }))
+  })
+
   it('exposes maintenance MCP tools and normalizes tool calls through the suggestion validator', async () => {
     const conceptId = store.createConcept('工具调用主题')
     let requestBody: Record<string, unknown> | undefined
