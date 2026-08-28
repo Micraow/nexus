@@ -92,6 +92,10 @@ function conceptMentionHtml(label: string, id: string, kind: 'existing' | 'sugge
     const escapedName = escapeHtml(name)
     return `<span class="md-concept md-concept-suggested" role="link" tabindex="0" data-suggested-concept="${escapedName}" aria-label="继续探索 ${escapedName}" title="继续探索">${escapedLabel}</span>`
   }
+  // An explicit "existing" marker is only interactive/blue when it resolves
+  // to an active local Concept. Unknown names must remain ordinary answer text
+  // so the UI never implies a link to a non-existent topic.
+  if (!id) return escapedLabel
   return `<span class="md-concept md-concept-existing"${id ? ` role="link" tabindex="0" data-concept-id="${escapeHtml(id)}"` : ''}>${escapedLabel}</span>`
 }
 

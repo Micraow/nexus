@@ -46,6 +46,7 @@ type YamlConfig = {
     conceptLimit?: number
     token_budget?: number
     tokenBudget?: number
+    stream?: boolean
     providers?: Array<Partial<ProviderConfig> & { base_url?: string; api_key?: string }>
     task_overrides?: Record<string, string>
     taskOverrides?: Record<string, string>
@@ -81,6 +82,7 @@ export function serializeConfig(config: AppConfig): string {
       concurrency: normalizeApiConcurrency(config.llm.concurrency),
       concept_limit: normalizeConceptLimit(config.llm.conceptLimit),
       token_budget: normalizeTokenBudget(config.llm.tokenBudget),
+      stream: Boolean(config.llm.stream),
       providers: config.llm.providers.map((provider) => ({
         id: provider.id,
         name: provider.name,
@@ -124,6 +126,7 @@ export function parseConfig(value: unknown): Partial<AppConfig> {
       concurrency: normalizeApiConcurrency(raw.llm?.concurrency),
       conceptLimit: normalizeConceptLimit(raw.llm?.concept_limit ?? raw.llm?.conceptLimit),
       tokenBudget: normalizeTokenBudget(raw.llm?.token_budget ?? raw.llm?.tokenBudget),
+      stream: Boolean(raw.llm?.stream),
       providers,
       taskOverrides: raw.llm?.task_overrides ?? raw.llm?.taskOverrides ?? {},
     },

@@ -370,6 +370,7 @@ textarea { resize: vertical; }
 .search-select-option small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: calc(10px * var(--app-font-scale)); }
 .search-select-empty { margin: 10px; color: var(--muted); font-size: calc(11px * var(--app-font-scale)); text-align: center; }
 .sessions-view .session-row .soft-tag, .sessions-view .inline-toggle { display: none; }
+.stream-settings-section { margin-top: 14px; padding: 21px; }
 
 @media (max-width: 900px) { .units-layout { grid-template-columns: 1fr; } .unit-list, .unit-detail { min-height: auto; } }
 

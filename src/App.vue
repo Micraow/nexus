@@ -1397,8 +1397,16 @@ async function copyText(value: string, message = '已复制到剪贴板'): Promi
   notify(copied ? message : '复制失败，请手动选择文本')
 }
 
-function renderedMessageContent(content: string): string {
-  return renderMarkdown(content, { concepts: store.activeConcepts.map((concept) => ({ id: concept.id, name: concept.name })) })
+function renderedMessageContent(content: string, message?: Message): string {
+  let concepts = store.activeConcepts
+  if (message) {
+    const allowed = new Set<string>()
+    store.sessionConcepts.filter((link) => link.sessionId === message.sessionId).forEach((link) => allowed.add(link.conceptId))
+    store.messageConcepts.filter((link) => link.messageId === message.id).forEach((link) => allowed.add(link.conceptId))
+    if (message.unitId) store.unitConcepts.filter((link) => link.unitId === message.unitId).forEach((link) => allowed.add(link.conceptId))
+    concepts = concepts.filter((concept) => allowed.has(concept.id))
+  }
+  return renderMarkdown(content, { concepts: concepts.map((concept) => ({ id: concept.id, name: concept.name })) })
 }
 
 function handleRenderedClick(event: Event, message?: Message): void {
@@ -2023,7 +2031,7 @@ onBeforeUnmount(() => {
                       <section v-for="(card, cardIndex) in activeConversationBranchCards" :key="card.node.id" class="conversation-branch-card" :class="{ current: cardIndex === activeConversationBranchCards.length - 1, ancestor: cardIndex < activeConversationBranchCards.length - 1 }" :aria-hidden="cardIndex < activeConversationBranchCards.length - 1 ? 'true' : undefined" :aria-label="`${cardIndex === activeConversationBranchCards.length - 1 ? '当前' : '祖先'}探索分支：${card.node.label}`" :style="{ '--stack-depth': activeConversationBranchCards.length - cardIndex - 1 }">
                         <div v-if="cardIndex === activeConversationBranchCards.length - 1" class="conversation-branch-card-title current-title"><button class="branch-card-title-main" type="button" @click="selectConversationNode(card.node)"><span class="branch-card-dot" aria-hidden="true" /><strong>{{ card.node.label }}</strong><span class="branch-card-depth">第 {{ card.node.depth + 1 }} 层</span></button><button v-if="pendingConversationBranch?.id === card.node.id" class="icon-button branch-card-close" type="button" aria-label="关闭这条未开始的探索分支" title="关闭分支" @click="closePendingConversationBranch"><X :size="15" /></button></div>
                         <div v-else class="conversation-branch-card-title" aria-hidden="true"><span class="branch-card-dot" aria-hidden="true" /><strong>{{ card.node.label }}</strong><span class="branch-card-depth">第 {{ card.node.depth + 1 }} 层</span></div>
-                        <article v-for="message in card.messages" :key="message.id" :data-conversation-message="message.id" class="conversation-message" :class="message.role"><div class="conversation-message-meta"><strong>{{ message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : '系统' }}</strong><span>消息 #{{ message.orderInSession + 1 }}</span></div><div class="md-body" v-html="renderedMessageContent(message.content)" @click="handleRenderedClick($event, message)" @keydown.enter.prevent="handleRenderedClick($event, message)" /></article>
+                        <article v-for="message in card.messages" :key="message.id" :data-conversation-message="message.id" class="conversation-message" :class="message.role"><div class="conversation-message-meta"><strong>{{ message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : '系统' }}</strong><span>消息 #{{ message.orderInSession + 1 }}</span></div><div class="md-body" v-html="renderedMessageContent(message.content, message)" @click="handleRenderedClick($event, message)" @keydown.enter.prevent="handleRenderedClick($event, message)" /></article>
                       </section>
                     </TransitionGroup>
                   </div>
@@ -2237,13 +2245,14 @@ onBeforeUnmount(() => {
         <section v-if="activeView === 'settings'" class="surface-section phrase-section"><div class="section-heading"><div><span class="eyebrow">QUICK PHRASES</span><h3>快捷短语</h3></div><MessageSquare :size="18" /></div><p class="section-description">使用 <code>$(topic)</code> 和 <code>$(context)</code> 插入当前主题与上下文。</p><div class="phrase-list"><div v-for="phrase in store.quickPhrases" :key="phrase.id" class="phrase-row"><span>{{ phrase.template }}</span><div v-if="!phrase.isBuiltin" class="phrase-actions"><button class="icon-button" title="编辑快捷短语" :aria-label="`编辑 ${phrase.template}`" @click="beginEditPhrase(phrase.id, phrase.template)"><Settings2 :size="14" /></button><button class="icon-button" title="删除快捷短语" :aria-label="`删除 ${phrase.template}`" @click="removePhrase(phrase.id)"><Trash2 :size="14" /></button></div><span v-else class="soft-tag">内置</span></div></div><div class="phrase-editor"><input v-model="customPhraseDraft" placeholder="例如：请比较 $(topic) 与 $(context)" @keyup.enter="editingPhraseId ? savePhraseEdit() : addCustomPhrase()" /><button class="button secondary-button" @click="editingPhraseId ? savePhraseEdit() : addCustomPhrase()"><Check :size="14" />{{ editingPhraseId ? '保存' : '添加' }}</button><button v-if="editingPhraseId" class="text-button" @click="editingPhraseId = null; customPhraseDraft = ''">取消</button></div></section>
       </section>
       <section v-if="activeView === 'sessions' && selectedSession" class="surface-section session-tree-overview"><div class="section-heading"><div><span class="eyebrow">EXPLORATION TREE</span><h3>{{ selectedSession.title }} 的探索树</h3></div><div class="tree-heading-actions"><button v-if="rootNavNode" class="button secondary-button" @click="openNodeComposer(rootNavNode)"><MessageSquare :size="14" />从起点继续追问</button><History :size="18" /></div></div><NavTree :nodes="store.navNodes.filter((node) => node.sessionId === selectedSession?.id && !node.parentId)" :all-nodes="store.navNodes.filter((node) => node.sessionId === selectedSession?.id)" :node-units="store.navNodeUnits" :units="store.units" :selected-node-id="selectedNavNodeId" @select-node="openNavNode" @ask="openNodeComposer" /></section>
+      <section v-if="activeView === 'settings'" class="surface-section stream-settings-section"><div class="section-heading"><div><span class="eyebrow">CONVERSATION OUTPUT</span><h3>对话输出</h3></div><Send :size="18" /></div><label class="toggle-row"><span><strong>流式传输对话</strong><small>API 模式下逐步显示回答；关闭时等待完整响应</small></span><input :checked="Boolean(store.config.llm.stream)" type="checkbox" @change="store.updateConfig({ llm: { ...store.config.llm, stream: ($event.target as HTMLInputElement).checked } })" /></label></section>
     </main>
 
-    <button v-if="!maintenancePanelOpen && (((activeView === 'concepts' || activeView === 'graph') && selectedConcept) || (activeView === 'sessions' && selectedSession) || store.selectedUnits.length || maintenanceSuggestions.length || selectedTask?.type === 'maintenance' || (activeView === 'settings' && store.operationLogs.length))" class="maintenance-launcher button secondary-button" aria-label="打开知识维护" title="打开知识维护" @click="openMaintenancePanel"><Sparkles :size="15" />知识维护</button>
+    <button v-if="!maintenancePanelOpen && (((activeView === 'concepts' || activeView === 'graph') && selectedConcept) || (activeView === 'sessions' && selectedSession) || (activeView === 'tasks' && (maintenanceSuggestions.length || selectedTask?.type === 'maintenance')) || store.selectedUnits.length || (activeView === 'settings' && store.operationLogs.length))" class="maintenance-launcher button secondary-button" aria-label="打开知识维护" title="打开知识维护" @click="openMaintenancePanel"><Sparkles :size="15" />知识维护</button>
 
-    <section v-if="maintenancePanelOpen && (((activeView === 'concepts' || activeView === 'graph') && selectedConcept) || (activeView === 'sessions' && selectedSession) || store.selectedUnits.length || maintenanceSuggestions.length || selectedTask?.type === 'maintenance' || (activeView === 'settings' && store.operationLogs.length))" class="maintenance-panel surface-section" aria-label="知识维护">
+    <section v-if="maintenancePanelOpen && (((activeView === 'concepts' || activeView === 'graph') && selectedConcept) || (activeView === 'sessions' && selectedSession) || (activeView === 'tasks' && (maintenanceSuggestions.length || selectedTask?.type === 'maintenance')) || store.selectedUnits.length || (activeView === 'settings' && store.operationLogs.length))" class="maintenance-panel surface-section" aria-label="知识维护">
       <div class="maintenance-panel-header">
-        <div><span class="eyebrow">KNOWLEDGE MAINTENANCE</span><h3>知识维护</h3></div>
+        <div><span class="eyebrow">KNOWLEDGE MAINTENANCE</span><h3>全图知识维护</h3><span class="maintenance-scope-note">维护助手默认检查整个知识图谱；当前页面只决定优先关注范围。</span></div>
         <div class="maintenance-panel-actions"><Sparkles :size="18" /><button class="icon-button" aria-label="关闭知识维护" title="关闭知识维护" @click="maintenancePanelOpen = false"><X :size="15" /></button></div>
       </div>
       <div v-if="(activeView === 'concepts' || activeView === 'graph') && selectedConcept" class="maintenance-scope">
