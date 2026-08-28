@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useWorkspaceStore } from '@/stores/workspace'
+import { parseDisclosureContext } from '@/services/prompts'
 import type { GraphSnapshot } from '@/types/domain'
 
 const baseMessage = (role: 'user' | 'assistant', content: string, index: number) => ({
@@ -24,6 +25,32 @@ function payload(messageCount = 2) {
 
 describe('direct concept extraction import pipeline', () => {
   let store: ReturnType<typeof useWorkspaceStore>
+
+  function completeMaintenanceDisclosure(taskId: string): void {
+    for (let round = 0; round < 8; round += 1) {
+      const task = store.tasks.find((item) => item.id === taskId)!
+      const disclosure = parseDisclosureContext(task.prompt)
+      expect(disclosure).toBeTruthy()
+      const expandedWithContent = new Set((disclosure?.expansions ?? []).filter((expansion) => expansion.content != null).map((expansion) => expansion.refID))
+      const listed = new Set((disclosure?.roots ?? []).map((reference) => reference.refID))
+      ;(disclosure?.expansions ?? []).forEach((expansion) => expansion.children?.forEach((reference) => listed.add(reference.refID)))
+      const hidden = [...listed].filter((refID) => !expandedWithContent.has(refID))
+      if (!hidden.length) return
+      const result = store.applyTaskResult(taskId, JSON.stringify({
+        reason: `批量检查第 ${round + 1} 层引用`,
+        suggestions: [],
+        disclosure_requests: hidden.map((refID) => ({ refID, depth: 64 })),
+      }))
+      expect(result.continued, result.errors.join('; ')).toBe(true)
+    }
+    throw new Error('维护披露未能在 8 轮内完成')
+  }
+
+  function createAuditedMaintenanceTask(input: Parameters<typeof store.createMaintenanceTask>[0] = {}): string {
+    const taskId = store.createMaintenanceTask(input)
+    completeMaintenanceDisclosure(taskId)
+    return taskId
+  }
 
   beforeEach(async () => {
     setActivePinia(createPinia())
@@ -508,13 +535,141 @@ describe('direct concept extraction import pipeline', () => {
     expect(task.scopeLabel).toContain('全库知识图谱')
     expect(task.prompt).toContain(rootId)
     expect(task.prompt).toContain(otherId)
-    expect(task.prompt).toContain('一级主题及直接子主题引用')
+    expect(task.prompt).toContain('根的直接子引用')
     expect(task.prompt).toContain('用户附加关注范围')
+    const disclosure = parseDisclosureContext(task.prompt)!
+    expect(disclosure.auditPendingRefs).toBe(true)
+    expect(task.prompt).toContain('"pending_ref_ids"')
+    expect(disclosure.expansions?.find((expansion) => expansion.refID === rootId)?.children).toContainEqual(expect.objectContaining({ refID: otherId }))
+    expect(disclosure.expansions?.some((expansion) => expansion.refID === otherId)).toBe(false)
+    const premature = store.applyTaskResult(taskId, JSON.stringify({ reason: '尚未检查子主题', suggestions: [], disclosure_requests: [] }))
+    expect(premature.ok).toBe(false)
+    expect(premature.errors.join('; ')).toContain('已列出但未展开')
+  })
+
+  it('rejects maintenance actions mixed with disclosure requests without applying either', () => {
+    const rootId = store.createConcept('混合响应根主题')
+    const childId = store.createConcept('混合响应子主题')
+    store.createRelation(rootId, childId, 'hierarchy')
+    const taskId = store.createMaintenanceTask()
+    const result = store.applyTaskResult(taskId, JSON.stringify({
+      reason: '一边检查一边修改不安全',
+      suggestions: [{ type: 'delete_concept', concept_id: childId, reason: '不应执行' }],
+      disclosure_requests: [{ refID: childId, depth: 1 }],
+    }))
+    expect(result.ok).toBe(false)
+    expect(result.errors.join('; ')).toContain('不能同时返回 suggestions 和 disclosure_requests')
+    expect(store.concepts.find((concept) => concept.id === childId)?.status).toBe('active')
+  })
+
+  it('keeps unassigned message text hidden until maintenance requests its Session', () => {
+    const sessionId = store.createConversationTask({ question: '首轮不应泄露的消息原文' })
+    const message = store.messages.find((item) => item.sessionId === sessionId && item.role === 'user')!
+    const taskId = store.createMaintenanceTask()
+    const initialTask = store.tasks.find((item) => item.id === taskId)!
+    const initialDisclosure = parseDisclosureContext(initialTask.prompt)!
+    const sessionExpansion = initialDisclosure.expansions?.find((expansion) => expansion.refID === sessionId)
+    expect(sessionExpansion?.content).toBeUndefined()
+    expect(sessionExpansion?.children).toContainEqual(expect.objectContaining({ refID: message.id }))
+    expect(initialTask.prompt).not.toContain('首轮不应泄露的消息原文')
+
+    const continued = store.applyTaskResult(taskId, JSON.stringify({
+      reason: '检查未归属消息会话',
+      suggestions: [],
+      disclosure_requests: [{ refID: sessionId, depth: 64 }],
+    }))
+    expect(continued.continued, continued.errors.join('; ')).toBe(true)
+    const disclosedPrompt = store.tasks.find((item) => item.id === taskId)!.prompt
+    expect(disclosedPrompt).toContain('首轮不应泄露的消息原文')
+    const disclosed = parseDisclosureContext(disclosedPrompt)!
+    const disclosedSession = JSON.parse(disclosed.expansions?.find((expansion) => expansion.refID === sessionId)?.content ?? '{}') as {
+      session?: { entity_type?: string; id?: string; concept_ids?: string[] }
+      unassigned_messages?: Array<{ entity_type?: string; id?: string; session_id?: string; content?: string; concept_ids?: string[] }>
+    }
+    expect(disclosedSession.session).toMatchObject({ entity_type: 'session', id: sessionId, concept_ids: [] })
+    expect(disclosedSession.unassigned_messages).toContainEqual(expect.objectContaining({ entity_type: 'message', id: message.id, session_id: sessionId, content: '首轮不应泄露的消息原文', concept_ids: [] }))
+  })
+
+  it('keeps units without active Concept links reachable without narrowing graph roots', () => {
+    const conceptRoot = store.createConcept('全库仍需可见的根主题')
+    const sessionId = store.createConversationTask({ question: '无归属片段的问题' })
+    const conversationTask = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
+    const completed = store.applyTaskResult(conversationTask.id, JSON.stringify({
+      answer: '无归属片段的回答',
+      units: [{ title: '无归属阅读片段', summary: '用于验证维护目录可达性。', concept_ids: [], concepts: [] }],
+      memberships: [],
+      disclosure_requests: [],
+    }))
+    expect(completed.ok, completed.errors.join('; ')).toBe(true)
+    const unit = store.units.find((item) => item.sessionId === sessionId)!
+    expect(store.unitConcepts.some((link) => link.unitId === unit.id)).toBe(false)
+
+    const maintenanceId = store.createMaintenanceTask({ unitIds: [unit.id] })
+    const prompt = store.tasks.find((item) => item.id === maintenanceId)!.prompt
+    const disclosure = parseDisclosureContext(prompt)!
+    expect(disclosure.roots).toContainEqual(expect.objectContaining({ refID: conceptRoot }))
+    expect(disclosure.roots).toContainEqual(expect.objectContaining({ refID: unit.id }))
+    const unitExpansion = disclosure.expansions?.find((expansion) => expansion.refID === unit.id)
+    expect(unitExpansion?.content).toBeUndefined()
+    const unitMessageIds = store.messages.filter((message) => message.unitId === unit.id).map((message) => message.id)
+    expect(unitMessageIds.length).toBeGreaterThan(0)
+    expect(unitExpansion?.children?.map((reference) => reference.refID)).toEqual(expect.arrayContaining(unitMessageIds))
+    expect(prompt).not.toContain('无归属片段的回答')
+
+    completeMaintenanceDisclosure(maintenanceId)
+    const finalDisclosure = parseDisclosureContext(store.tasks.find((item) => item.id === maintenanceId)!.prompt)!
+    const disclosedUnit = JSON.parse(finalDisclosure.expansions?.find((expansion) => expansion.refID === unit.id)?.content ?? '{}') as {
+      unit?: { entity_type?: string; id?: string; session_id?: string; concept_ids?: string[]; message_ids?: string[] }
+    }
+    expect(disclosedUnit.unit).toMatchObject({ entity_type: 'unit', id: unit.id, session_id: sessionId, concept_ids: [] })
+    expect(disclosedUnit.unit?.message_ids).toEqual(expect.arrayContaining(unitMessageIds))
+    unitMessageIds.forEach((messageId) => {
+      const messageContent = finalDisclosure.expansions?.find((expansion) => expansion.refID === messageId)?.content
+      expect(messageContent).toBeDefined()
+      expect(JSON.parse(messageContent ?? '{}')).toMatchObject({ message: { entity_type: 'message', id: messageId, session_id: sessionId, unit_id: unit.id, concept_ids: [] } })
+    })
+  })
+
+  it('audits multiple maintenance roots and their descendants in one batched continuation', () => {
+    const rootA = store.createConcept('批量审计根 A')
+    const childA = store.createConcept('批量审计子 A')
+    const grandchildA = store.createConcept('批量审计孙 A')
+    const rootB = store.createConcept('批量审计根 B')
+    const childB = store.createConcept('批量审计子 B')
+    store.createRelation(rootA, childA, 'hierarchy')
+    store.createRelation(childA, grandchildA, 'hierarchy')
+    store.createRelation(rootB, childB, 'hierarchy')
+
+    const taskId = store.createMaintenanceTask()
+    const first = store.applyTaskResult(taskId, JSON.stringify({
+      reason: '批量检查所有根分支',
+      suggestions: [],
+      disclosure_requests: [rootA, rootB].map((refID) => ({ refID, depth: 64 })),
+    }))
+    expect(first.continued, first.errors.join('; ')).toBe(true)
+
+    const task = store.tasks.find((item) => item.id === taskId)!
+    const disclosure = parseDisclosureContext(task.prompt)!
+    expect(disclosure.round).toBe(1)
+    const expectedIds = [rootA, childA, grandchildA, rootB, childB]
+    expectedIds.forEach((refID) => {
+      expect(disclosure.expansions?.find((expansion) => expansion.refID === refID)?.content, refID).toBeDefined()
+    })
+    expect(JSON.parse(disclosure.expansions?.find((expansion) => expansion.refID === rootA)?.content ?? '{}')).toMatchObject({
+      concept: { entity_type: 'concept', id: rootA },
+    })
+
+    const final = store.applyTaskResult(taskId, JSON.stringify({
+      reason: '已检查两个根分支及其全部子孙，未发现需要修改的地方',
+      suggestions: [],
+      disclosure_requests: [],
+    }))
+    expect(final.ok, final.errors.join('; ')).toBe(true)
   })
 
   it('preserves an overall maintenance reason when suggestions are empty', () => {
     store.createConcept('无需修改主题')
-    const taskId = store.createMaintenanceTask()
+    const taskId = createAuditedMaintenanceTask()
     const task = store.tasks.find((item) => item.id === taskId)!
     const result = store.applyTaskResult(task.id, JSON.stringify({ suggestions: [], disclosure_requests: [] }))
     expect(result.ok, result.errors.join('; ')).toBe(true)
@@ -545,7 +700,7 @@ describe('direct concept extraction import pipeline', () => {
     const messages = store.messages.filter((message) => message.sessionId === sessionId)
     expect(report.taskIds.length).toBeGreaterThan(0)
     expect(messages.every((message) => !message.unitId)).toBe(true)
-    const maintenanceId = store.createMaintenanceTask()
+    const maintenanceId = createAuditedMaintenanceTask()
     const maintenance = store.tasks.find((item) => item.id === maintenanceId)!
     const result = store.applyTaskResult(maintenance.id, JSON.stringify({
       reason: '两条消息构成连续解释，形成可复用片段',
@@ -586,7 +741,7 @@ describe('direct concept extraction import pipeline', () => {
 
   it('applies graph maintenance Concept creation with a proposed parent edge', () => {
     const parentId = store.createConcept('维护父主题')
-    const taskId = store.createMaintenanceTask()
+    const taskId = createAuditedMaintenanceTask()
     const task = store.tasks.find((item) => item.id === taskId)!
     const result = store.applyTaskResult(task.id, JSON.stringify({
       suggestions: [{ type: 'create_concept', name: '维护子主题', summary: '更具体的知识主题', parent_concept_id: parentId, reason: '语义范围更窄' }],
@@ -603,7 +758,7 @@ describe('direct concept extraction import pipeline', () => {
   it('creates aliases and multiple proposed hierarchy parents atomically', () => {
     const parentA = store.createConcept('原子父主题 A')
     const parentB = store.createConcept('原子父主题 B')
-    const taskId = store.createMaintenanceTask()
+    const taskId = createAuditedMaintenanceTask()
     const task = store.tasks.find((item) => item.id === taskId)!
     const result = store.applyTaskResult(task.id, JSON.stringify({
       suggestions: [{
@@ -624,7 +779,7 @@ describe('direct concept extraction import pipeline', () => {
 
   it('rejects duplicate aliases and conflicting create parent fields before any write', () => {
     const parent = store.createConcept('冲突父主题')
-    const taskId = store.createMaintenanceTask()
+    const taskId = createAuditedMaintenanceTask()
     const task = store.tasks.find((item) => item.id === taskId)!
     const result = store.applyTaskResult(task.id, JSON.stringify({
       suggestions: [
@@ -652,7 +807,7 @@ describe('direct concept extraction import pipeline', () => {
 
   it('enforces the maintenance action contract and supports clearing unit links', () => {
     const conceptId = store.createConcept('维护主题')
-    const taskId = store.createMaintenanceTask()
+    const taskId = createAuditedMaintenanceTask()
     const invalid = store.applyTaskResult(taskId, JSON.stringify({
       suggestions: [{ type: 'delete_concept', concept_id: conceptId, reason: '清理重复主题', unexpected: true }],
       disclosure_requests: [],
@@ -660,7 +815,7 @@ describe('direct concept extraction import pipeline', () => {
     expect(invalid.ok).toBe(false)
     expect(invalid.errors.join('; ')).toContain('unexpected 不是 delete_concept 允许的字段')
 
-    const strictRelationTaskId = store.createMaintenanceTask()
+    const strictRelationTaskId = createAuditedMaintenanceTask()
     const strictRelationTask = store.tasks.find((item) => item.id === strictRelationTaskId)!
     const strictRelation = store.applyTaskResult(strictRelationTask.id, JSON.stringify({
       suggestions: [{ type: 'add_relation', parent_concept_id: conceptId, child_concept_id: conceptId, relation_type: 'related', reason: 'canonical schema 不应接受兼容字段' }],
@@ -682,7 +837,7 @@ describe('direct concept extraction import pipeline', () => {
     store.setUnitConcept(unit.id, conceptId, true)
     expect(store.unitConcepts).toContainEqual(expect.objectContaining({ unitId: unit.id, conceptId }))
 
-    const relinkTaskId = store.createMaintenanceTask({ unitIds: [unit.id] })
+    const relinkTaskId = createAuditedMaintenanceTask({ unitIds: [unit.id] })
     const relinkTask = store.tasks.find((task) => task.id === relinkTaskId)!
     const relinkResult = store.applyTaskResult(relinkTask.id, JSON.stringify({
       suggestions: [{ type: 'unit_relink', unit_id: unit.id, concept_ids: [], reason: '该片段不再属于任何主题' }],
@@ -695,7 +850,7 @@ describe('direct concept extraction import pipeline', () => {
 
   it('rejects null for optional non-nullable maintenance fields', () => {
     const conceptId = store.createConcept('严格字段主题')
-    const taskId = store.createMaintenanceTask()
+    const taskId = createAuditedMaintenanceTask()
     const task = store.tasks.find((item) => item.id === taskId)!
     const result = store.applyTaskResult(task.id, JSON.stringify({
       suggestions: [{ type: 'update_concept', concept_id: conceptId, summary: null, reason: '测试 schema 类型边界' }],
@@ -713,7 +868,7 @@ describe('direct concept extraction import pipeline', () => {
     const relationId = store.relations.find((relation) => relation.parentConceptId === parentId && relation.childConceptId === childId)!.id
     const sessionId = store.createConversationTask({ question: '准备维护消息归属' })
     const question = store.messages.find((message) => message.sessionId === sessionId && message.role === 'user')!
-    const taskId = store.createMaintenanceTask({ conceptIds: [childId] })
+    const taskId = createAuditedMaintenanceTask({ conceptIds: [childId] })
     const task = store.tasks.find((item) => item.id === taskId)!
     const result = store.applyTaskResult(task.id, JSON.stringify({
       suggestions: [
@@ -728,7 +883,7 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.applyMaintenanceSuggestion(taskId, 1).ok).toBe(true)
     expect(store.messageConcepts.filter((link) => link.messageId === question.id).map((link) => link.conceptId)).toEqual(expect.arrayContaining([childId, otherId]))
 
-    const removeTaskId = store.createMaintenanceTask()
+    const removeTaskId = createAuditedMaintenanceTask()
     const removeTask = store.tasks.find((item) => item.id === removeTaskId)!
     expect(store.applyTaskResult(removeTask.id, JSON.stringify({ suggestions: [{ type: 'remove_relation', relation_id: relationId, reason: '移除过时关联' }], disclosure_requests: [] })).ok).toBe(true)
     expect(store.applyMaintenanceSuggestion(removeTaskId, 0).ok).toBe(true)
@@ -737,7 +892,7 @@ describe('direct concept extraction import pipeline', () => {
 
   it('supports idempotent Concept delete and restore actions', () => {
     const conceptId = store.createConcept('可恢复维护主题')
-    const taskId = store.createMaintenanceTask()
+    const taskId = createAuditedMaintenanceTask()
     const task = store.tasks.find((item) => item.id === taskId)!
     expect(store.applyTaskResult(task.id, JSON.stringify({
       suggestions: [
@@ -750,7 +905,7 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.concepts.find((concept) => concept.id === conceptId)?.status).toBe('archived')
     expect(store.applyMaintenanceSuggestion(taskId, 1).ok).toBe(true)
     expect(store.concepts.find((concept) => concept.id === conceptId)?.status).toBe('active')
-    const repeatTaskId = store.createMaintenanceTask()
+    const repeatTaskId = createAuditedMaintenanceTask()
     const repeatTask = store.tasks.find((item) => item.id === repeatTaskId)!
     expect(store.applyTaskResult(repeatTask.id, JSON.stringify({ suggestions: [{ type: 'delete_concept', concept_id: conceptId, reason: '重复归档应幂等' }], disclosure_requests: [] })).ok).toBe(true)
     expect(store.applyMaintenanceSuggestion(repeatTaskId, 0).ok).toBe(true)
@@ -761,7 +916,7 @@ describe('direct concept extraction import pipeline', () => {
     const parentA = store.createConcept('多父主题 A')
     const parentB = store.createConcept('多父主题 B')
     const child = store.createConcept('多父子主题')
-    const taskId = store.createMaintenanceTask()
+    const taskId = createAuditedMaintenanceTask()
     const task = store.tasks.find((item) => item.id === taskId)!
     expect(store.applyTaskResult(task.id, JSON.stringify({
       suggestions: [
@@ -775,7 +930,7 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.applyMaintenanceSuggestion(taskId, 1).ok).toBe(true)
     expect(store.relations.filter((relation) => relation.relationType === 'hierarchy' && relation.childConceptId === child).map((relation) => relation.parentConceptId)).toEqual(expect.arrayContaining([parentA, parentB]))
 
-    const reviewTaskId = store.createMaintenanceTask()
+    const reviewTaskId = createAuditedMaintenanceTask()
     const reviewTask = store.tasks.find((item) => item.id === reviewTaskId)!
     const relation = store.relations.find((item) => item.childConceptId === child && item.parentConceptId === parentA)!
     expect(store.applyTaskResult(reviewTask.id, JSON.stringify({
@@ -1067,7 +1222,7 @@ describe('direct concept extraction import pipeline', () => {
         providers: [{ id: 'maintenance-provider', name: 'Maintenance', baseUrl: 'https://example.test/v1', model: 'maintenance-model', apiKey: 'test-key' }],
       },
     })
-    const taskId = store.createMaintenanceTask({ conceptIds: [conceptId] })
+    const taskId = createAuditedMaintenanceTask({ conceptIds: [conceptId] })
     await expect(store.executeTask(taskId)).resolves.toEqual({ ok: true })
     const tools = requestBody?.tools as Array<{ type: string; function: { name: string; parameters: { additionalProperties: boolean } } }>
     expect(tools.some((tool) => tool.type === 'function' && tool.function.name === 'nexus_maintenance_update_concept')).toBe(true)

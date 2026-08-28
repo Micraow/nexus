@@ -103,19 +103,35 @@ describe('conversation prompt', () => {
 })
 
 describe('maintenance prompt', () => {
-  it('describes a graph-wide scope and exposes root direct-child index', () => {
+  it('describes a graph-wide scope and exposes only the disclosure index', () => {
     const prompt = buildMaintenancePrompt({
       concepts: [
-        { id: 'root', name: '网络', aliases: [], summary: '网络', notes: '' },
-        { id: 'child', name: 'RoCE', aliases: [], summary: 'RDMA 网络', notes: '' },
+        { id: 'root', name: '网络', aliases: ['ROOT_PRIVATE_ALIAS'], summary: '网络', notes: 'ROOT_PRIVATE_NOTES' },
+        { id: 'child', name: 'RoCE', aliases: ['CHILD_PRIVATE_ALIAS'], summary: 'RDMA 网络', notes: 'CHILD_PRIVATE_NOTES' },
       ],
       relations: [{ sourceId: 'root', targetId: 'child', type: 'hierarchy', status: 'confirmed' }],
       units: [],
+      disclosure: {
+        roots: [{ refID: 'root', title: '网络', summary: '网络' }],
+        expansions: [{ refID: 'root', children: [{ refID: 'child', title: 'RoCE', summary: 'RDMA 网络' }] }],
+        round: 0,
+        auditPendingRefs: true,
+      },
       scope: { conceptIds: ['child'] },
     })
     expect(prompt).toContain('维护的是整个知识图谱')
-    expect(prompt).toContain('一级主题及直接子主题引用')
-    expect(prompt).toContain('"direct_children"')
+    expect(prompt).toContain('根的直接子引用')
+    expect(prompt).toContain('全图统计')
+    expect(prompt).toContain('同层 refID 放在同一个 disclosure_requests 数组中批量请求')
+    expect(prompt).toContain('"active_concepts": 2')
+    expect(prompt).toContain('"refID": "root"')
+    expect(prompt).toContain('"refID": "child"')
+    expect(prompt).toContain('"pending_ref_ids"')
+    expect(prompt).not.toContain('ROOT_PRIVATE_ALIAS')
+    expect(prompt).not.toContain('ROOT_PRIVATE_NOTES')
+    expect(prompt).not.toContain('CHILD_PRIVATE_ALIAS')
+    expect(prompt).not.toContain('CHILD_PRIVATE_NOTES')
+    expect(prompt).not.toContain('"direct_children"')
     expect(prompt).toContain('根节点是例外')
     expect(prompt).toContain('create_concept')
     expect(prompt).toContain('remove_hierarchy')
@@ -139,8 +155,13 @@ describe('maintenance prompt', () => {
     expect(prompt).toContain('不能因为图谱层级无需修改而忽略')
     expect(prompt).toContain('分别交代 Concept/关系检查与阅读片段覆盖检查')
     expect(prompt).toContain('suggestions[].title 最长 30 个字符')
-    expect(prompt).toContain('message_ids 是不透明字符串')
-    expect(prompt).toContain('禁止生成、猜测、缩写、截断或引用目录外 ID')
+    expect(prompt).toContain('refID/message_ids 都是不透明字符串')
+    expect(prompt).toContain('禁止生成、猜测、缩写、截断或引用未披露 ID')
+    expect(prompt).not.toContain('什么是拥塞控制？')
+    expect(prompt).not.toContain('拥塞控制用于避免网络过载。')
+    expect(prompt).not.toContain('"id": "m1"')
+    expect(prompt).not.toContain('"id": "m2"')
+    expect(prompt).not.toContain('"sessionId": "s1"')
   })
 
   it('publishes strict MCP-shaped schemas for every maintenance action', () => {
@@ -204,15 +225,18 @@ describe('prompt harness and progressive disclosure', () => {
         { refID: 'concept_child', children: [{ refID: 'unit_1', title: 'DNS 实践', summary: '配置记录' }] },
         { refID: 'unit_1', content: '原始消息，不应出现在子引用字段' },
       ],
+      auditPendingRefs: true,
     }
     const rendered = formatDisclosureContext(context)
     expect(rendered).toContain('"refID": "concept_root"')
     expect(rendered).toContain('"refID": "concept_child"')
     expect(rendered).toContain('"content": "原始消息，不应出现在子引用字段"')
+    expect(rendered).toContain('"pending_ref_ids": [\n    "concept_root",\n    "concept_child"\n  ]')
     const prompt = buildHarnessPrompt('任务\n' + rendered)
     const parsed = parseDisclosureContext(prompt)
     expect(parsed?.roots[0]?.refID).toBe('concept_root')
     expect(parsed?.expansions?.[1]?.children?.[0]?.refID).toBe('unit_1')
+    expect(parsed?.auditPendingRefs).toBe(true)
     const replaced = replaceDisclosureContext(prompt, {
       roots: context.roots,
       expansions: [...context.expansions, { refID: 'unit_1', content: '展开后的完整原文' }],
@@ -283,7 +307,7 @@ describe('prompt harness and progressive disclosure', () => {
       buildConversationPrompt({ question: '继续比较', context: '', topic: 'RDMA' }),
     ]
 
-    expect(PROMPT_VERSION).toBe('2026-08-v8-concept-name-self-check')
+    expect(PROMPT_VERSION).toBe('2026-08-v9-maintenance-disclosure-audit')
     prompts.forEach((prompt) => {
       expect(prompt).toContain('逐个扫描 concepts[i].name 的全部 Unicode 字符')
       expect(prompt).toContain('出现“与”“和”“及”“、”“/”“／”任一字符')

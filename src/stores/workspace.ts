@@ -675,7 +675,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
    * from existing ConceptRelation/UnitConcept/Message rows; no graph schema
    * or persistent field is added for the disclosure protocol.
    */
-  function promptDisclosureContext(options: { unitIds?: string[]; messageIds?: string[]; includeFullContent?: boolean; expandedRefIds?: string[]; round?: number } = {}): DisclosureContext {
+  function promptDisclosureContext(options: { unitIds?: string[]; messageIds?: string[]; sessionIds?: string[]; includeFullContent?: boolean; includeConceptDetails?: boolean; includeMessageSummaries?: boolean; scopeConceptRoots?: boolean; auditPendingRefs?: boolean; expandedRefIds?: string[]; round?: number } = {}): DisclosureContext {
     const active = activeConcepts.value.slice().sort((left, right) => left.name.localeCompare(right.name, 'zh-CN') || left.id.localeCompare(right.id))
     const activeIds = new Set(active.map((concept) => concept.id))
     const hierarchy = relations.value.filter((relation) =>
@@ -729,12 +729,31 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const messageRef = (message: Message) => ({
       refID: message.id,
       title: `消息：${message.role} #${message.orderInSession + 1}`,
-      summary: message.content.trim().replace(/\s+/g, ' ').slice(0, 240),
+      summary: options.includeMessageSummaries === false
+        ? `${message.role} 消息，展开后查看内容`
+        : message.content.trim().replace(/\s+/g, ' ').slice(0, 240),
     })
+    const messageEvidence = (message: Message) => {
+      const linked = messageConcepts.value.filter((link) => link.messageId === message.id && activeIds.has(link.conceptId)).map((link) => link.conceptId)
+      const declared = Array.isArray(message.metadata?.concept_ids)
+        ? message.metadata.concept_ids.filter((id): id is string => typeof id === 'string' && activeIds.has(id))
+        : []
+      return {
+        entity_type: 'message',
+        id: message.id,
+        session_id: message.sessionId,
+        unit_id: message.unitId ?? null,
+        role: message.role,
+        order_in_session: message.orderInSession,
+        content: message.content,
+        concept_ids: [...new Set([...linked, ...declared])],
+      }
+    }
 
     const selectedUnitIds = [...new Set((options.unitIds ?? []).filter((id) => units.value.some((unit) => unit.id === id)))]
     const selectedMessageIds = [...new Set((options.messageIds ?? []).filter((id) => messages.value.some((message) => message.id === id)))]
-    const scoped = selectedUnitIds.length > 0 || selectedMessageIds.length > 0
+    const selectedSessionIds = [...new Set((options.sessionIds ?? []).filter((id) => activeSessions.value.some((session) => session.id === id)))]
+    const scoped = options.scopeConceptRoots !== false && (selectedUnitIds.length > 0 || selectedMessageIds.length > 0)
     // For a scoped task expose only the hierarchy roots that can reach one of
     // its selected units/messages. An unscoped task (origin extraction) gets
     // all roots, but never all descendants up front.
@@ -763,14 +782,30 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
     const rootItems = active.filter((concept) => !byChild.has(concept.id) && (!scoped || relevantConceptIds.has(concept.id)))
     const conceptRoots = rootItems.map(conceptRef)
+    const sessionRoots = selectedSessionIds.map((id) => activeSessions.value.find((session) => session.id === id)).filter(Boolean).map((session) => sessionRef(session as Session))
     const unitRoots = selectedUnitIds.map((id) => units.value.find((unit) => unit.id === id)).filter(Boolean).map((unit) => unitRef(unit as KnowledgeUnit))
     const messageRoots = selectedMessageIds.map((id) => messages.value.find((message) => message.id === id)).filter(Boolean).map((message) => messageRef(message as Message))
-    const roots = [...conceptRoots, ...unitRoots, ...messageRoots]
+    const roots = [...conceptRoots, ...sessionRoots, ...unitRoots, ...messageRoots]
 
     const unitExpansion = (item: KnowledgeUnit, revealContent = Boolean(options.includeFullContent)) => {
-      const children = unitMessages(item.id).map(messageRef)
-      const content = revealContent ? unitMessages(item.id).map((message) => `${message.role}: ${message.content}`).join('\n') : undefined
-      return { refID: item.id, children, ...(content ? { content } : {}) }
+      const itemMessages = unitMessages(item.id)
+      const children = itemMessages.map(messageRef)
+      const content = revealContent
+        ? JSON.stringify({
+            unit: {
+              entity_type: 'unit',
+              id: item.id,
+              session_id: item.sessionId,
+              title: item.title ?? '',
+              summary: item.summary ?? '',
+              status: item.status,
+              concept_ids: unitConcepts.value.filter((link) => link.unitId === item.id && activeIds.has(link.conceptId)).map((link) => link.conceptId),
+              message_ids: itemMessages.map((message) => message.id),
+            },
+            messages: itemMessages.map(messageEvidence),
+          })
+        : undefined
+      return { refID: item.id, children, ...(revealContent ? { content } : {}) }
     }
     const conceptExpansion = (concept: Concept) => {
       const childRefs = (byParent.get(concept.id) ?? [])
@@ -790,18 +825,61 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         .filter(Boolean)
         .map((message) => messageRef(message as Message))
       const seen = new Set<string>()
-      return { refID: concept.id, children: [...childRefs, ...sessionRefs, ...unitRefs, ...messageRefs].filter((reference) => !seen.has(reference.refID) && (seen.add(reference.refID), true)) }
+      const revealDetails = options.includeConceptDetails ?? Boolean(options.includeFullContent)
+      const content = revealDetails
+        ? JSON.stringify({
+            concept: {
+              entity_type: 'concept',
+              id: concept.id,
+              name: concept.name,
+              summary: concept.summary ?? '',
+              notes: concept.notes,
+              aliases: aliases.value.filter((alias) => alias.conceptId === concept.id).map((alias) => ({ id: alias.id, alias: alias.alias })),
+            },
+            relations: relations.value
+              .filter((relation) => relation.parentConceptId === concept.id || relation.childConceptId === concept.id)
+              .map((relation) => ({ id: relation.id, sourceId: relation.parentConceptId, targetId: relation.childConceptId, type: relation.relationType, status: relation.status })),
+            memberships: {
+              session_ids: conceptSessions.get(concept.id) ?? [],
+              unit_ids: conceptUnits.get(concept.id) ?? [],
+              message_ids: conceptMessages.get(concept.id) ?? [],
+            },
+          })
+        : undefined
+      return {
+        refID: concept.id,
+        children: [...childRefs, ...sessionRefs, ...unitRefs, ...messageRefs].filter((reference) => !seen.has(reference.refID) && (seen.add(reference.refID), true)),
+        ...(content ? { content } : {}),
+      }
     }
     const sessionExpansion = (session: Session, revealContent = Boolean(options.includeFullContent)) => {
+      const unassignedMessages = messages.value.filter((message) => message.sessionId === session.id && !message.unitId).sort((left, right) => left.orderInSession - right.orderInSession)
       const children = [
         ...units.value.filter((unit) => unit.sessionId === session.id).map(unitRef),
-        ...messages.value.filter((message) => message.sessionId === session.id && !message.unitId).map(messageRef),
+        ...unassignedMessages.map(messageRef),
       ]
       const content = revealContent
-        ? messages.value.filter((message) => message.sessionId === session.id).sort((left, right) => left.orderInSession - right.orderInSession).map((message) => `${message.role}: ${message.content}`).join('\n')
+        ? JSON.stringify({
+            session: {
+              entity_type: 'session',
+              id: session.id,
+              title: session.title,
+              summary: session.summary ?? '',
+              knowledge_kind: session.knowledgeKind,
+              knowledge_judgment: session.knowledgeJudgment ?? '',
+              concept_ids: sessionConcepts.value.filter((link) => link.sessionId === session.id && activeIds.has(link.conceptId)).map((link) => link.conceptId),
+            },
+            unassigned_messages: unassignedMessages.map(messageEvidence),
+          })
         : undefined
-      return { refID: session.id, children, ...(content ? { content } : {}) }
+      return { refID: session.id, children, ...(revealContent ? { content } : {}) }
     }
+    const messageExpansion = (message: Message) => ({
+      refID: message.id,
+      content: JSON.stringify({
+        message: messageEvidence(message),
+      }),
+    })
     const expandedIds = [...new Set(options.expandedRefIds ?? [])]
     const expansionMap = new Map<string, NonNullable<DisclosureContext['expansions']>[number]>()
     // Explicitly selected full-content units/messages are already authorized
@@ -813,20 +891,26 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       }
     })
     selectedMessageIds.forEach((id) => {
+      if (!options.includeFullContent) return
       const message = messages.value.find((item) => item.id === id)
-      if (message) expansionMap.set(id, { refID: id, content: message.content })
+      if (message) expansionMap.set(id, messageExpansion(message))
     })
     expandedIds.forEach((refID) => {
       const concept = active.find((item) => item.id === refID)
       if (concept) expansionMap.set(refID, conceptExpansion(concept))
       const unit = units.value.find((item) => item.id === refID)
-      if (unit) expansionMap.set(refID, unitExpansion(unit, true))
+      if (unit) expansionMap.set(refID, unitExpansion(unit))
       const session = activeSessions.value.find((item) => item.id === refID)
-      if (session) expansionMap.set(refID, sessionExpansion(session, true))
+      if (session) expansionMap.set(refID, sessionExpansion(session))
       const message = messages.value.find((item) => item.id === refID)
-      if (message) expansionMap.set(refID, { refID, content: message.content })
+      if (message && options.includeFullContent) expansionMap.set(refID, messageExpansion(message))
     })
-    return { roots, expansions: [...expansionMap.values()], round: Number.isInteger(options.round) ? Math.max(0, options.round as number) : 0 }
+    return {
+      roots,
+      expansions: [...expansionMap.values()],
+      round: Number.isInteger(options.round) ? Math.max(0, options.round as number) : 0,
+      ...(options.auditPendingRefs ? { auditPendingRefs: true } : {}),
+    }
   }
 
 
@@ -1649,23 +1733,41 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       : requestedConceptIds
         ? unitScope.filter((unit) => unitConcepts.value.some((link) => link.unitId === unit.id && requestedConceptIds.has(link.conceptId))).map((unit) => unit.id)
         : []
-    const focusUnits = focusUnitIds.map((id) => unitScope.find((unit) => unit.id === id)).filter(Boolean) as KnowledgeUnit[]
     // Maintenance may create optional reading units only from messages that
     // are not already claimed by another unit; omit assigned messages from
     // the catalog to keep the prompt focused and avoid duplicate proposals.
     const activeMessages = messages.value.filter((message) => activeSessionIds.value.has(message.sessionId) && !message.unitId)
     if (!conceptScope.length && !unitScope.length && !activeMessages.length) throw new Error('没有可供维护检查的知识主题、阅读片段或消息')
     const conceptIds = new Set(conceptScope.map((concept) => concept.id))
-    const unitIds = new Set(unitScope.map((unit) => unit.id))
+    const hierarchyChildIds = new Set(relations.value
+      .filter((relation) => relation.relationType === 'hierarchy' && relation.status !== 'rejected' && conceptIds.has(relation.parentConceptId) && conceptIds.has(relation.childConceptId))
+      .map((relation) => relation.childConceptId))
+    const rootConceptIds = conceptScope.filter((concept) => !hierarchyChildIds.has(concept.id)).map((concept) => concept.id)
+    const focusedConceptPathIds = [...(requestedConceptIds ?? [])].flatMap((conceptId) => conceptExpansionPath(conceptId, true).slice(0, -1))
+    const unassignedSessionIds = [...new Set(activeMessages.map((message) => message.sessionId))]
+    const unreachableUnitIds = unitScope
+      .filter((unit) => !unitConcepts.value.some((link) => link.unitId === unit.id && conceptIds.has(link.conceptId)))
+      .map((unit) => unit.id)
+    const catalogUnitIds = [...new Set([...focusUnitIds, ...unreachableUnitIds])]
+    const initialDisclosureRefIds = [...new Set([...rootConceptIds, ...focusedConceptPathIds, ...unassignedSessionIds, ...catalogUnitIds])]
     const prompt = buildMaintenancePrompt({
       concepts: conceptScope.map((concept) => ({ id: concept.id, name: concept.name, aliases: aliases.value.filter((alias) => alias.conceptId === concept.id).map((alias) => alias.alias), summary: concept.summary ?? '', notes: concept.notes })),
       relations: relations.value.filter((relation) => conceptIds.has(relation.parentConceptId) && conceptIds.has(relation.childConceptId)).map((relation) => ({ sourceId: relation.parentConceptId, targetId: relation.childConceptId, type: relation.relationType, status: relation.status })),
       units: unitScope.map((unit) => ({ id: unit.id, title: unit.title ?? '', summary: unit.summary ?? '', session: sessions.value.find((session) => session.id === unit.sessionId)?.title ?? '', conceptIds: unitConcepts.value.filter((link) => link.unitId === unit.id).map((link) => link.conceptId) })),
       messages: activeMessages.map((message) => ({ id: message.id, sessionId: message.sessionId, role: message.role, content: message.content.slice(0, 600) })),
-      includeMessages: input.includeFullContent && focusUnits.length ? focusUnits.map((unit) => `## ${unit.id}\n${unitMessages(unit.id).map((message) => `${message.role}: ${message.content}`).join('\n')}`).join('\n\n') : undefined,
-      // Keep the disclosure catalog graph-wide too. Focused full text is
-      // included above, while root references must not hide unlinked topics.
-      disclosure: promptDisclosureContext(),
+      // The first round contains graph roots, direct child references, roots
+      // for unassigned-message Sessions, and units unreachable from an active
+      // Concept. Entity details are available only through continuation.
+      disclosure: promptDisclosureContext({
+        unitIds: catalogUnitIds,
+        sessionIds: unassignedSessionIds,
+        expandedRefIds: initialDisclosureRefIds,
+        includeFullContent: false,
+        includeConceptDetails: false,
+        includeMessageSummaries: false,
+        scopeConceptRoots: false,
+        auditPendingRefs: true,
+      }),
       scope: { conceptIds: requestedConceptIds ? [...requestedConceptIds] : [], unitIds: requestedUnitIds ? [...requestedUnitIds] : [] },
     })
     let taskId = ''
@@ -2132,6 +2234,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   const disclosureTaskTypes = new Set<LLMTask['type']>(['concept_extraction', 'origin_concepts', 'conversation', 'maintenance'])
 
+  function undisclosedReferenceIds(context: DisclosureContext): string[] {
+    const expandedWithContent = new Set((context.expansions ?? []).filter((expansion) => expansion.content != null).map((expansion) => expansion.refID))
+    const listed = new Set(context.roots.map((reference) => reference.refID))
+    ;(context.expansions ?? []).forEach((expansion) => expansion.children?.forEach((reference) => listed.add(reference.refID)))
+    return [...listed].filter((refID) => !expandedWithContent.has(refID))
+  }
+
   function hasDisclosureCompletionPayload(task: LLMTask, data: Record<string, unknown>): boolean {
     if (task.type === 'conversation') {
       return typeof data.answer === 'string' && data.answer.trim().length > 0
@@ -2211,7 +2320,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         frontier = [...new Set(next)]
       }
     }
-    const nextContext: DisclosureContext = { roots: current.roots, expansions: [...expansionMap.values()], round: currentRound + 1 }
+    const nextContext: DisclosureContext = {
+      roots: current.roots,
+      expansions: [...expansionMap.values()],
+      round: currentRound + 1,
+      ...(current.auditPendingRefs ? { auditPendingRefs: true } : {}),
+    }
     const nextPrompt = replaceDisclosureContext(task.prompt, nextContext)
     if (expandedThisTurn.size === 0 || !changedExpansion || nextPrompt === task.prompt) {
       const requestsAreAlreadyExpanded = requests.every((request) => expansionMap.has(request.refID.trim()))
@@ -2259,6 +2373,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         markTask(taskId, 'stale', responseText, staleErrors)
         return { ok: false, errors: staleErrors }
       }
+      if (Array.isArray(data.disclosure_requests) && data.disclosure_requests.length > 0 && Array.isArray(data.suggestions) && data.suggestions.length > 0) {
+        const mixedErrors = ['维护响应不能同时返回 suggestions 和 disclosure_requests；请先完成披露审计，且中间轮必须令 suggestions=[]']
+        markTask(taskId, 'needs_review', responseText, mixedErrors)
+        return { ok: false, errors: mixedErrors }
+      }
     }
     const disclosureContinuation = continueDisclosureTask(task, responseText, data)
     if (disclosureContinuation) return disclosureContinuation
@@ -2272,6 +2391,16 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (errors.length) {
       markTask(taskId, 'needs_review', responseText, errors)
       return { ok: false, errors }
+    }
+
+    if (task.type === 'maintenance' && (!Array.isArray(data.disclosure_requests) || data.disclosure_requests.length === 0)) {
+      const currentDisclosure = parseDisclosureContext(task.prompt)
+      const hiddenRefIds = currentDisclosure ? undisclosedReferenceIds(currentDisclosure) : []
+      if (hiddenRefIds.length > 0) {
+        const hiddenErrors = [`维护审计尚有 ${hiddenRefIds.length} 个已列出但未展开的引用；请批量返回 disclosure_requests 后再给最终建议`]
+        markTask(taskId, 'needs_review', responseText, hiddenErrors)
+        return { ok: false, errors: hiddenErrors }
+      }
     }
 
     if (task.type === 'maintenance') {
