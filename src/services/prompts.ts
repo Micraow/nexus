@@ -418,7 +418,7 @@ ${disclosureText}
 - 每个新主题必须至少归属于用户或 assistant Message；只有主题确实概括整个会话时才同时归属于 Session。不要把 Session 归属隐式复制给所有 Message。
 - 即使 units 为空，也要通过顶层 concepts 与 memberships 写明本轮确有证据的新主题或复用主题。没有新的稳定主题时 concepts 可以为空；没有直接归属时 memberships 可以为空。
 - units 只表示可选阅读片段。units[].concept_ids 只能引用已披露的已有主题；units[].concepts 可以定义只属于该阅读片段的新主题，但不能替代 Message/Session 的直接证据归属。
-- relations 可选返回最多 2 条本轮有直接证据的 hierarchy；source 必须是直接父主题、target 是直接子主题。普通对话不要返回 related，应用会根据共享 Session/Message 派生相关信号；hierarchy 会以 proposed 写入图谱等待用户确认。
+- relations 可选返回最多 2 条本轮有直接证据的 hierarchy；source 必须是直接父主题、target 是直接子主题。普通对话不要返回 related，应用会根据共享 Session/Message 派生相关信号；hierarchy 会以 proposed 写入图谱等待用户确认。这个hierarchy就像知识导图一样。
 
 请只返回 JSON，格式如下：
 {"answer":"完整回答（可包含 Markdown）","session_title":"不超过 60 个字符的 Session 标题","session_summary":"不超过 120 个字符的 Session 滚动摘要","concepts":[{"client_ref":"new:1","name":"新 Concept 名称","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"memberships":[{"target_type":"session|message","target_id":"上面给出的 Session 或 Message ID","concept_ids":["已有 Concept refID 或 new:1"]}],"relations":[{"source":"Concept refID 或 new:1","target":"Concept refID 或 new:2","type":"hierarchy"}],"units":[{"title":"本次回答的知识单元标题","summary":"不超过 120 个中文字符的摘要","concept_ids":["已有 Concept refID"],"concepts":[{"name":"仅属于该阅读片段的新 Concept 名称","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}]}],"disclosure_requests":[]}
