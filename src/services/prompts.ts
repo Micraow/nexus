@@ -569,6 +569,8 @@ ${disclosureText}
 - relations 只表达 hierarchy。source 是直接父主题，target 是直接子主题；related 不由对话模型返回，而由软件根据共享 Session/Message 自动计算。关系端点只能是已披露 Concept refID 或本轮 client_ref；status 只能省略或为 proposed，绝不能写 confirmed/rejected。不要为了连接所有 Concept 编造 hierarchy。hierarchy 必须像思维导图一样表达清晰、可导航的直接上下位结构。
 - 推荐词选择与主题层级保持同样的粒度：使用类似教材章节大标题/小标题的短词组；回答中出现多个清晰的概念词时可以分别标记它们，但不要把整句或多个概念拼成一个推荐词。
 
+结构化响应硬约束：最外层只能返回一个 JSON 对象，禁止 Markdown 围栏；answer 的值可以包含普通 Markdown，但不得把整个 JSON 或另一份 JSON 嵌套在代码围栏中。concepts 必须是对象数组（每项含 client_ref、name、summary、aliases），memberships 必须是含 target_type、target_id、concept_ids 的对象数组，relations 必须是含 source、target、type、status 的对象数组，禁止用字符串数组或 parent/child 替代字段。只有 DISCLOSURE_INDEX 或当前 Concept 明确列出的主题才能使用 existing；没有目录证据的独立概念一律使用 suggested，不要把未确认概念标成蓝色。
+
 请只返回 JSON，格式如下：
 {"answer":"完整回答（可包含 Markdown）","session_title":"不超过 60 个字符的 Session 标题","session_summary":"不超过 120 个字符的 Session 滚动摘要","concepts":[{"client_ref":"new:1","name":"新 Concept 名称","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"memberships":[{"target_type":"session|message","target_id":"上面给出的 Session 或 Message ID","concept_ids":["已有 Concept refID 或 new:1"]}],"relations":[{"source":"直接父 Concept refID 或 new:1","target":"直接子 Concept refID 或 new:1","type":"hierarchy","status":"proposed"}],"units":[{"title":"本次回答的知识单元标题","summary":"不超过 120 个中文字符的摘要","concept_ids":["已有 Concept refID"],"concepts":[{"name":"仅属于该阅读片段的新 Concept 名称","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}]}],"disclosure_requests":[]}
 

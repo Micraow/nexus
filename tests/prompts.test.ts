@@ -63,6 +63,9 @@ describe('conversation prompt', () => {
     expect(prompt).toContain('多个具有独立知识含义的概念词，可以分别标记多个推荐词')
     expect(prompt).toContain('每个具有独立知识含义且尚未在目录确认存在的概念词都可以分别作为 suggested marker')
     expect(prompt).toContain('不要把多个概念合并成一个 marker')
+    expect(prompt).toContain('最外层只能返回一个 JSON 对象，禁止 Markdown 围栏')
+    expect(prompt).toContain('没有目录证据的独立概念一律使用 suggested')
+    expect(prompt).toContain('禁止用字符串数组或 parent/child 替代字段')
     expect(prompt).not.toContain(']]原文[[/nexus]]')
   })
 
