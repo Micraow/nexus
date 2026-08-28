@@ -274,6 +274,10 @@ const activeConversationPathNodeIds = computed(() => {
   }
   return path
 })
+const activeConversationDisplayedNodeId = computed(() => {
+  const path = activeConversationPathNodeIds.value
+  return path.length ? path[path.length - 1] : null
+})
 const activeConversationBranchCards = computed(() => {
   const pathIds = activeConversationPathNodeIds.value
   const byId = new Map(activeConversationNodes.value.map((node) => [node.id, node]))
@@ -286,9 +290,10 @@ const activeConversationBranchCards = computed(() => {
     const cardMessages = messages
       .filter((message) => conversationMessageBranchNodeId(message, messages) === nodeId)
       .sort((left, right) => left.orderInSession - right.orderInSession)
-    return cardMessages.length ? { node, messages: cardMessages } : null
+    return { node, messages: cardMessages }
   }).filter((card): card is { node: NavTreeNode; messages: Message[] } => Boolean(card))
 })
+const activeConversationCurrentBranchCard = computed(() => activeConversationBranchCards.value.find((card) => card.node.id === activeConversationDisplayedNodeId.value) ?? null)
 const conversationNavTrail = computed(() => {
   const selected = activeConversationNodes.value.find((node) => node.id === selectedNavNodeId.value) ?? activeConversationRoot.value
   if (!selected) return [] as NavTreeNode[]
@@ -1171,6 +1176,11 @@ function openNodeComposer(node: NavTreeNode): void {
 }
 
 function selectConversationNode(node: NavTreeNode): void {
+  if (selectedNavNodeId.value !== node.id) {
+    composerQuestion.value = ''
+    composerPhraseId.value = ''
+    composerFollowUp.value = null
+  }
   selectedNavNodeId.value = node.id
   const nodeUnitIds = new Set(store.navNodeUnits.filter((link) => link.nodeId === node.id).map((link) => link.unitId))
   const targetMessage = activeConversationMessages.value.find((message) => {
@@ -1829,21 +1839,23 @@ onBeforeUnmount(() => {
 
         <section v-if="activeView === 'overview'" class="view-panel overview-view">
           <section class="new-chat-panel surface-section">
-            <div v-if="activeConversationSession" class="chat-conversation-workspace">
+            <div v-if="activeConversationSession" class="chat-conversation-workspace conversation-mode">
               <header class="conversation-workspace-header">
                 <div class="conversation-heading"><button class="icon-button" aria-label="返回上一级探索" title="返回上一级探索" @click="goConversationBack"><ArrowLeft :size="17" /></button><div><span class="eyebrow">ACTIVE CONVERSATION</span><h2>{{ activeConversationSession.title }}</h2><span>{{ activeConversationMessages.length }} 条消息 · {{ activeConversationStatus }}</span></div></div>
                 <div class="conversation-header-actions"><button class="button secondary-button" @click="openFullscreenSession(activeConversationSession.id)"><Maximize2 :size="15" />全屏</button><button class="icon-button" aria-label="结束当前对话" title="回到新对话首页" @click="leaveConversationSession"><MessageSquarePlus :size="17" /></button></div>
               </header>
               <nav v-if="conversationNavTrail.length" class="conversation-breadcrumbs" aria-label="探索路径"><button v-for="node in conversationNavTrail" :key="node.id" class="breadcrumb-node" :class="{ current: node.id === selectedNavNodeId }" @click="selectConversationNode(node)">{{ node.label }}</button></nav>
               <div class="conversation-layout">
-                <aside class="conversation-minimap" aria-label="探索树小地图"><div class="minimap-heading"><GitBranch :size="14" /><span>探索树</span></div><NavTree :nodes="activeConversationNodes.filter((node) => !node.parentId)" :all-nodes="activeConversationNodes" :node-units="store.navNodeUnits" :units="store.units" :selected-node-id="selectedNavNodeId" :show-actions="false" @select-node="selectConversationNode" /></aside>
+                <aside class="conversation-minimap" aria-label="探索树小地图"><div class="minimap-heading"><GitBranch :size="14" /><span>探索树</span></div><NavTree :nodes="activeConversationNodes.filter((node) => !node.parentId)" :all-nodes="activeConversationNodes" :node-units="store.navNodeUnits" :units="store.units" :selected-node-id="activeConversationDisplayedNodeId" :show-actions="false" @select-node="selectConversationNode" /></aside>
                 <div class="conversation-scroll" role="log" aria-live="polite">
-                  <section v-for="(card, cardIndex) in activeConversationBranchCards" :key="card.node.id" class="conversation-branch-card" :class="{ current: card.node.id === selectedNavNodeId }" :style="{ '--branch-index': cardIndex }" :aria-label="`探索分支 ${cardIndex + 1}：${card.node.label}`">
-                    <button class="conversation-branch-card-title" type="button" @click="selectConversationNode(card.node)"><span class="branch-card-dot" aria-hidden="true" /><strong>{{ card.node.label }}</strong><span class="branch-card-depth">第 {{ card.node.depth + 1 }} 层</span></button>
-                    <article v-for="message in card.messages" :key="message.id" :data-conversation-message="message.id" class="conversation-message" :class="message.role"><div class="conversation-message-meta"><strong>{{ message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : '系统' }}</strong><span>消息 #{{ message.orderInSession + 1 }}</span></div><div class="md-body" v-html="renderedMessageContent(message.content)" @click="handleRenderedClick($event, message)" @keydown.enter.prevent="handleRenderedClick($event, message)" /></article>
+                  <section v-for="(card, cardIndex) in activeConversationBranchCards" :key="card.node.id" class="conversation-branch-card" :class="{ current: card.node.id === activeConversationDisplayedNodeId, background: card.node.id !== activeConversationDisplayedNodeId }" :style="{ '--branch-index': cardIndex }" :aria-label="`探索分支 ${cardIndex + 1}：${card.node.label}`" :aria-hidden="card.node.id !== activeConversationDisplayedNodeId">
+                    <template v-if="card.node.id === activeConversationDisplayedNodeId">
+                      <button class="conversation-branch-card-title" type="button" @click="selectConversationNode(card.node)"><span class="branch-card-dot" aria-hidden="true" /><strong>{{ card.node.label }}</strong><span class="branch-card-depth">第 {{ card.node.depth + 1 }} 层</span></button>
+                      <article v-for="message in card.messages" :key="message.id" :data-conversation-message="message.id" class="conversation-message" :class="message.role"><div class="conversation-message-meta"><strong>{{ message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : '系统' }}</strong><span>消息 #{{ message.orderInSession + 1 }}</span></div><div class="md-body" v-html="renderedMessageContent(message.content)" @click="handleRenderedClick($event, message)" @keydown.enter.prevent="handleRenderedClick($event, message)" /></article>
+                    </template>
                   </section>
                   <div v-if="activeConversationTask?.status === 'running'" class="conversation-thinking"><LoaderCircle class="spin" :size="16" />AI 正在处理这次提问…</div>
-                  <div v-if="!activeConversationBranchCards.length" class="empty-state compact"><MessageSquare :size="26" /><strong>等待第一条回答</strong><span>回答完成后会显示在这里。</span></div>
+                  <div v-if="!activeConversationCurrentBranchCard?.messages.length" class="empty-state compact"><MessageSquare :size="26" /><strong>{{ activeConversationCurrentBranchCard ? '这一分支还没有回答' : '等待第一条回答' }}</strong><span>{{ activeConversationCurrentBranchCard ? '提交问题后，回答会留在当前分支。' : '回答完成后会显示在这里。' }}</span></div>
                   <div class="conversation-composer"><textarea v-model="composerQuestion" rows="3" aria-label="继续当前对话" placeholder="继续追问…" :disabled="Boolean(activeConversationUnfinishedTask)" @keydown.ctrl.enter.prevent="startConversationFollowUp" @keydown.meta.enter.prevent="startConversationFollowUp" /><div class="conversation-composer-footer"><span>{{ activeConversationUnfinishedTask ? '请先完成上一轮回答' : store.config.llm.mode === 'api' ? 'API 会直接执行' : 'Prompt 会在右侧浮层中处理' }}</span><button class="send-button" aria-label="发送追问" :disabled="!composerQuestion.trim() || Boolean(activeConversationUnfinishedTask)" @click="startConversationFollowUp"><Send :size="17" /></button></div></div>
                 </div>
               </div>
