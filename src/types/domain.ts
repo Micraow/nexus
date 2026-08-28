@@ -202,7 +202,17 @@ export interface LLMTask {
   scopeLabel?: string
 }
 
-export type MaintenanceSuggestionType = 'merge' | 'alias' | 'relation' | 'unit_relink' | 'unit_revision'
+export type MaintenanceSuggestionType =
+  | 'merge'
+  | 'alias'
+  | 'relation'
+  | 'unit_relink'
+  | 'unit_revision'
+  | 'create_concept'
+  | 'update_concept'
+  | 'move_concept'
+  | 'remove_hierarchy'
+  | 'archive_concept'
 
 export interface MaintenanceSuggestion {
   type: MaintenanceSuggestionType
@@ -214,7 +224,7 @@ export interface MaintenanceSuggestion {
   source_concept_id?: string
   target_concept_id?: string
   /** Legacy aliases accepted when applying older maintenance task results. */
-  parent_concept_id?: string
+  parent_concept_id?: string | null
   child_concept_id?: string
   relation_type?: RelationType
   unit_id?: string
@@ -222,6 +232,9 @@ export interface MaintenanceSuggestion {
   concept_ids?: string[]
   title?: string
   summary?: string
+  notes?: string
+  /** Optional proposed Concept name for create/update actions. */
+  name?: string
 }
 
 export interface OperationLog {
