@@ -227,7 +227,7 @@ export function validateOriginConceptResult(
       // Ordinary extraction may only propose hierarchy. Related edges are
       // derived from shared Session/Message evidence and are edited through
       // the maintenance action API instead.
-      if (type !== 'hierarchy') issues.push({ path: `${path}.type`, message: '普通提取关系只能是 hierarchy；related 由共享 Session/Message 自动计算' })
+      if (type !== 'hierarchy') issues.push({ path: `${path}.type`, message: '普通 Concept 提取只允许 hierarchy；related 由共享 Session/Message 自动计算' })
       if (status != null && status !== 'proposed') issues.push({ path: `${path}.status`, message: 'LLM 关系 status 只能省略或为 proposed' })
     })
   }

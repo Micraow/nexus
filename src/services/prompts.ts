@@ -6,7 +6,7 @@ import { DEFAULT_CONCEPT_LIMIT, normalizeConceptLimit } from '@/services/config'
  * lets provider-side prompt caches reuse the behavioural contract while each
  * task appends its own spec and data below it.
  */
-export const PROMPT_VERSION = '2026-08-v5-hierarchy-aware'
+export const PROMPT_VERSION = '2026-08-v6-hierarchy-aware-concept-limit'
 
 function promptConceptLimit(value: unknown): number {
   return normalizeConceptLimit(value, DEFAULT_CONCEPT_LIMIT)
@@ -491,7 +491,7 @@ Session：${session.title}
 export function buildConceptPrompt(session: Session, unit: KnowledgeUnit, messages: Message[], conceptNames: string[], disclosure?: DisclosureContext, conceptLimit = DEFAULT_CONCEPT_LIMIT): string {
   const disclosureText = formatDisclosureContext(disclosure)
   const limit = promptConceptLimit(conceptLimit)
-  return buildHarnessPrompt(`请从下面的 KnowledgeUnit 提取 1～${limit} 个稳定、可复用的 Concept。最多只能返回 ${limit} 个 Concept，超过部分必须舍弃；这个数量上限是硬约束。优先返回具体知识主体，不要返回“问题”“回答”“内容”等泛词；已有 Concept 只作为候选参考，不要强行合并。
+  return buildHarnessPrompt(`请从下面的 KnowledgeUnit 提取 1～${limit} 个稳定、可复用的 Concept。最多只能返回 ${limit} 个 Concept，超过部分必须舍弃；这个数量上限是硬约束。每个 Concept 名称必须像教材章节的大标题或小标题，是单一、凝练、可区分的主题词组（通常 1～6 个关键词）；不要把多个主题拼成“甲与乙关系”“甲/乙对比”“甲方案谱系”等复合标题，多个独立概念必须分别返回。优先返回具体知识主体，不要返回“问题”“回答”“内容”等泛词；已有 Concept 只作为候选参考，不要强行合并。
 
 Session：${session.title}
 Session ID：${session.id}
@@ -503,10 +503,10 @@ ${disclosureText}
 ${disclosureAvailability(disclosure)}
 
  如果 Prompt 中出现 DISCLOSURE_INDEX 目录且其中已有一级父主题与子主题引用，请先判断是否应复用已有主题；需要更多层级时按固定协议返回 disclosure_requests，不要自行创造 refID。
- 关系与层级：请像绘制知识导图一样组织清晰的直接父主题→直接子主题结构。对每个新 Concept，优先查找 DISCLOSURE_INDEX 或本批次中语义范围最窄且直接包含它的父主题；只有确无合适上位主题才允许暂作根，不要把候选全部并列。hierarchy 使用 source 作为父主题、target 作为子主题；普通提取不返回 related。
+关系与层级：请像绘制知识导图一样组织清晰的直接父主题→直接子主题结构。对每个新 Concept，优先查找 DISCLOSURE_INDEX 或本批次中语义范围最窄且直接包含它的父主题；只有确无合适上位主题才允许暂作根，不要把候选全部并列。hierarchy 使用 source 作为父主题、target 作为子主题；普通提取不返回 related。
  related 由软件根据 Concept 是否共享同一 Session 或 Message 自动计算，不能由模型指定或臆测；不要在 relations 中输出 related。
 
-输出中的 memberships 是可选的细粒度归属声明；同一目标可以列出多个 Concept，必须使用 concept_ids 数组。只能引用 DISCLOSURE_INDEX 中已经出现的 Concept refID；新提取的 Concept 由 concepts 数组定义，应用会按本 KnowledgeUnit 的范围建立多对多关联。如果全部复用现有 Concept，concepts 可以返回空数组，但 concept_ids 不能同时为空。
+输出中的 memberships 是可选的细粒度归属声明；同一目标可以列出多个 Concept，必须使用 concept_ids 数组。只标记有直接证据的消息，不要为了覆盖全部消息、凑满数量或重复同一主题而逐条复制 membership。只能引用 DISCLOSURE_INDEX 中已经出现的 Concept refID；新提取的 Concept 由 concepts 数组定义，应用会按本 KnowledgeUnit 的范围建立多对多关联。如果全部复用现有 Concept，concepts 可以返回空数组，但 concept_ids 不能同时为空。
 
  只返回 JSON：{"concepts":[{"name":"...","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"concept_ids":["已列出的 Concept refID"],"memberships":[{"target_type":"unit|message|session","target_id":"原始 ID","concept_ids":["Concept refID", "另一个 Concept refID"]}],"relations":[{"source":"直接父 Concept 名称或 refID","target":"直接子 Concept 名称或 refID","type":"hierarchy","status":"proposed"}],"disclosure_requests":[]}`)
 }
@@ -532,7 +532,7 @@ export function buildOriginConceptPrompt(
     ? `输入范围：这是长会话的技术窗口 ${validWindow.index}/${validWindow.total}。窗口只用于控制上下文长度，不是 KnowledgeUnit、知识边界或独立会话；不要按窗口边界命名 Concept，也不要仅凭局部窗口给整个 Session 建立归属。`
     : '输入范围：完整 Session。'
 
-  return buildHarnessPrompt(`请直接从下面的 Session 和 Message 提取 1～${limit} 个稳定、可复用的核心 Concept（包括复用已有 Concept 与新候选），最多只能返回 ${limit} 个 Concept，超过部分必须舍弃；这个数量上限是硬约束。并建立可追溯的多对多归属。但是现在你只能建立hierarchy关系。探讨、比较或操作流程也可以包含稳定知识；不要为了生成主题而先把对话分段。
+  return buildHarnessPrompt(`请直接从下面的 Session 和 Message 提取 1～${limit} 个稳定、可复用的核心 Concept（包括复用已有 Concept 与新候选），最多只能返回 ${limit} 个 Concept，超过部分必须舍弃；这个数量上限是硬约束。每个 Concept 名称必须像教材章节的大标题或小标题，是单一、凝练、可区分的主题词组（通常 1～6 个关键词）；不要把多个主题拼成“甲与乙关系”“甲/乙对比”“甲方案谱系”等复合标题，多个独立概念必须分别返回。并建立可追溯的多对多归属。但是现在你只能建立hierarchy关系。探讨、比较或操作流程也可以包含稳定知识；不要为了生成主题而先把对话分段。
 
 Session：${session.title}
 Session ID：${session.id}
@@ -547,13 +547,13 @@ Concept 与归属：
 - 新候选放入 concepts，并为每个候选声明本次响应内唯一的 client_ref，格式为 new:1、new:2……；client_ref 只用于本次 JSON 内交叉引用，不是数据库 ID。
 - concepts 数组最多 ${limit} 项；client_ref 只能使用 new:1 到 new:${limit}，不得输出超出上限的候选。
 - memberships 必须显式声明证据归属。target_type 只能是 session 或 message，target_id 只能使用上面给出的 Session ID 或 Message ID。同一个 Session 或 Message 可以属于多个 Concept，必须使用 concept_ids 数组；数组元素只能是已披露的 Concept refID 或本次 concepts 中声明的 client_ref。
-- Message 可以不归属任何 Concept；不要为了覆盖全部消息而制造主题。每个新候选至少要被一条 Message membership 引用。只有输入是完整 Session，且主题确实概括整个会话时，才添加 Session membership。
+- Message 可以不归属任何 Concept；只标记有直接证据的消息，不要为了覆盖全部消息、凑满数量或重复同一主题而逐条复制 membership。每个新候选至少要被一条 Message membership 引用。只有输入是完整 Session，且主题确实概括整个会话时，才添加 Session membership。
 - 禁止返回 unit membership，禁止创建、推断或默认关联 KnowledgeUnit。线性消息顺序和技术窗口都不是知识边界。
 
 关系与层级：请像绘制知识导图一样组织清晰的直接父主题→直接子主题结构：
 - 对每个新 Concept，先在 DISCLOSURE_INDEX 中查找语义范围最窄且确实包含它的已有父主题；不要只因它是一级根主题就把它当作父级。若一级目录不足以判断，必须请求展开相关分支。也要检查本次 concepts 中是否已有更合适的直接父主题。
 - 找到合适的直接父主题时必须返回 hierarchy；只有没有任何可解释的已有父主题或同批次父主题时，才可以不返回 hierarchy 并让新 Concept 暂作根。不要把多数新 Concept 并列为根，也不要为了避开层级而改用 related。
-- hierarchy 中 source 是直接父主题、target 是直接子主题。只有 target 的语义范围严格包含于 source，且二者是稳定的“上位概念/下位概念”关系时才能使用；因果、先后、组成步骤、同会话出现或一般相关都不是 hierarchy。不要同时返回可由其他边推导出的传递关系。
+- hierarchy 中 source 是直接父主题、target 是直接子主题。只有 target 的语义范围严格包含于 source，且二者是稳定的“上位概念/下位概念”或类别→成员关系时才能使用；因果、先后、组成步骤、支持/依赖、实现/使用、比较、同会话出现或一般相关都不是 hierarchy。方向不确定时省略关系，不要同时返回可由其他边推导出的传递关系。
 - related 是无向、非层级的稳定语义关系，不存在父子顺序；它由软件根据共享 Session/Message 事实自动派生，普通 Concept 提取和对话响应绝不能返回 related。只有知识维护动作 API 可以显式添加、修改或删除持久化 related。
 - 关系端点使用已披露的 Concept refID 或本次 concepts 的 client_ref。普通提取只能返回 hierarchy 建议，status 只能省略或为 proposed，绝不能写 confirmed/rejected；应用会在本地去重、做 DAG 环检测，用户确认后才会改变状态。不要为了把所有 Concept 连起来而补关系。
 
@@ -615,13 +615,13 @@ ${disclosureText}
 ${disclosureAvailability(input.disclosure)}
 
 知识主题与事实归属同步：
-- 顶层 concepts 用于本轮回答中新识别出的稳定知识主题；最多 ${conceptLimit} 项，每个候选必须提供本响应唯一的 client_ref（new:1 到 new:${conceptLimit}）。只是值得继续探索、证据尚不足的黄色建议不要创建为 Concept。
+- 顶层 concepts 用于本轮回答中新识别出的稳定知识主题；最多 ${conceptLimit} 项，每个候选必须提供本响应唯一的 client_ref（new:1 到 new:${conceptLimit}）。每个 Concept 名称必须像教材章节的大标题或小标题，是单一、凝练、可区分的主题词组（通常 1～6 个关键词）；不要把多个主题合并成“甲与乙关系”“甲/乙对比”“甲方案谱系”等复合标题，多个独立概念必须分别返回。只是值得继续探索、证据尚不足的黄色建议不要创建为 Concept。
 - 顶层 memberships 只能使用上面给出的 Session ID、用户 Message ID 或 assistant Message ID，target_type 只能是 session 或 message。引用已有主题时使用 DISCLOSURE_INDEX 已列出的 Concept refID；引用本轮新主题时使用 client_ref。
-- 每个新主题必须至少归属于用户或 assistant Message；只有主题确实概括整个会话时才同时归属于 Session。不要把 Session 归属隐式复制给所有 Message。
+- 每个新主题必须至少归属于用户或 assistant Message；只标记有直接证据的消息，不要为了覆盖全部消息、凑满数量或重复同一主题而逐条复制 membership。只有主题确实概括整个会话时才同时归属于 Session。不要把 Session 归属隐式复制给所有 Message。
 - 即使 units 为空，也要通过顶层 concepts 与 memberships 写明本轮确有证据的新主题或复用主题。没有新的稳定主题时 concepts 可以为空；没有直接归属时 memberships 可以为空。
 - units 只表示可选阅读片段。units[].concept_ids 只能引用已披露的已有主题；units[].concepts 可以定义只属于该阅读片段的新主题，但不能替代 Message/Session 的直接证据归属。
 - 对每个新 Concept，优先在 DISCLOSURE_INDEX 中找语义范围最窄的已有直接父主题，并检查本轮 concepts 是否存在更合适的直接父主题。目录层级不足时请求展开；找到合适父主题必须通过 relations 返回 hierarchy，只有确无合适上位主题才允许暂作根。不要把本轮 Concept 默认并列。
-- relations 只表达 hierarchy。source 是直接父主题，target 是直接子主题；related 不由对话模型返回，而由软件根据共享 Session/Message 自动计算。关系端点只能是已披露 Concept refID 或本轮 client_ref；status 只能省略或为 proposed，绝不能写 confirmed/rejected。不要为了连接所有 Concept 编造 hierarchy。hierarchy 必须像思维导图一样表达清晰、可导航的直接上下位结构。
+- relations 只表达 hierarchy。source 是直接父主题，target 是直接子主题；只有 target 的语义范围严格包含于 source，或 source 是明确的类别而 target 是其成员时才可建立。支持/依赖/实现/使用/比较/同会话出现不是 hierarchy；方向不确定时省略关系。related 不由对话模型返回，而由软件根据共享 Session/Message 自动计算。关系端点只能是已披露 Concept refID 或本轮 client_ref；status 只能省略或为 proposed，绝不能写 confirmed/rejected。不要为了连接所有 Concept 编造 hierarchy。hierarchy 必须像思维导图一样表达清晰、可导航的直接上下位结构。
 - 推荐词选择与主题层级保持同样的粒度：使用类似教材章节大标题/小标题的短词组；回答中出现多个清晰的概念词时可以分别标记它们，但不要把整句或多个概念拼成一个推荐词。
 
 结构化响应硬约束：最外层只能返回一个 JSON 对象，禁止 Markdown 围栏；answer 的值可以包含普通 Markdown，但不得把整个 JSON 或另一份 JSON 嵌套在代码围栏中。concepts 必须是对象数组（每项含 client_ref、name、summary、aliases），memberships 必须是含 target_type、target_id、concept_ids 的对象数组，relations 必须是含 source、target、type、status 的对象数组，禁止用字符串数组或 parent/child 替代字段。只有 DISCLOSURE_INDEX 或当前 Concept 明确列出的主题才能使用 existing；没有目录证据的独立概念一律使用 suggested，不要把未确认概念标成蓝色。

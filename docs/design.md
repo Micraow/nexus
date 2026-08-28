@@ -368,6 +368,7 @@ llm:
   mode: prompt_paste
   default_provider: deepseek
   concurrency: 2
+  concept_limit: 8
   token_budget: 32000
   providers:
     - id: deepseek
@@ -389,6 +390,8 @@ storage:
 ```
 
 `token_budget` 是用户可调的估算输入上限，设置页允许手动输入不小于 `1000` 的有限安全整数，不设置产品级最大值。它同时用于长 Session 的运行时窗口切分和新对话上下文的超限校验；`8000` 仅是首次启动或配置值无效时的默认值，不是固定限制。修改后立即写回 `config.yaml`，只影响之后创建的窗口和对话任务。
+
+`concept_limit` 是每个 Concept 提取或新对话任务允许返回的新 Concept 数量上限，设置页可手动输入 `1～32` 的整数，默认 `8`。Prompt、应用校验器和任务应用使用同一个当前配置值；超出上限的响应整体进入人工修复，不截断后半部分。`concurrency` 也是设置页手动输入的 API 并发数，范围 `1～16`，默认 `2`；队列运行时严格使用该值，并保持同一 Session 内任务串行。
 
 API Key 按用户选择以明文存储；设置页必须明确提示能够读取该文件的本机用户也能看到 Key。配置文件不进入数据库备份和业务导出。
 
@@ -457,9 +460,9 @@ API 服务支持结构化输出时，同时使用接口级 JSON Schema；Prompt 
 
 ### 6.0 固定 Harness 与渐进式披露
 
-每个任务 Prompt 都先拼接版本化的固定前缀 `NEXUS_HARNESS_PROMPT` 和 `PROGRESSIVE_DISCLOSURE_PROTOCOL`，再附加该任务的规格和数据。固定前缀按字节保持稳定（当前 `PROMPT_VERSION=2026-08-v5-hierarchy-aware`），任务重试或披露续跑只能替换动态数据段，不能删改行为契约。
+每个任务 Prompt 都先拼接版本化的固定前缀 `NEXUS_HARNESS_PROMPT` 和 `PROGRESSIVE_DISCLOSURE_PROTOCOL`，再附加该任务的规格和数据。固定前缀按字节保持稳定（当前 `PROMPT_VERSION=2026-08-v6-hierarchy-aware-concept-limit`），任务重试或披露续跑只能替换动态数据段，不能删改行为契约。
 
-当任务需要参考较大的知识树时，Prompt 在 `DISCLOSURE_INDEX` 中提供首层目录和已经展开的记录。目录项至少包含不透明的 `refID`、`title` 和 `summary`；摘要是导航线索，不得冒充消息原文。展开记录可提供 `children`（下一层同样只含 `refID`/标题/摘要），并可在明确请求时提供 `content`（知识单元或消息原文）。当前 `PROMPT_VERSION` 为 `2026-08-v5-hierarchy-aware`。
+当任务需要参考较大的知识树时，Prompt 在 `DISCLOSURE_INDEX` 中提供首层目录和已经展开的记录。目录项至少包含不透明的 `refID`、`title` 和 `summary`；摘要是导航线索，不得冒充消息原文。展开记录可提供 `children`（下一层同样只含 `refID`/标题/摘要），并可在明确请求时提供 `content`（知识单元或消息原文）。没有实际目录时会明确要求 `disclosure_requests: []`；`DISCLOSURE_INDEX` 文字标签本身永远不是可请求的 refID。当前 `PROMPT_VERSION` 为 `2026-08-v6-hierarchy-aware-concept-limit`。
 
 模型需要更多证据时，可以在输出 JSON 中返回 `disclosure_requests`，例如 `{ "refID": "目录中已有的 ID", "depth": 1 }`。本地先校验数组、唯一 `refID`、引用必须来自当前目录以及 `depth` 为 1～64 的整数；校验失败进入 `needs_review`，不应用任何部分结果。校验通过后，应用从本地事实表按 `refID` 递归展开指定层数，保留根引用和原文，替换 Prompt 中的动态 `DISCLOSURE_INDEX` 并将同一任务重新排队。任务最多连续披露 8 轮，超出后暂停供用户检查。
 

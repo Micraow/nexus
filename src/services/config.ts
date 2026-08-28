@@ -78,7 +78,7 @@ export function serializeConfig(config: AppConfig): string {
     llm: {
       mode: config.llm.mode,
       default_provider: config.llm.defaultProvider,
-      concurrency: config.llm.concurrency,
+      concurrency: normalizeApiConcurrency(config.llm.concurrency),
       concept_limit: normalizeConceptLimit(config.llm.conceptLimit),
       token_budget: normalizeTokenBudget(config.llm.tokenBudget),
       providers: config.llm.providers.map((provider) => ({

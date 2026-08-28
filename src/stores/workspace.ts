@@ -2678,7 +2678,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         // tasks of the same session always run in order.
         const batch: LLMTask[] = []
         const busySessions = new Set<string>()
-        const limit = Math.max(1, Math.min(4, config.value.llm.concurrency))
+        const limit = normalizeApiConcurrency(config.value.llm.concurrency)
         for (const task of pending) {
           const owner = ownerSessionId(task)
           if (owner && busySessions.has(owner)) continue
