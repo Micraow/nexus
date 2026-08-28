@@ -503,7 +503,7 @@ function render(): void {
         .text((node) => node.label)
       group
         .append('title')
-        .text((node) => `${node.label} · ${node.subtitle ?? node.type}`)
+        .text((node) => `${cleanGraphText(node.label) || node.label} · ${cleanGraphText(node.subtitle) || node.type}`)
       return group
     })
 
