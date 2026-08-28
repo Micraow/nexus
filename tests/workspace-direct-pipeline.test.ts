@@ -864,6 +864,47 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.units).toContainEqual(expect.objectContaining({ title: '实时片段' }))
   })
 
+  it('retains a streamed answer when structured facts fail validation', async () => {
+    const invalidResult = JSON.stringify({
+      answer: '这段完整回答必须保留给用户检查。',
+      units: [{ title: '待检查片段', summary: '回答正文有效，但主题 ID 越界。', concept_ids: ['missing-concept'], concepts: [] }],
+      memberships: [],
+      disclosure_requests: [],
+    })
+    const sse = `data: ${JSON.stringify({ choices: [{ delta: { content: invalidResult } }] })}\n\ndata: [DONE]\n\n`
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(sse))
+        controller.close()
+      },
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+      body,
+    } as Response)))
+    store.updateConfig({
+      llm: {
+        ...store.config.llm,
+        mode: 'api',
+        stream: true,
+        defaultProvider: 'invalid-stream-provider',
+        providers: [{ id: 'invalid-stream-provider', name: 'Invalid stream', baseUrl: 'https://example.test/v1', model: 'stream-model', apiKey: 'test-key' }],
+      },
+    })
+    const sessionId = store.createConversationTask({ question: '返回一个带无效主题 ID 的答案' })
+    const task = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
+    await expect(store.executeTask(task.id)).resolves.toEqual({ ok: false, error: 'concept_ids.0: Concept ID 不在当前目录中' })
+
+    const retained = store.tasks.find((item) => item.id === task.id)!
+    expect(retained.status).toBe('needs_review')
+    expect(retained.response).toContain('这段完整回答必须保留给用户检查。')
+    expect(store.streamingTaskPreview(task.id)).toBe('')
+    expect(store.messages.filter((message) => message.sessionId === sessionId && message.role === 'assistant')).toHaveLength(0)
+    expect(store.units.filter((unit) => unit.sessionId === sessionId)).toHaveLength(0)
+    expect(store.concepts.some((concept) => concept.id === 'missing-concept')).toBe(false)
+  })
+
   it('automatically runs a second API round after a valid disclosure request', async () => {
     const rootId = store.createConcept('披露根主题')
     const childId = store.createConcept('披露子主题')
