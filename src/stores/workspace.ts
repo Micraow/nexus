@@ -1458,7 +1458,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       // Keep the current disclosure catalog in a repair prompt so a user can
       // correct an invalid response without losing the IDs they were shown.
       const disclosure = status === 'needs_review' && response ? parseDisclosureContext(task.prompt) : null
-      const nextPrompt = status === 'needs_review' && response ? buildRepairPrompt(response, errors ?? [], disclosure ?? undefined) : task.prompt
+      const nextPrompt = status === 'needs_review' && response ? buildRepairPrompt(response, errors ?? [], disclosure ?? undefined, task.prompt) : task.prompt
       db.run('UPDATE llm_tasks SET status = ?, response = COALESCE(?, response), validation_errors = ?, error_message = ?, prompt = ?, retry_count = retry_count + ?, updated_at = ? WHERE id = ?', [status, response ?? null, errors ? JSON.stringify(errors) : null, errors?.[0] ?? null, nextPrompt, status === 'failed' || status === 'needs_review' ? 1 : 0, isoNow(), taskId])
     })
   }
@@ -1659,9 +1659,22 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     })
     let taskId = ''
     mutate(() => {
-      taskId = createTask({ type: 'maintenance', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `maintenance:${stableHash(JSON.stringify({ concepts: [...conceptIds].sort(), units: [...unitIds].sort(), focusConcepts: [...(requestedConceptIds ?? [])].sort(), focusUnits: [...(requestedUnitIds ?? [])].sort() }))}`, prompt, status: 'pending', scopeLabel: `全库知识图谱 · ${conceptScope.length} 个知识主题 · ${unitScope.length} 个知识单元` })
+      const focusHash = stableHash(JSON.stringify({ concepts: [...(requestedConceptIds ?? [])].sort(), units: [...(requestedUnitIds ?? [])].sort() }))
+      taskId = createTask({ type: 'maintenance', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `maintenance:${maintenanceStateHash()}:${focusHash}`, prompt, status: 'pending', scopeLabel: `全库知识图谱 · ${conceptScope.length} 个知识主题 · ${unitScope.length} 个知识单元` })
     })
     return taskId
+  }
+
+  function maintenanceStateHash(): string {
+    const ordered = <T extends { id: string }>(items: T[]): T[] => [...items].sort((left, right) => left.id.localeCompare(right.id))
+    return stableHash(JSON.stringify({
+      concepts: ordered(activeConcepts.value.map((concept) => ({ id: concept.id, name: concept.name, summary: concept.summary, notes: concept.notes, updatedAt: concept.updatedAt }))),
+      aliases: ordered(aliases.value.map((alias) => ({ id: alias.id, conceptId: alias.conceptId, alias: alias.alias }))),
+      relations: ordered(relations.value.map((relation) => ({ id: relation.id, source: relation.parentConceptId, target: relation.childConceptId, type: relation.relationType, status: relation.status, updatedAt: relation.updatedAt }))),
+      units: ordered(units.value.filter((unit) => activeSessionIds.value.has(unit.sessionId)).map((unit) => ({ id: unit.id, sessionId: unit.sessionId, title: unit.title, summary: unit.summary, revision: unit.revision, updatedAt: unit.updatedAt }))),
+      unitConcepts: [...unitConcepts.value].sort((left, right) => `${left.unitId}:${left.conceptId}`.localeCompare(`${right.unitId}:${right.conceptId}`)),
+      messages: ordered(messages.value.filter((message) => activeSessionIds.value.has(message.sessionId) && !message.unitId).map((message) => ({ id: message.id, sessionId: message.sessionId, order: message.orderInSession, content: stableHash(message.content) }))),
+    }))
   }
 
   function maintenanceSuggestionErrors(value: unknown, onlyIndex?: number): { suggestions: MaintenanceSuggestion[]; errors: string[] } {
@@ -2194,6 +2207,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const data = parsed.data
     const errors: string[] = []
     const conceptLimit = normalizeConceptLimit(config.value.llm.conceptLimit)
+    if (task.type === 'maintenance') {
+      const taskStateHash = task.inputRevision.split(':')[1]
+      if (!taskStateHash || taskStateHash !== maintenanceStateHash()) {
+        const staleErrors = ['维护任务输入已变化：知识主题、关系、阅读片段或可选消息目录已更新，请重新发起知识维护。']
+        markTask(taskId, 'stale', responseText, staleErrors)
+        return { ok: false, errors: staleErrors }
+      }
+    }
     const disclosureContinuation = continueDisclosureTask(task, responseText, data)
     if (disclosureContinuation) return disclosureContinuation
     if (disclosureTaskTypes.has(task.type)) {

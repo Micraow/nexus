@@ -491,6 +491,22 @@ describe('direct concept extraction import pipeline', () => {
     expect(parsed.reason).toBe('模型检查后未发现需要修改的地方。')
   })
 
+  it('marks maintenance output stale when its message catalog changed', () => {
+    store.createConcept('维护版本主题')
+    const taskId = store.createMaintenanceTask()
+    store.createConversationTask({ question: '这条新消息不在旧维护目录中' })
+
+    const result = store.applyTaskResult(taskId, JSON.stringify({
+      reason: '旧目录无需修改',
+      suggestions: [],
+      disclosure_requests: [],
+    }))
+
+    expect(result.ok).toBe(false)
+    expect(result.errors.join('; ')).toContain('可选消息目录已更新')
+    expect(store.tasks.find((task) => task.id === taskId)).toMatchObject({ status: 'stale' })
+  })
+
   it('lets graph maintenance create a reading unit from unassigned messages', () => {
     const report = store.importJsonText(JSON.stringify(payload()))
     const sessionId = store.sessions[0].id
