@@ -583,6 +583,16 @@ body.fullscreen-active { overflow: hidden; }
 .conversation-minimap { grid-column: 2; grid-row: 1; min-width: 0; align-self: start; max-height: min(710px, calc(100dvh - 280px)); overflow: auto; padding: 11px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 7px; }
 .minimap-heading { display: flex; align-items: center; gap: 6px; margin-bottom: 9px; color: var(--muted); font-size: calc(11px * var(--app-font-scale)); font-weight: 700; }
 .conversation-scroll { grid-column: 1; grid-row: 1; min-width: 0; max-height: min(710px, calc(100dvh - 280px)); overflow: auto; padding: 8px clamp(4px, 3vw, 34px) 26px 4px; }
+.conversation-branch-card { --branch-index: 0; position: relative; z-index: calc(20 - var(--branch-index)); width: min(100%, 860px); margin: 0 auto 18px; padding: 10px 18px 18px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: var(--shadow-md); transform: translate3d(calc(var(--branch-index) * -7px), 0, 0) rotate(calc(var(--branch-index) * -.18deg)); transition: border-color var(--motion), box-shadow var(--motion), transform var(--motion); }
+.conversation-branch-card:not(:first-child) { margin-top: -8px; }
+.conversation-branch-card.current { z-index: 40; border-color: var(--primary); box-shadow: 0 16px 36px color-mix(in srgb, var(--primary) 15%, transparent), var(--shadow-md); transform: translate3d(0, 0, 0) rotate(0deg); }
+.conversation-branch-card-title { width: 100%; min-height: 44px; display: flex; align-items: center; gap: 9px; padding: 0 2px 9px; color: var(--muted); background: transparent; border-bottom: 1px solid var(--line); text-align: left; }
+.conversation-branch-card-title:hover, .conversation-branch-card-title:focus-visible { color: var(--text); }
+.conversation-branch-card-title strong { min-width: 0; overflow: hidden; color: inherit; font-size: calc(14px * var(--app-font-scale)); text-overflow: ellipsis; white-space: nowrap; }
+.branch-card-dot { width: 11px; height: 11px; flex: 0 0 auto; border: 2px solid var(--primary); border-radius: 50%; background: var(--surface); box-shadow: 0 0 0 3px var(--primary-soft); }
+.conversation-branch-card.current .branch-card-dot { background: var(--primary); }
+.branch-card-depth { margin-left: auto; color: var(--faint); font-size: calc(10px * var(--app-font-scale)); white-space: nowrap; }
+.conversation-branch-card .conversation-message { max-width: none; }
 .conversation-message { margin: 0 auto 28px; max-width: 860px; }
 .conversation-message.user { max-width: min(760px, 88%); margin-right: 0; padding: 15px 18px; background: var(--primary-soft); border-radius: 9px 9px 3px 9px; }
 .conversation-message.system { padding: 12px 16px; background: var(--amber-soft); border-radius: 8px; }
@@ -643,3 +653,33 @@ body.fullscreen-active { overflow: hidden; }
 .nav-tree-node.selected .nav-tree-marker { border-color: var(--primary-strong); }
 .nav-tree-label { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); border: 0; white-space: nowrap; }
 .nav-tree-count { margin-left: 4px; }
+
+/* Conversation navigation follows the reference interaction: large dots are
+   the primary controls, while labels appear only when the dot is inspected. */
+.conversation-minimap { position: relative; align-self: stretch; padding: 12px 8px; overflow: visible; background: transparent; border: 0; }
+.conversation-minimap .minimap-heading { justify-content: center; margin-bottom: 12px; }
+.conversation-minimap .nav-tree { display: grid; justify-items: center; gap: 4px; padding: 4px 0 12px; overflow: visible; }
+.conversation-minimap .nav-tree-branch { width: 52px; }
+.conversation-minimap .nav-tree-row { position: relative; justify-content: center; min-height: 52px; }
+.conversation-minimap .nav-tree-node { width: 52px; min-width: 52px; min-height: 52px; display: grid; place-items: center; padding: 0; border-radius: 50%; }
+.conversation-minimap .nav-tree-marker { width: 27px; height: 27px; border-width: 2px; box-shadow: 0 0 0 3px var(--surface); transition: transform var(--motion-fast), box-shadow var(--motion-fast), background var(--motion-fast); }
+.conversation-minimap .nav-tree-node:hover .nav-tree-marker, .conversation-minimap .nav-tree-node:focus-visible .nav-tree-marker { transform: scale(1.07); box-shadow: 0 0 0 3px var(--surface), 0 0 0 6px var(--primary-soft); }
+.conversation-minimap .nav-tree-node.selected .nav-tree-marker { box-shadow: 0 0 0 3px var(--surface), 0 0 0 6px color-mix(in srgb, var(--primary) 34%, transparent); }
+.conversation-minimap .nav-tree-label, .conversation-minimap .nav-tree-count { display: none; }
+.conversation-minimap .nav-tree-node::after { left: calc(100% + 8px); top: 50%; max-width: 230px; padding: 6px 9px; border-radius: 6px; box-shadow: var(--shadow-md); white-space: nowrap; }
+.conversation-minimap .nav-tree > .nav-tree-branch > .nav-tree { position: relative; width: 52px; margin: 4px auto 0; padding: 4px 0 4px 0; border-left: 1px solid var(--line-strong); }
+.conversation-minimap .nav-tree > .nav-tree-branch > .nav-tree > .nav-tree-branch::before { top: 25px; left: -17px; width: 17px; border-top-color: var(--line-strong); }
+.conversation-minimap .nav-tree-units { display: none; }
+.conversation-minimap .nav-tree-ask { display: none; }
+
+@media (max-width: 780px) {
+  .conversation-minimap { min-height: 120px; padding: 9px 12px 14px; overflow-x: auto; overflow-y: hidden; }
+  .conversation-minimap .nav-tree { min-width: max-content; display: flex; flex-direction: row; align-items: flex-start; justify-content: flex-start; }
+  .conversation-minimap .nav-tree > .nav-tree-branch > .nav-tree { margin: 0 0 0 5px; padding: 0 0 0 12px; border-top: 1px solid var(--line-strong); border-left: 0; }
+  .conversation-minimap .nav-tree > .nav-tree-branch > .nav-tree > .nav-tree-branch::before { top: -1px; left: 25px; width: 1px; height: 12px; border-top: 0; border-left: 1px solid var(--line-strong); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conversation-branch-card, .conversation-minimap .nav-tree-marker { transition: none; transform: none; }
+  .conversation-branch-card:not(:first-child), .conversation-branch-card.current { transform: none; }
+}
