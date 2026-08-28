@@ -403,7 +403,12 @@ function render(): void {
   // before the initial force simulation has produced a persisted coordinate;
   // in that case an unseeded child would otherwise default to the canvas
   // center and all siblings could fly into the same corner.
-  const rootConcepts = snapshot.nodes.filter((node) => node.type === 'concept' && !(node.parentIds?.length || node.parentId))
+  const hierarchyChildNodeIds = new Set(snapshot.edges
+    .filter((edge) => edge.type === 'hierarchy')
+    .map((edge) => edge.target))
+  const rootConcepts = snapshot.nodes.filter((node) => node.type === 'concept'
+    && !(node.parentIds?.length || node.parentId)
+    && !hierarchyChildNodeIds.has(node.id))
   const rootCount = rootConcepts.length
   rootConcepts.forEach((node, rootIndex) => {
     if (seedPositions.has(node.id)) return
