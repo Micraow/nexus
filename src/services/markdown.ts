@@ -126,27 +126,77 @@ function markerLabel(name: string, label: string): string {
   return !normalized || LEGACY_MARKER_PLACEHOLDERS.has(normalized.toLowerCase()) ? name : label
 }
 
+function cleanMarkerName(value: string): string {
+  return value
+    .replace(/\[\[\/?nexus(?::(?:existing|suggested):)?/gi, '')
+    .replace(/\]\]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** Find the closing `]]` for a marker header, skipping nested marker headers. */
+function markerHeaderEnd(raw: string, start: number): number {
+  for (let index = start; index < raw.length - 1; index += 1) {
+    if (raw.slice(index).match(/^\[\[nexus:(?:existing|suggested):/i)) {
+      const nestedPrefix = raw.slice(index).match(/^\[\[nexus:(?:existing|suggested):/i)?.[0] ?? ''
+      const nestedEnd = markerHeaderEnd(raw, index + nestedPrefix.length)
+      if (nestedEnd < 0) return -1
+      index = nestedEnd + 1
+      continue
+    }
+    if (raw.startsWith(']]', index)) {
+      return index
+    }
+  }
+  return -1
+}
+
 /**
  * Conversation answers may explicitly distinguish known topics from ideas
  * worth exploring. The delimiters are presentation-only and are removed from
  * the rendered output; unknown suggested names remain non-interactive.
  */
 function linkifyMarkedConcepts(raw: string, matcher: ConceptMatcher | null): InlineToken[] {
-  const pattern = /\[\[nexus:(existing|suggested):([^\]]+)\]\]([\s\S]*?)\[\[\/nexus\]\]/gi
   const tokens: InlineToken[] = []
   let cursor = 0
-  let match: RegExpExecArray | null
-  while ((match = pattern.exec(raw))) {
+  const findOpening = (from: number): { index: number; kind: 'existing' | 'suggested'; name: string; headerEnd: number } | null => {
+    const opening = /\[\[nexus:(existing|suggested):/gi
+    opening.lastIndex = from
+    const match = opening.exec(raw)
+    if (!match) return null
+    const headerEnd = markerHeaderEnd(raw, match.index + match[0].length)
+    if (headerEnd < 0) return null
+    return {
+      index: match.index,
+      kind: match[1].toLowerCase() as 'existing' | 'suggested',
+      name: cleanMarkerName(raw.slice(match.index + match[0].length, headerEnd)),
+      headerEnd,
+    }
+  }
+  for (;;) {
+    const match = findOpening(cursor)
+    if (!match) {
+      if (cursor < raw.length) tokens.push(...linkifyConcepts(raw.slice(cursor), matcher))
+      break
+    }
     if (match.index > cursor) tokens.push(...linkifyConcepts(raw.slice(cursor, match.index), matcher))
-    const kind = match[1].toLowerCase() as 'existing' | 'suggested'
+    const kind = match.kind
+    const headerEnd = match.headerEnd
+    const name = match.name
+    const bodyStart = headerEnd + 2
+    const closeIndex = raw.indexOf('[[/nexus]]', bodyStart)
+    const nextOpening = findOpening(bodyStart)
+    // A missing close must not swallow a later marker. Treat the malformed
+    // opening as an empty marker and resume scanning at its body text.
+    const hasValidClose = closeIndex >= bodyStart && (!nextOpening || closeIndex < nextOpening.index)
+    const body = hasValidClose ? raw.slice(bodyStart, closeIndex) : ''
     // Older prompts used literal placeholders such as “原文” for the body.
     // Keep those responses readable by displaying the marker's topic name.
-    const label = markerLabel(match[2].trim(), match[3] ?? '')
-    const id = matcher?.ids.get(match[2].trim()) ?? matcher?.ids.get(label.trim()) ?? ''
-    tokens.push({ type: 'mention', value: conceptMentionHtml(label, id, kind, match[2].trim()) })
-    cursor = match.index + match[0].length
+    const label = markerLabel(name, cleanMarkerName(body))
+    const id = matcher?.ids.get(name) ?? matcher?.ids.get(label.trim()) ?? ''
+    tokens.push({ type: 'mention', value: conceptMentionHtml(label, id, kind, name) })
+    cursor = hasValidClose ? closeIndex + '[[/nexus]]'.length : bodyStart
   }
-  if (cursor < raw.length) tokens.push(...linkifyConcepts(raw.slice(cursor), matcher))
   return tokens
 }
 

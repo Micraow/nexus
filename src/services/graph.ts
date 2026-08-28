@@ -67,6 +67,85 @@ function messageConceptIds(message: Message): string[] {
   return [...new Set(ids.filter((id): id is string => typeof id === 'string' && id.trim().length > 0).map((id) => id.trim()))]
 }
 
+export interface DerivedRelatedPair {
+  leftConceptId: string
+  rightConceptId: string
+  /** Number of distinct Sessions containing both Concepts. */
+  sessionCount: number
+  /** Number of Messages explicitly containing both Concepts. */
+  messageCount: number
+}
+
+/**
+ * Derive weak Concept relationships from persisted evidence instead of model
+ * assertions. A pair is related when it occurs in one Session, and the
+ * optional messageCount keeps the detail view explainable without changing
+ * the graph's Session-level weight semantics.
+ */
+export function deriveConceptRelatedPairs(input: Pick<GraphInput, 'concepts' | 'units' | 'messages' | 'unitConcepts' | 'sessionConcepts' | 'messageConcepts' | 'sessions'>): DerivedRelatedPair[] {
+  const activeIds = new Set(input.concepts.filter((concept) => concept.status === 'active').map((concept) => concept.id))
+  const activeSessionIds = input.sessions ? new Set(input.sessions.map((session) => session.id)) : null
+  const unitById = new Map(input.units.map((unit) => [unit.id, unit]))
+  const messagesBySession = new Map<string, Message[]>()
+  input.messages.forEach((message) => {
+    if (activeSessionIds && !activeSessionIds.has(message.sessionId)) return
+    const list = messagesBySession.get(message.sessionId) ?? []
+    list.push(message)
+    messagesBySession.set(message.sessionId, list)
+  })
+  const conceptsByMessage = new Map<string, Set<string>>()
+  const conceptsBySession = new Map<string, Set<string>>()
+  const addToSet = (map: Map<string, Set<string>>, key: string, ids: Iterable<string>): void => {
+    const set = map.get(key) ?? new Set<string>()
+    for (const id of ids) if (activeIds.has(id)) set.add(id)
+    if (set.size) map.set(key, set)
+  }
+  const addMessageConcept = (messageId: string, conceptId: string): void => {
+    const message = input.messages.find((item) => item.id === messageId)
+    if (!message || (activeSessionIds && !activeSessionIds.has(message.sessionId))) return
+    addToSet(conceptsByMessage, messageId, [conceptId])
+    addToSet(conceptsBySession, message.sessionId, [conceptId])
+  }
+
+  ;(input.messageConcepts ?? []).forEach((link) => addMessageConcept(link.messageId, link.conceptId))
+  input.messages.forEach((message) => messageConceptIds(message).forEach((conceptId) => addMessageConcept(message.id, conceptId)))
+  const conceptsByUnit = new Map<string, Set<string>>()
+  input.unitConcepts.forEach((link) => {
+    if (!activeIds.has(link.conceptId) || !unitById.has(link.unitId)) return
+    addToSet(conceptsByUnit, link.unitId, [link.conceptId])
+    const unit = unitById.get(link.unitId) as KnowledgeUnit
+    addToSet(conceptsBySession, unit.sessionId, [link.conceptId])
+  })
+  input.messages.forEach((message) => {
+    if (!message.unitId) return
+    const unitConcepts = conceptsByUnit.get(message.unitId)
+    if (!unitConcepts) return
+    unitConcepts.forEach((conceptId) => addMessageConcept(message.id, conceptId))
+  })
+  ;(input.sessionConcepts ?? []).forEach((link) => {
+    if (activeSessionIds && !activeSessionIds.has(link.sessionId)) return
+    if (!activeIds.has(link.conceptId)) return
+    addToSet(conceptsBySession, link.sessionId, [link.conceptId])
+    ;(messagesBySession.get(link.sessionId) ?? []).forEach((message) => addMessageConcept(message.id, link.conceptId))
+  })
+
+  const pairCounts = new Map<string, DerivedRelatedPair>()
+  const countPairs = (ids: Set<string>, field: 'sessionCount' | 'messageCount'): void => {
+    const ordered = [...ids].sort()
+    for (let left = 0; left < ordered.length; left += 1) {
+      for (let right = left + 1; right < ordered.length; right += 1) {
+        const key = `${ordered[left]}|${ordered[right]}`
+        const current = pairCounts.get(key) ?? { leftConceptId: ordered[left], rightConceptId: ordered[right], sessionCount: 0, messageCount: 0 }
+        current[field] += 1
+        pairCounts.set(key, current)
+      }
+    }
+  }
+  conceptsBySession.forEach((ids) => countPairs(ids, 'sessionCount'))
+  conceptsByMessage.forEach((ids) => countPairs(ids, 'messageCount'))
+  return [...pairCounts.values()].sort((left, right) => `${left.leftConceptId}|${left.rightConceptId}`.localeCompare(`${right.leftConceptId}|${right.rightConceptId}`))
+}
+
 /**
  * Build a hierarchy index from active concepts.  `related` edges are
  * deliberately excluded: they are undirected context links and must never
@@ -162,6 +241,55 @@ export function graphViewFallbackIsCompatible(
 
   const requestedExpanded = new Set(requested.expandedConceptIds ?? [])
   return (candidate.expandedConceptIds ?? []).every((id) => requestedExpanded.has(id))
+}
+
+/**
+ * Guard a cached/worker snapshot against accidental over-disclosure.  The
+ * option comparison above only knows which ids were requested; this check
+ * verifies that every Concept node in the candidate is reachable through an
+ * explicitly expanded parent.  It is deliberately conservative for legacy
+ * snapshots without `depth`: those snapshots are never safe as a progressive
+ * fallback and the caller should keep the current view or show an empty load
+ * state until the worker returns.
+ */
+export function graphSnapshotIsProgressiveCompatible(snapshot: GraphSnapshot, options: GraphViewOptions): boolean {
+  const conceptNodes = snapshot.nodes.filter((node) => node.type === 'concept')
+  if (!conceptNodes.length) return true
+  if (conceptNodes.some((node) => node.depth == null || !Number.isFinite(node.depth))) return false
+
+  const byId = new Map(conceptNodes.map((node) => [node.refId, node]))
+  const visible = new Set(conceptNodes.filter((node) => node.depth === 0).map((node) => node.refId))
+  const expanded = new Set(options.expandedConceptIds ?? [])
+  // An explicitly expanded descendant implicitly opens the ancestor path in
+  // the real resolver, so mirror that normalization before checking a
+  // candidate snapshot.
+  const parentIdsByConcept = new Map(conceptNodes.map((node) => [node.refId, node.parentIds ?? []]))
+  ;[...(options.expandedConceptIds ?? [])].forEach((id) => {
+    const pending = [id]
+    const seen = new Set<string>()
+    for (let index = 0; index < pending.length; index += 1) {
+      const current = pending[index]
+      if (seen.has(current)) continue
+      seen.add(current)
+      ;(parentIdsByConcept.get(current) ?? []).forEach((parentId) => {
+        expanded.add(parentId)
+        pending.push(parentId)
+      })
+    }
+  })
+  const queue = [...visible]
+  for (let index = 0; index < queue.length; index += 1) {
+    const parentId = queue[index]
+    if (!expanded.has(parentId)) continue
+    const parent = byId.get(parentId)
+    if (!parent) continue
+    conceptNodes.forEach((child) => {
+      if (child.depth !== (parent.depth ?? 0) + 1 || !child.parentIds?.includes(parentId) || visible.has(child.refId)) return
+      visible.add(child.refId)
+      queue.push(child.refId)
+    })
+  }
+  return conceptNodes.every((node) => visible.has(node.refId))
 }
 
 /**
@@ -569,7 +697,10 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
   // detection.  If a related endpoint is collapsed, project it to its nearest
   // visible ancestor so the root overview still retains that weak signal.
   input.relations
-    .filter((relation) => relation.relationType === 'related' && relationIsVisible(relation, Boolean(input.showProposed)))
+    // LLM-authored related edges are intentionally ignored. Weak relations
+    // are derived from shared Session/Message evidence; only explicit manual
+    // or maintenance edits may add a persisted related relation.
+    .filter((relation) => relation.relationType === 'related' && relation.source !== 'llm' && relationIsVisible(relation, Boolean(input.showProposed)))
     .forEach((relation) => {
       const leftRepresentatives = representativesFor(relation.parentConceptId)
       const rightRepresentatives = representativesFor(relation.childConceptId)

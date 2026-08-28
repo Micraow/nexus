@@ -108,6 +108,35 @@ describe('renderMarkdown', () => {
     expect(html).not.toContain('onerror="')
   })
 
+  it('does not let a malformed marker swallow later suggested topics', () => {
+    const html = renderMarkdown('这些技术多以 [[nexus:existing:无损以太网与 PFC/ECN/DCQCN]] 所描述的 PFC/ECN 框架为底座，再在反馈精度上做权衡。重点了解 [[nexus:suggested:HPCC 高精度拥塞控制]][[/nexus]] 与 [[nexus:suggested:TIMELY 拥塞控制协议]][[/nexus]]。', {
+      concepts: [{ id: 'lossless', name: '无损以太网与 PFC/ECN/DCQCN' }],
+    })
+    expect(html).toContain('data-concept-id="lossless"')
+    expect(html).toContain('data-suggested-concept="HPCC 高精度拥塞控制"')
+    expect(html).toContain('data-suggested-concept="TIMELY 拥塞控制协议"')
+    expect((html.match(/md-concept-existing/g) ?? []).length).toBe(1)
+    expect((html.match(/md-concept-suggested/g) ?? []).length).toBe(2)
+    const existingStart = html.indexOf('md-concept-existing')
+    const existingEnd = html.indexOf('</span>', existingStart)
+    expect(html.slice(existingStart, existingEnd)).not.toContain('HPCC')
+  })
+
+  it('keeps an unclosed or nested suggested marker ahead of existing-name matching', () => {
+    const unclosed = renderMarkdown('推荐 [[nexus:suggested:Clos 与 RoCE 无损网络]]。', {
+      concepts: [{ id: 'roce', name: 'RoCE' }],
+    })
+    expect(unclosed).toContain('md-concept-suggested')
+    expect(unclosed).toContain('data-suggested-concept="Clos 与 RoCE 无损网络"')
+    expect(unclosed).not.toContain('data-concept-id="roce"')
+
+    const nested = renderMarkdown('推荐 [[nexus:suggested:Clos 与 [[nexus:existing:RoCE]] 无损网络]]。', {
+      concepts: [{ id: 'roce', name: 'RoCE' }],
+    })
+    expect(nested).toContain('data-suggested-concept="Clos 与 RoCE 无损网络"')
+    expect(nested).not.toContain('data-concept-id="roce"')
+  })
+
   it('does not linkify concept names inside inline code', () => {
     const html = renderMarkdown('保持 `RDMA` 原样', { concepts: [{ id: 'c1', name: 'RDMA' }] })
     expect(html).toContain('<code>RDMA</code>')

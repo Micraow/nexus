@@ -90,6 +90,10 @@ let dragMoved = false
 let suppressClickNodeId: string | null = null
 let suppressClickTimer: number | null = null
 let lastNodeSignature = ''
+// Coordinates are retained for future re-expansion, while this set tracks
+// only the nodes that were visible in the previous render. The distinction
+// lets a collapsed branch fade back in when it is opened again.
+let lastVisibleNodeIds = new Set<string>()
 
 const palette: Record<string, string> = {
   concept: '#2c6e9e',
@@ -99,17 +103,18 @@ const palette: Record<string, string> = {
 
 function edgeColor(edge: GraphEdge): string {
   if (edge.type === 'hierarchy') return '#2c6e9e'
-  if (edge.type === 'related') return '#5d7f94'
-  if (edge.type === 'conversation') return '#c18d30'
-  if (edge.type === 'association') return '#879eae'
-  return '#71899a'
+  if (edge.type === 'related') return '#aeb9c1'
+  if (edge.type === 'conversation') return '#b9b5aa'
+  if (edge.type === 'association') return '#c7d0d6'
+  if (edge.type === 'co_occurrence') return '#9daab4'
+  return '#aeb9c1'
 }
 
 function edgeWidth(edge: GraphEdge): number {
-  if (edge.type === 'co_occurrence') return Math.min(4, 0.8 + Math.log2(edge.weight + 1) * 0.7)
-  if (edge.type === 'hierarchy') return 1.35
-  if (edge.type === 'manual') return 1.1
-  return edge.type === 'related' ? 0.95 : 0.85
+  if (edge.type === 'co_occurrence') return Math.min(2.5, 0.65 + Math.log2(edge.weight + 1) * 0.45)
+  if (edge.type === 'hierarchy') return 1.65
+  if (edge.type === 'manual') return 0.7
+  return edge.type === 'related' ? 0.55 : 0.5
 }
 
 function mapValue<T>(map: Record<string, T> | Map<string, T> | undefined, key: string): T | undefined {
@@ -211,7 +216,30 @@ function render(): void {
   const width = Math.max(host.value.clientWidth, 480)
   const height = Math.max(host.value.clientHeight, 460)
   const root = d3.select(element)
+  const snapshot = visibleSnapshot()
+  const nodeSignature = snapshot.nodes.map((node) => node.id).join('|')
+  const topologyChanged = nodeSignature !== lastNodeSignature
+  const previousVisibleNodeIds = lastVisibleNodeIds
+
+  // Keep a non-interactive copy of the old topology below the new one. This
+  // is what makes collapsing a branch visible: removed nodes can fade out
+  // instead of disappearing when the new data join is rendered.
+  const previousViewport = root.select<SVGGElement>('.graph-viewport').node()
+  const previousTransitionLayer = !props.reducedMotion && topologyChanged && previousViewport
+    ? previousViewport.cloneNode(true) as SVGGElement
+    : null
   root.selectAll('*').remove()
+  if (previousTransitionLayer) {
+    previousTransitionLayer.classList.add('graph-transition-old')
+    previousTransitionLayer.setAttribute('pointer-events', 'none')
+    previousTransitionLayer.setAttribute('opacity', '1')
+    root.node()?.appendChild(previousTransitionLayer)
+    d3.select(previousTransitionLayer)
+      .transition('graph-disclosure-old')
+      .duration(260)
+      .attr('opacity', 0)
+      .on('end', function () { this.remove() })
+  }
   root.attr('viewBox', `0 0 ${width} ${height}`).attr('aria-label', '知识主题图谱')
 
   const viewport = root.append('g').attr('class', 'graph-viewport')
@@ -237,8 +265,8 @@ function render(): void {
   root.call(zoom.transform, liveTransform ?? d3.zoomIdentity.translate(initialViewport.x, initialViewport.y).scale(initialViewport.scale))
   restoringViewport = false
 
-  const snapshot = visibleSnapshot()
   const links = snapshot.edges.map((edge) => ({ ...edge }))
+  const knownNodeIds = previousVisibleNodeIds
   const anchorByNode = new Map<string, string>()
   links.forEach((edge) => {
     if (edge.type !== 'hierarchy' && edge.type !== 'association') return
@@ -277,9 +305,8 @@ function render(): void {
   const largeGraph = nodes.length > 220 || snapshot.edges.length > 420
   viewport.classed('is-large', largeGraph)
   if (!nodes.length && !userMovedViewport) hasFittedData = false
-  const nodeSignature = nodes.map((node) => node.id).join('|')
-  const topologyChanged = nodeSignature !== lastNodeSignature
   lastNodeSignature = nodeSignature
+  lastVisibleNodeIds = new Set(nodes.map((node) => node.id))
   const shouldFitView = !userMovedViewport && nodes.length > 0 && (!hasFittedData || (topologyChanged && props.fitOnTopologyChange))
   nodes.forEach((node) => {
     if (node.fixed && node.x != null && node.y != null) {
@@ -295,6 +322,7 @@ function render(): void {
     .data(links, (edge) => edge.id)
     .join('line')
     .attr('class', 'graph-link')
+    .attr('data-edge-type', (edge) => edge.type)
     .attr('stroke', edgeColor)
     .attr('stroke-width', edgeWidth)
     .attr('stroke-dasharray', (edge) => (edge.status === 'proposed' || edge.type === 'related' || edge.type === 'conversation' ? '5 5' : null))
@@ -356,6 +384,22 @@ function render(): void {
     })
     .classed('is-expandable', (node) => node.type === 'concept' && conceptHasChildren(node, links))
   nodeSelection.classed('is-selected', (node) => node.type === 'unit' && props.selectedUnitIds.includes(node.refId))
+
+  // Topology changes keep their existing coordinates, then gently reveal newly
+  // disclosed nodes and links. The force simulation supplies the continuous
+  // movement; this opacity transition keeps expand/collapse from flashing.
+  if (!props.reducedMotion && topologyChanged) {
+    nodeSelection
+      .attr('opacity', (node) => knownNodeIds.has(node.id) ? 1 : 0)
+      .transition('graph-disclosure')
+      .duration(240)
+      .attr('opacity', 1)
+    linkSelection
+      .attr('opacity', (edge) => knownNodeIds.has(String(edge.source)) && knownNodeIds.has(String(edge.target)) ? 1 : 0)
+      .transition('graph-disclosure')
+      .duration(220)
+      .attr('opacity', 1)
+  }
 
   const activateNode = (event: MouseEvent | KeyboardEvent, node: GraphNode): void => {
     if (node.type === 'concept') {
@@ -487,22 +531,22 @@ function render(): void {
       if (edge.type === 'hierarchy') return 148
       if (edge.type === 'conversation') return 72
       if (edge.type === 'association') return 96
-      if (edge.type === 'related') return 112
-      if (edge.type === 'co_occurrence') return 104
-      return 112
+      if (edge.type === 'related') return 126
+      if (edge.type === 'co_occurrence') return 132
+      return 126
     })
     .strength((edge) => {
       if (edge.type === 'hierarchy') return 0.92
-      if (edge.type === 'conversation') return 0.62
-      if (edge.type === 'association') return 0.52
-      if (edge.type === 'related') return 0.5
-      if (edge.type === 'manual') return 0.58
-      return Math.min(0.78, 0.34 + edge.weight * 0.08)
+      if (edge.type === 'conversation') return 0.16
+      if (edge.type === 'association') return 0.12
+      if (edge.type === 'related') return 0.1
+      if (edge.type === 'manual') return 0.14
+      return Math.min(0.24, 0.08 + edge.weight * 0.025)
     })
     .iterations(largeGraph ? 1 : 2)
   const chargeForce = d3
     .forceManyBody<GraphNode & d3.SimulationNodeDatum>()
-    .strength((node) => (node as GraphNode).type === 'concept' ? -390 : -165)
+    .strength((node) => (node as GraphNode).type === 'concept' ? -340 : -145)
     .distanceMax(Math.max(width, height) * (largeGraph ? 1.1 : 1.6))
   simulation = d3
     .forceSimulation(nodes)

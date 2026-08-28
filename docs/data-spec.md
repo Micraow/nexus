@@ -298,7 +298,7 @@ Concept ID 导入 `message_concepts`，同时保留 metadata 原文以便回溯�
 - 每个目标使用可为空的 `concept_ids` 数组，同一目标和 Concept 不能重复；
 - 同一个 Session、Message 或 KnowledgeUnit 可以归属多个 Concept，不得压缩为单个“主主题”；
 - 新 Concept 的名称、摘要和别名在同一结果中返回；引用现有 Concept 时 ID 必须来自当前目录；
-- `hierarchy` 只表达严格的上位/下位关系并通过 DAG 校验；一般关联使用无向 `related`；
+- `hierarchy` 只表达严格的上位/下位关系并通过 DAG 校验；普通 Concept 提取不写 related，一般关联由共享 Session/Message 事实派生，维护动作才可显式写入无向 `related`；
 - 新 Concept 提取优先匹配当前目录或同批次中语义范围最窄的直接父主题；只有不存在可解释的上位主题时才暂作根，不能把候选全部并列在根层。
 - 对话和 Concept 提取结果中的关系仅作为 `proposed` 建议写入；应用会校验端点属于当前任务、去重并检测 hierarchy 环，且不会用建议覆盖已有 `confirmed` 关系。
 - `knowledge`、`discussion`、`procedure` 和 `mixed` 都保留原始消息；`mixed` 必须继续执行 Message 级识别，没有稳定知识的目标可以返回空数组。
@@ -322,9 +322,11 @@ Concept 提取结果必须包含 `concepts` 数组；全部复用目录中已有
 
 ### 4.3 维护建议
 
-维护任务扫描整个 active Concept 图谱；选中的主题、会话或知识单元只作为关注提示，不构成输入边界。任务只允许返回建议变更，不允许返回“直接执行 SQL”或不可追溯的自由文本命令。每条建议需要包含类型、目标 ID、影响范围、理由和可逆操作描述。除既有的 `merge`、`alias`、`relation`、`unit_relink`、`unit_revision` 外，维护结果可以提出 `create_concept`、`update_concept`、`move_concept`、`remove_hierarchy` 和 `archive_concept`；应用前必须验证端点、名称和 DAG 成环，所有写入走可撤销快照事务。
+维护任务扫描整个 active Concept 图谱；选中的主题、会话或知识单元只作为关注提示，不构成输入边界。任务只允许返回建议变更，不允许返回“直接执行 SQL”或不可追溯的自由文本命令。机器可读 `MAINTENANCE_ACTION_API` 为每个动作提供 `input_schema`（`additionalProperties=false`）、必填字段、效果和审核边界。维护结果支持 `create_concept`、`update_concept`、`delete_concept`、`restore_concept`、`merge`、`alias`、`remove_alias`、`add_relation`、`update_relation`、`delete_relation`、`set_relation_status`、`confirm_relation`、`reject_relation`、`move_concept`、`set_hierarchy_parents`、`remove_hierarchy`、`membership_relink`、兼容用的 `relation`/`remove_relation`/`archive_concept`/`unit_relink` 和 `unit_revision`；每条建议必须有目标 ID 与可审计 reason，应用前验证端点、名称、目标类型、归属 ID 和 DAG 成环，所有写入走可撤销快照事务。未知动作或字段一律拒绝。
 
-`create_concept`/`move_concept` 的 `parent_concept_id` 表示直接父主题，`null` 仅在没有充分层级证据、确需提升为根时使用；新主题应优先挂到已有或同批次中最窄且有直接语义包含证据的父主题。`remove_hierarchy` 只删除指定父子引用，不删除 Concept；`archive_concept` 保留关系、归属和证据，可通过恢复操作撤销。维护产生的层级关系默认写入 `proposed`，等待用户确认。
+`create_concept`/`move_concept` 的 `parent_concept_id` 表示直接父主题，`null` 仅在没有充分层级证据、确需提升为根时使用；`set_hierarchy_parents` 用 `parent_concept_ids` 一次性替换全部父主题，空数组表示根，支持多父 DAG。新主题应优先挂到已有或同批次中最窄且有直接语义包含证据的父主题。`remove_hierarchy` 只删除指定父子引用，不删除 Concept；`delete_concept`/`archive_concept` 只把 active Concept 标为 archived，保留关系、归属和证据，重复删除幂等；`restore_concept` 只恢复 archived，merged 主题不可恢复。维护产生的 hierarchy 关系默认写入 `proposed`，等待用户确认；related 由维护动作显式编辑，按无向边规范化。`set_relation_status` 及其确认/拒绝别名仅在任务明确要求审核时使用，普通扫描不得越过用户确认。
+
+`membership_relink` 的 `target_type` 可为 `session`、`message` 或 `unit`，`target_id` 必须存在，`concept_ids` 必须全部指向 active Concept，`replace=true` 替换直接归属、`replace=false` 追加；消息归属同步 `message_concepts` 和兼容 metadata。空数组在替换模式下清除归属。所有动作都在独立快照事务中应用，失败不写入部分结果。
 
 ### 4.4 Prompt Harness 与渐进式披露
 
@@ -387,10 +389,10 @@ Concept 提取结果必须包含 `concepts` 数组；全部复用目录中已有
 - 每个 Session 汇总其直接、消息级和 KnowledgeUnit 级 Concept 归属，再将两个不同的原始 Concept 分别投影到各自每条父链上的第一个可见代表节点并去重；任意一对可见代表 Concept 对该 Session 最多贡献 `1` 个共现权重。单个多父 Concept 不产生自发的根节点共现，多个 KnowledgeUnit 或 Message 不会在同一 Session 内重复计数；多个 Session 投影到同一对节点时累加；
 - Concept 与 Session、Message、KnowledgeUnit 之间生成关联边；SessionConcept/MessageConcept 是没有 KnowledgeUnit 时的主要证据边，UnitConcept 作为可选阅读片段边；端点使用同一套代表投影；
 - `hierarchy` 只在父、子两端都可见时输出有向边。隐藏叶节点不能产生指向不可见节点的假边；
-- `related` 始终按无向边处理。若端点折叠，可分别投影到最近可见代表并合并重复边；同一节点的自环丢弃。related 边不参与层级展开、根节点、深度或父子布局；
+- `related` 的默认弱关联由软件从 `session_concepts`、`message_concepts`、`unit_concepts` 和 Message 元数据按共享 Session/Message 派生，不接受普通 Concept/对话模型直接写入；维护动作可以显式添加、修改或删除持久化 related。两者都按无向边处理，若端点折叠可投影到最近可见代表并合并重复边；同一节点的自环丢弃。related 边不参与层级展开、根节点、深度或父子布局；
 - 手动额外边单独保存，只有当前两个端点可见时才进入快照；
 - `proposed` 关系默认不参与确认视图，`showProposed=true` 时按其原类型显示（hierarchy 仍有方向，related 仍无方向）；
-- 消息与会话链边按同一 Session 的 `orderInSession` 排序生成，当前数据模型下网页端分支退化为链；
+- 消息与会话链边按同一 Session 的 `orderInSession` 排序生成，导入数据仍可退化为链；软件内对话通过 `NavTreeNode.parentId`、用户消息 `parentNodeId`/`answerMessageId` 和 assistant 消息 `navNodeId` 恢复分支，界面切换分支时只投影当前节点问答。
 - 边权重、代表投影和节点度数均为派生值，不回写事实表。
 
 ### 6.3 缓存

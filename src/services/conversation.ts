@@ -70,6 +70,25 @@ export function conversationMessageBranchNodeId(message: Message, messages: Mess
   return typeof metadata.parentNodeId === 'string' && metadata.parentNodeId.trim() ? metadata.parentNodeId : null
 }
 
+/**
+ * Return the messages that belong to one visible branch card. The opening
+ * question is stored on the shared root, so an answer card also pulls in the
+ * user message with the same task id. Sibling branches remain disjoint.
+ */
+export function conversationMessagesForNode(nodeId: string, messages: Message[]): Message[] {
+  const cardMessages = messages.filter((message) => conversationMessageBranchNodeId(message, messages) === nodeId)
+  const answerTaskIds = new Set(cardMessages
+    .filter((message) => message.role === 'assistant')
+    .map((message) => parseMetadata(message.metadata).taskId)
+    .filter((taskId): taskId is string => typeof taskId === 'string' && taskId.trim().length > 0))
+  messages.forEach((message) => {
+    const taskId = parseMetadata(message.metadata).taskId
+    if (message.role !== 'user' || typeof taskId !== 'string' || !answerTaskIds.has(taskId)) return
+    if (!cardMessages.some((candidate) => candidate.id === message.id)) cardMessages.push(message)
+  })
+  return cardMessages.sort((left, right) => left.orderInSession - right.orderInSession)
+}
+
 export function suggestedExplorationQuestion(topic: string): string {
   const normalized = topic.replace(/\s+/g, ' ').trim()
   return normalized ? `请继续解释「${normalized}」，并说明它与当前讨论的关系。` : ''

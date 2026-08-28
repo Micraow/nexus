@@ -195,14 +195,14 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.viewGraph().nodes.map((node) => node.refId)).toEqual(expect.arrayContaining([created.id, existingConceptId]))
   })
 
-  it('persists conversation hierarchy and related proposals without cycles or duplicates', () => {
+  it('persists conversation hierarchy and rejects model-authored related proposals', () => {
     const existingParentId = store.createConcept('网络协议')
     const sessionId = store.createConversationTask({ question: '解释 TCP 拥塞控制的层级关系' })
     const task = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
     const question = store.messages.find((message) => message.sessionId === sessionId && message.role === 'user')!
     const answerMessageId = String(question.metadata?.answerMessageId)
 
-    const result = store.applyTaskResult(task.id, JSON.stringify({
+    const invalid = store.applyTaskResult(task.id, JSON.stringify({
       answer: 'TCP 拥塞控制是传输控制协议下的具体主题，并与网络协议相关。',
       concepts: [
         { client_ref: 'new:1', name: '传输控制协议', summary: '传输层协议的控制机制。', aliases: [] },
@@ -220,16 +220,33 @@ describe('direct concept extraction import pipeline', () => {
       disclosure_requests: [],
     }))
 
+    expect(invalid.ok).toBe(false)
+    expect(invalid.errors.join('; ')).toContain('related 由共享 Session/Message 自动计算')
+    store.retryTask(task.id)
+    const result = store.applyTaskResult(task.id, JSON.stringify({
+      answer: 'TCP 拥塞控制是传输控制协议下的具体主题。',
+      concepts: [
+        { client_ref: 'new:1', name: '传输控制协议', summary: '传输层协议的控制机制。', aliases: [] },
+        { client_ref: 'new:2', name: 'TCP 拥塞控制', summary: 'TCP 中调节发送速率的机制。', aliases: [] },
+      ],
+      memberships: [{ target_type: 'message', target_id: answerMessageId, concept_ids: ['new:1', 'new:2', existingParentId] }],
+      relations: [
+        { source: existingParentId, target: 'new:1', type: 'hierarchy', status: 'proposed' },
+        { source: 'new:1', target: 'new:2', type: 'hierarchy' },
+      ],
+      units: [],
+      disclosure_requests: [],
+    }))
+
     expect(result.ok, result.errors.join('; ')).toBe(true)
     const transport = store.concepts.find((concept) => concept.name === '传输控制协议')!
     const tcp = store.concepts.find((concept) => concept.name === 'TCP 拥塞控制')!
     expect(store.relations).toEqual(expect.arrayContaining([
       expect.objectContaining({ parentConceptId: existingParentId, childConceptId: transport.id, relationType: 'hierarchy', source: 'llm', status: 'proposed' }),
       expect.objectContaining({ parentConceptId: transport.id, childConceptId: tcp.id, relationType: 'hierarchy', source: 'llm', status: 'proposed' }),
-      expect.objectContaining({ relationType: 'related', source: 'llm', status: 'proposed' }),
     ]))
     expect(store.relations.filter((relation) => relation.relationType === 'hierarchy' && relation.parentConceptId === tcp.id && relation.childConceptId === transport.id)).toHaveLength(0)
-    expect(store.relations.filter((relation) => relation.relationType === 'related')).toHaveLength(1)
+    expect(store.relations.filter((relation) => relation.relationType === 'related')).toHaveLength(0)
     expect(store.conceptParentIds(tcp.id, true)).toContain(transport.id)
   })
 
@@ -366,6 +383,126 @@ describe('direct concept extraction import pipeline', () => {
     expect(applied.ok, applied.error).toBe(true)
     const child = store.concepts.find((concept) => concept.name === '维护子主题')!
     expect(store.relations).toContainEqual(expect.objectContaining({ parentConceptId: parentId, childConceptId: child.id, relationType: 'hierarchy', status: 'proposed' }))
+  })
+
+  it('enforces the maintenance action contract and supports clearing unit links', () => {
+    const conceptId = store.createConcept('维护主题')
+    const taskId = store.createMaintenanceTask()
+    const invalid = store.applyTaskResult(taskId, JSON.stringify({
+      suggestions: [{ type: 'delete_concept', concept_id: conceptId, reason: '清理重复主题', unexpected: true }],
+      disclosure_requests: [],
+    }))
+    expect(invalid.ok).toBe(false)
+    expect(invalid.errors.join('; ')).toContain('unexpected 不是 delete_concept 允许的字段')
+
+    const sessionId = store.createConversationTask({ question: '生成一个可维护阅读片段' })
+    const conversationTask = store.tasks.find((task) => task.type === 'conversation' && task.inputRevision.startsWith(`${sessionId}:`))!
+    const answer = store.applyTaskResult(conversationTask.id, JSON.stringify({
+      answer: '片段正文',
+      units: [{ title: '待维护片段', summary: '片段摘要', concept_ids: [], concepts: [] }],
+      memberships: [],
+      disclosure_requests: [],
+    }))
+    expect(answer.ok, answer.errors.join('; ')).toBe(true)
+    const unit = store.units.find((item) => item.sessionId === sessionId)!
+    store.setUnitConcept(unit.id, conceptId, true)
+    expect(store.unitConcepts).toContainEqual(expect.objectContaining({ unitId: unit.id, conceptId }))
+
+    const relinkTaskId = store.createMaintenanceTask({ unitIds: [unit.id] })
+    const relinkTask = store.tasks.find((task) => task.id === relinkTaskId)!
+    const relinkResult = store.applyTaskResult(relinkTask.id, JSON.stringify({
+      suggestions: [{ type: 'unit_relink', unit_id: unit.id, concept_ids: [], reason: '该片段不再属于任何主题' }],
+      disclosure_requests: [],
+    }))
+    expect(relinkResult.ok, relinkResult.errors.join('; ')).toBe(true)
+    expect(store.applyMaintenanceSuggestion(relinkTaskId, 0).ok).toBe(true)
+    expect(store.unitConcepts).not.toContainEqual(expect.objectContaining({ unitId: unit.id, conceptId }))
+  })
+
+  it('supports explicit relation edits and Session/Message/Unit membership relinking', () => {
+    const parentId = store.createConcept('关系父主题')
+    const childId = store.createConcept('关系子主题')
+    const otherId = store.createConcept('关系关联主题')
+    store.createRelation(parentId, childId, 'hierarchy')
+    const relationId = store.relations.find((relation) => relation.parentConceptId === parentId && relation.childConceptId === childId)!.id
+    const sessionId = store.createConversationTask({ question: '准备维护消息归属' })
+    const question = store.messages.find((message) => message.sessionId === sessionId && message.role === 'user')!
+    const taskId = store.createMaintenanceTask({ conceptIds: [childId] })
+    const task = store.tasks.find((item) => item.id === taskId)!
+    const result = store.applyTaskResult(task.id, JSON.stringify({
+      suggestions: [
+        { type: 'update_relation', relation_id: relationId, source_concept_id: otherId, target_concept_id: childId, relation_type: 'related', reason: '维护确认的显式相关关系' },
+        { type: 'membership_relink', target_type: 'message', target_id: question.id, concept_ids: [childId, otherId], replace: true, reason: '消息明确提及两个主题' },
+      ],
+      disclosure_requests: [],
+    }))
+    expect(result.ok, result.errors.join('; ')).toBe(true)
+    expect(store.applyMaintenanceSuggestion(taskId, 0).ok).toBe(true)
+    expect(store.relations).toContainEqual(expect.objectContaining({ id: relationId, relationType: 'related', status: 'proposed' }))
+    expect(store.applyMaintenanceSuggestion(taskId, 1).ok).toBe(true)
+    expect(store.messageConcepts.filter((link) => link.messageId === question.id).map((link) => link.conceptId)).toEqual(expect.arrayContaining([childId, otherId]))
+
+    const removeTaskId = store.createMaintenanceTask()
+    const removeTask = store.tasks.find((item) => item.id === removeTaskId)!
+    expect(store.applyTaskResult(removeTask.id, JSON.stringify({ suggestions: [{ type: 'remove_relation', relation_id: relationId, reason: '移除过时关联' }], disclosure_requests: [] })).ok).toBe(true)
+    expect(store.applyMaintenanceSuggestion(removeTaskId, 0).ok).toBe(true)
+    expect(store.relations.some((relation) => relation.id === relationId)).toBe(false)
+  })
+
+  it('supports idempotent Concept delete and restore actions', () => {
+    const conceptId = store.createConcept('可恢复维护主题')
+    const taskId = store.createMaintenanceTask()
+    const task = store.tasks.find((item) => item.id === taskId)!
+    expect(store.applyTaskResult(task.id, JSON.stringify({
+      suggestions: [
+        { type: 'delete_concept', concept_id: conceptId, reason: '主题不再使用' },
+        { type: 'restore_concept', concept_id: conceptId, reason: '恢复主题' },
+      ],
+      disclosure_requests: [],
+    })).ok).toBe(true)
+    expect(store.applyMaintenanceSuggestion(taskId, 0).ok).toBe(true)
+    expect(store.concepts.find((concept) => concept.id === conceptId)?.status).toBe('archived')
+    expect(store.applyMaintenanceSuggestion(taskId, 1).ok).toBe(true)
+    expect(store.concepts.find((concept) => concept.id === conceptId)?.status).toBe('active')
+    const repeatTaskId = store.createMaintenanceTask()
+    const repeatTask = store.tasks.find((item) => item.id === repeatTaskId)!
+    expect(store.applyTaskResult(repeatTask.id, JSON.stringify({ suggestions: [{ type: 'delete_concept', concept_id: conceptId, reason: '重复归档应幂等' }], disclosure_requests: [] })).ok).toBe(true)
+    expect(store.applyMaintenanceSuggestion(repeatTaskId, 0).ok).toBe(true)
+    expect(store.applyMaintenanceSuggestion(repeatTaskId, 0)).toMatchObject({ ok: false, error: '这条建议已经应用' })
+  })
+
+  it('supports multi-parent hierarchy replacement, alias removal, and relation review actions', () => {
+    const parentA = store.createConcept('多父主题 A')
+    const parentB = store.createConcept('多父主题 B')
+    const child = store.createConcept('多父子主题')
+    const taskId = store.createMaintenanceTask()
+    const task = store.tasks.find((item) => item.id === taskId)!
+    expect(store.applyTaskResult(task.id, JSON.stringify({
+      suggestions: [
+        { type: 'alias', concept_id: child, alias: '多父别名', reason: '用户术语是该主题的同义词' },
+        { type: 'set_hierarchy_parents', concept_id: child, parent_concept_ids: [parentA, parentB], reason: '该主题同时属于两个明确上位领域' },
+      ],
+      disclosure_requests: [],
+    })).ok).toBe(true)
+    expect(store.applyMaintenanceSuggestion(taskId, 0).ok).toBe(true)
+    const alias = store.aliases.find((item) => item.conceptId === child && item.alias === '多父别名')!
+    expect(store.applyMaintenanceSuggestion(taskId, 1).ok).toBe(true)
+    expect(store.relations.filter((relation) => relation.relationType === 'hierarchy' && relation.childConceptId === child).map((relation) => relation.parentConceptId)).toEqual(expect.arrayContaining([parentA, parentB]))
+
+    const reviewTaskId = store.createMaintenanceTask()
+    const reviewTask = store.tasks.find((item) => item.id === reviewTaskId)!
+    const relation = store.relations.find((item) => item.childConceptId === child && item.parentConceptId === parentA)!
+    expect(store.applyTaskResult(reviewTask.id, JSON.stringify({
+      suggestions: [
+        { type: 'set_relation_status', relation_id: relation.id, status: 'confirmed', reason: '用户明确确认该父主题' },
+        { type: 'remove_alias', alias_id: alias.id, reason: '别名不再使用' },
+      ],
+      disclosure_requests: [],
+    })).ok).toBe(true)
+    expect(store.applyMaintenanceSuggestion(reviewTaskId, 0).ok).toBe(true)
+    expect(store.relations.find((item) => item.id === relation.id)?.status).toBe('confirmed')
+    expect(store.applyMaintenanceSuggestion(reviewTaskId, 1).ok).toBe(true)
+    expect(store.aliases.some((item) => item.id === alias.id)).toBe(false)
   })
 
   it('does not issue duplicate API requests when queue and detail start the same task', async () => {

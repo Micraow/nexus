@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { conversationMessageBranchNodeId, conversationTaskForNode, suggestedExplorationQuestion, unfinishedConversationTask } from '@/services/conversation'
+import { conversationMessageBranchNodeId, conversationMessagesForNode, conversationTaskForNode, suggestedExplorationQuestion, unfinishedConversationTask } from '@/services/conversation'
 import type { LLMTask, Message } from '@/types/domain'
 
 const task = (id: string, status: LLMTask['status'], createdAt: string): LLMTask => ({
@@ -63,5 +63,17 @@ describe('conversation branch task mapping', () => {
     const opening = message('opening', 'user', { mode: 'new', parentNodeId: 'root', answerMessageId: 'answer' })
     const answer = message('answer', 'assistant', { navNodeId: 'branch' })
     expect(conversationMessageBranchNodeId(opening, [opening, answer])).toBe('root')
+  })
+
+  it('renders one branch card with its triggering question and answer', () => {
+    const messages = [
+      message('opening', 'user', { mode: 'new', parentNodeId: 'root', taskId: 'task-a' }),
+      message('answer-a', 'assistant', { taskId: 'task-a', navNodeId: 'branch-a' }),
+      message('question-b', 'user', { mode: 'follow_up', parentNodeId: 'root', taskId: 'task-b', answerMessageId: 'answer-b' }),
+      message('answer-b', 'assistant', { taskId: 'task-b', navNodeId: 'branch-b' }),
+    ].map((item, index) => ({ ...item, orderInSession: index }))
+
+    expect(conversationMessagesForNode('branch-a', messages).map((item) => item.id).sort()).toEqual(['answer-a', 'opening'])
+    expect(conversationMessagesForNode('branch-b', messages).map((item) => item.id).sort()).toEqual(['answer-b', 'question-b'])
   })
 })

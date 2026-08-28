@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildGraph, graphViewFallbackIsCompatible, toggleExpandedConceptIds } from '@/services/graph'
+import { buildGraph, deriveConceptRelatedPairs, graphSnapshotIsProgressiveCompatible, graphViewFallbackIsCompatible, toggleExpandedConceptIds } from '@/services/graph'
 
 const now = '2026-08-24T00:00:00.000Z'
 
@@ -21,6 +21,21 @@ describe('derived graph', () => {
       { expandedConceptIds: ['root'], showMessages: true },
       { expandedConceptIds: ['root'], showMessages: false },
     )).toBe(false)
+  })
+
+  it('rejects a cached snapshot that leaks descendants into a roots-only view', () => {
+    const snapshot = buildGraph({
+      concepts: [
+        { id: 'root', name: '根', normalizedName: '根', notes: '', status: 'active', createdAt: now, updatedAt: now },
+        { id: 'child', name: '子', normalizedName: '子', notes: '', status: 'active', createdAt: now, updatedAt: now },
+      ],
+      units: [], messages: [], unitConcepts: [],
+      relations: [{ id: 'h', parentConceptId: 'root', childConceptId: 'child', relationType: 'hierarchy', source: 'manual', status: 'confirmed', createdAt: now, updatedAt: now }],
+      revision: 1,
+      expandedConceptIds: ['root'],
+    })
+    expect(graphSnapshotIsProgressiveCompatible(snapshot, { expandedConceptIds: [] })).toBe(false)
+    expect(graphSnapshotIsProgressiveCompatible(snapshot, { expandedConceptIds: ['root'] })).toBe(true)
   })
 
   it('builds concept co-occurrence with accumulated weight', () => {
@@ -185,8 +200,8 @@ describe('derived graph', () => {
       messages: [],
       unitConcepts: [],
       relations: [
-        { id: 'r1', parentConceptId: 'c1', childConceptId: 'c2', relationType: 'related', source: 'llm', status: 'confirmed', createdAt: now, updatedAt: now },
-        { id: 'r2', parentConceptId: 'c2', childConceptId: 'c1', relationType: 'related', source: 'llm', status: 'confirmed', createdAt: now, updatedAt: now },
+        { id: 'r1', parentConceptId: 'c1', childConceptId: 'c2', relationType: 'related', source: 'manual', status: 'confirmed', createdAt: now, updatedAt: now },
+        { id: 'r2', parentConceptId: 'c2', childConceptId: 'c1', relationType: 'related', source: 'manual', status: 'confirmed', createdAt: now, updatedAt: now },
       ],
       revision: 1,
     })
@@ -302,7 +317,7 @@ describe('derived graph', () => {
     ]
     const relations = [
       { id: 'h', parentConceptId: 'root', childConceptId: 'child', relationType: 'hierarchy' as const, source: 'llm' as const, status: 'proposed' as const, createdAt: now, updatedAt: now },
-      { id: 'r', parentConceptId: 'child', childConceptId: 'other', relationType: 'related' as const, source: 'llm' as const, status: 'proposed' as const, createdAt: now, updatedAt: now },
+      { id: 'r', parentConceptId: 'child', childConceptId: 'other', relationType: 'related' as const, source: 'maintenance' as const, status: 'proposed' as const, createdAt: now, updatedAt: now },
     ]
 
     const hidden = buildGraph({ concepts, units: [], messages: [], unitConcepts: [], relations, revision: 1 })
@@ -324,6 +339,27 @@ describe('derived graph', () => {
     expect(visible.nodes.filter((node) => node.type === 'concept').map((node) => node.refId)).toEqual(['root', 'child', 'other'])
     expect(visible.edges.filter((edge) => edge.type === 'hierarchy')).toHaveLength(1)
     expect(visible.edges.filter((edge) => edge.type === 'related')).toHaveLength(1)
+  })
+
+  it('ignores LLM-authored related edges and derives shared-evidence pairs', () => {
+    const concepts = [
+      { id: 'a', name: '甲', normalizedName: '甲', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+      { id: 'b', name: '乙', normalizedName: '乙', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+    ]
+    const sessions = [
+      { id: 's1', source: 'local' as const, platform: 'local', title: '一', createdAt: now, updatedAt: now, messageCount: 2, unitCount: 0, knowledgeKind: 'knowledge' as const, knowledgeRetainInGraph: true, revision: 1, localOnly: true },
+      { id: 's2', source: 'local' as const, platform: 'local', title: '二', createdAt: now, updatedAt: now, messageCount: 1, unitCount: 0, knowledgeKind: 'knowledge' as const, knowledgeRetainInGraph: true, revision: 1, localOnly: true },
+    ]
+    const messages = [
+      { id: 'm1', sessionId: 's1', unitId: null, role: 'user' as const, content: '甲乙', orderInSession: 0, metadata: { concept_ids: ['a', 'b'] } },
+      { id: 'm2', sessionId: 's1', unitId: null, role: 'assistant' as const, content: '甲乙', orderInSession: 1, metadata: { concept_ids: ['a', 'b'] } },
+      { id: 'm3', sessionId: 's2', unitId: null, role: 'user' as const, content: '甲乙', orderInSession: 0, metadata: { concept_ids: ['a', 'b'] } },
+    ]
+    const derived = deriveConceptRelatedPairs({ concepts, sessions, units: [], messages, unitConcepts: [], sessionConcepts: [], messageConcepts: [] })
+    expect(derived).toEqual([{ leftConceptId: 'a', rightConceptId: 'b', sessionCount: 2, messageCount: 3 }])
+    const snapshot = buildGraph({ concepts, sessions, units: [], messages, unitConcepts: [], sessionConcepts: [], messageConcepts: [], relations: [{ id: 'r', parentConceptId: 'a', childConceptId: 'b', relationType: 'related', source: 'llm', status: 'confirmed', createdAt: now, updatedAt: now }], revision: 1 })
+    expect(snapshot.edges.filter((edge) => edge.type === 'related')).toHaveLength(0)
+    expect(snapshot.edges.find((edge) => edge.type === 'co_occurrence')?.weight).toBe(2)
   })
 
   it('does not leak a proposed child when stale expansion state is present', () => {

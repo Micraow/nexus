@@ -102,7 +102,7 @@ Concept 之间有两种不同语义的关系：
 - `hierarchy`：父 Concept → 子 Concept；允许一个子 Concept 有多个父 Concept；
 - `related`：相关概念，是无向关系，不表达层级、父子顺序或根节点归属。
 
-只有 `hierarchy` 参与根节点、祖先路径、展开深度和父子布局约束；`related` 不能用来判断一个 Concept 是否为根，也不能把节点从根投影中排除。父子关系整体禁止形成环；LLM 提出的不确定关系可以先为 `proposed`，用户确认后变为 `confirmed`。
+只有 `hierarchy` 参与根节点、祖先路径、展开深度和父子布局约束；`related` 不能用来判断一个 Concept 是否为根，也不能把节点从根投影中排除。默认 related 由软件根据共享 Session/Message 事实派生；只有知识维护动作 API 可以显式维护持久化 related。父子关系整体禁止形成环；LLM 提出的 hierarchy 可以先为 `proposed`，用户确认后变为 `confirmed`。
 
 例如：
 
@@ -521,7 +521,7 @@ LLM 返回 Concept 名称、别名和建议关系。系统按以下顺序寻找�
 
 维护任务由用户手动触发，但维护范围始终是整个 active Concept 图谱及其层级关系；当前 Concept、Session 或选中的 KnowledgeUnit 仅作为附加关注范围。默认只发送全库 Concept 名称、别名、摘要、关系、关联单元标题/摘要和来源信息；用户明确选择后才附带原始消息。
 
-LLM 只返回建议变更：合并、别名、创建/编辑/移动/归档 Concept、解除 hierarchy、父子关系、相关关系、重新关联和标题修订。新主题优先挂到语义上最窄且有直接证据的父主题，只有缺少层级证据时才成为根；系统先展示影响数量与差异，用户逐条或批量确认后以可撤销事务应用。
+LLM 只返回建议变更：合并、别名、创建/编辑/软删除（归档）/恢复/移动 Concept、添加/删除/修改 hierarchy 或 related、解除 hierarchy、Session/Message/KnowledgeUnit 直接归属重绑和阅读片段标题/摘要修订。`delete_concept` 只改变 Concept 状态，不删除数据库行；`restore_concept` 只恢复 archived Concept。每条动作都要求明确目标 ID、reason 和参数，所有写入在独立快照事务中执行并可撤销。普通 Concept 提取和对话不返回 related，相关信号由共享 Session/Message 归属派生。
 
 ## 7. 功能模块
 
@@ -572,7 +572,7 @@ LLM 只返回建议变更：合并、别名、创建/编辑/移动/归档 Concep
 
 一次任务可以创建/复用多个 Concept，并为 Session、Message 和可选 KnowledgeUnit 分别返回 `concept_ids[]`。关联分别写入 SessionConcept、MessageConcept 和 UnitConcept；同一目标可以同时支撑多个主题。
 
-新 Concept 的名称、摘要和别名在同一结果中返回。`hierarchy` 只用于可证明的上位/下位关系并通过 DAG 校验；一般关联使用无向 `related`。明显关系可标记为 LLM 来源，无法确定的关系进入 `proposed`，不能为了让塔形更满而强行补父子边。
+新 Concept 的名称、摘要和别名在同一结果中返回。`hierarchy` 只用于可证明的上位/下位关系并通过 DAG 校验；普通对话不返回 `related`，一般关联由软件按共享 Session/Message 派生；无法确定的 hierarchy 进入 `proposed`，不能为了让塔形更满而强行补父子边。维护动作 API 可以显式编辑 related。
 
 新增 Concept 时，Prompt harness 要求优先检查当前目录和同批次候选中语义范围最窄的直接父主题；只有确无合适上位主题才允许暂作根，不能把多数候选并列为一级根。对话与提取结果中的关系统一按 `proposed` 落库，应用在写入前校验端点、去重并检测 hierarchy 环，不替换已有用户确认关系。
 
@@ -595,7 +595,7 @@ LLM 只返回建议变更：合并、别名、创建/编辑/移动/归档 Concep
 - ConceptRelation related：相关关系；
 - ManualGraphEdge：用户明确创建的额外边。
 
-默认只显示 active hierarchy 的根 Concept 和已确认关系。根是“没有未拒绝 hierarchy 父节点”的 Concept；`related` 边永远不参与根判断。`showProposed=false` 时 proposed hierarchy/related 不绘制，但未拒绝的 proposed hierarchy 仍参与结构父级判定，因此不会把待确认子主题错误提升为一级根；侧边栏可以切换 KnowledgeUnit、Message、父子边、共现边、相关/手动边、待确认关系和保留的探讨/流程会话。
+默认只显示 active hierarchy 的根 Concept 和已确认关系。根是“没有未拒绝 hierarchy 父节点”的 Concept；`related` 边永远不参与根判断。`showProposed=false` 时维护任务产生的 proposed hierarchy/related 不绘制，但未拒绝的 proposed hierarchy 仍参与结构父级判定，因此不会把待确认子主题错误提升为一级根；共享 Session/Message 产生的共现边仍按事实派生并按 Session 去重。侧边栏可以切换 KnowledgeUnit、Message、父子边、共现边、相关/手动边、待确认关系和保留的探讨/流程会话。
 
 层级展开不设固定深度：
 
@@ -606,7 +606,7 @@ LLM 只返回建议变更：合并、别名、创建/编辑/移动/归档 Concep
 
 折叠层级下仍保留数据密度：隐藏 Concept 通过 hierarchy 向上投影到每条父链上的第一个可见祖先。每个 Session 汇总其直接、消息级和 KnowledgeUnit 级归属，再按两个不同的原始 Concept 配对投影；同一 Session 对每一对可见代表 Concept 只贡献一次共现权重，多个单元、消息或隐藏叶节点落在同一对代表节点时不会重复计数，单个多父 Concept 也不会凭空制造根节点共现，不同 Session 才会累加。KnowledgeUnit 节点仅在全局开关打开时出现，Message 节点仅按消息开关或保留会话筛选出现；这些局部披露不改变 Concept 的层级可见性。
 
-`related` 是独立的无向边：可以在可见节点之间绘制，也可以随筛选隐藏，但从不触发祖先路径、子节点展开、根节点计算或 hierarchy 布局约束。待确认关系只有在 `showProposed=true` 时进入派生图谱。
+`related` 是独立的无向边：可以在可见节点之间绘制，也可以随筛选隐藏，但从不触发祖先路径、子节点展开、根节点计算或 hierarchy 布局约束。待确认关系只有在 `showProposed=true` 时进入派生图谱。知识维护 Prompt 使用与校验器共享的 `MAINTENANCE_ACTION_API` 工具目录，严格暴露 Concept 创建/编辑/归档/恢复/合并、别名增删、关系增删改与审核、多父 hierarchy 整体替换/解除、归属迁移和片段修订；每条动作必须有非空 `reason`，未知动作或字段拒绝，写入走可撤销事务。
 
 交互：
 
@@ -615,7 +615,7 @@ LLM 只返回建议变更：合并、别名、创建/编辑/移动/归档 Concep
 - 单击 KnowledgeUnit：打开详情面板；
 - Ctrl/Cmd 单击或框选：多选 KnowledgeUnit；
 - 右侧上下文面板：排序、移除和发起新对话；
-- 新对话工作区把持久化探索树放在回答内容右侧；小屏幕降为回答内容上方的单列导航，避免挤压消息阅读宽度；
+- 新对话工作区把持久化探索树放在回答内容右侧；圆点和细连接线是主要导航控件，标签只在悬停或键盘聚焦时显示；中心以前景显示当前分支问答卡片，祖先路径上的实体卡片以不可交互的叠放层保留，叠放层数与导航深度一致，不按时间线连续堆叠；卡片切换使用可中断的位移/淡入淡出动画，工作区保持浅色背景；小屏幕降为回答内容上方的单列导航，避免挤压消息阅读宽度；
 - 主题详情的“包含消息”提供一个顶部全屏入口，跨 Session 汇总消息并按页浏览，不在每条消息旁重复放置全屏按钮；
 - 拖拽只用于平移、缩放和调整布局，不用于隐式建边；
 - 创建父子/相关关系通过操作菜单或多选命令，并在确认面板中明确显示关系方向（`related` 不显示父子方向）；
@@ -647,7 +647,7 @@ LLM 只返回建议变更：合并、别名、创建/编辑/移动/归档 Concep
 
 ### M7 导航树
 
-每个 Session 永久保存一棵导航树。导入会话按原始 Message 顺序退化为链式浏览，不要求先生成 KnowledgeUnit；软件内追问从当前节点创建子节点，回到旧节点继续提问形成兄弟分支。已有 KnowledgeUnit 可继续作为节点的阅读定位内容；返回操作回到父探索节点。
+每个 Session 永久保存一棵导航树。导入会话按原始 Message 顺序退化为链式浏览，不要求先生成 KnowledgeUnit；软件内追问从当前节点创建子节点，回到旧节点继续提问形成兄弟分支。对话界面一次只展示当前节点对应的问答卡片，切换圆点只替换当前卡片，不把兄弟分支拼接成线性历史；祖先关系仅用于导航路径和背景叠放。已有 KnowledgeUnit 可继续作为节点的阅读定位内容；返回操作回到父探索节点。
 
 ### M8 搜索
 
@@ -708,9 +708,9 @@ LLM 返回建议而不是直接修改，包括：
 
 - 重复 Concept 合并候选；
 - 别名候选；
-- 新的父子或相关关系；
-- KnowledgeUnit 重新关联建议；
-- Concept 创建、编辑、移动、解除 hierarchy 和归档建议；这些动作均通过快照事务记录并可撤销。
+- hierarchy/related 关系的新增、按 `relation_id` 修改端点或类型、删除关系；
+- Session、Message、KnowledgeUnit 多主题直接归属重绑：`membership_relink` 的 `replace=true` 替换，`replace=false` 追加；旧 `unit_relink` 继续兼容；
+- Concept 创建、编辑、软删除/恢复、移动和解除 hierarchy 建议；这些动作均通过快照事务记录并可撤销。
 - 标题或摘要修订建议。
 
 界面显示每条建议的差异、影响的单元数量和来源。用户可以逐条或批量确认；确认、拒绝和撤销均记录在操作日志中。

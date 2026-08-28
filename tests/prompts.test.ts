@@ -10,7 +10,9 @@ import {
   buildSessionTriagePrompt,
   buildTitleSummaryPrompt,
   formatDisclosureContext,
+  formatMaintenanceActionApi,
   NEXUS_HARNESS_PROMPT,
+  MAINTENANCE_ACTION_API,
   parseDisclosureContext,
   PROGRESSIVE_DISCLOSURE_PROTOCOL,
   replaceDisclosureContext,
@@ -51,7 +53,8 @@ describe('conversation prompt', () => {
     expect(prompt).toContain('黄色建议不要创建为 Concept')
     expect(prompt).toContain('语义范围最窄的已有直接父主题')
     expect(prompt).toContain('只有确无合适上位主题才允许暂作根')
-    expect(prompt).toContain('"type":"hierarchy|related","status":"proposed"')
+    expect(prompt).toContain('relations 只表达 hierarchy')
+    expect(prompt).toContain('related 不由对话模型返回')
     expect(prompt).toContain('回答中实际出现的词组')
     expect(prompt).toContain('编号列表、项目符号和表格')
     expect(prompt).toContain('严禁使用“原文”“正文”“主题名称”等占位文字')
@@ -83,6 +86,22 @@ describe('maintenance prompt', () => {
     expect(prompt).toContain('根节点是例外')
     expect(prompt).toContain('create_concept')
     expect(prompt).toContain('remove_hierarchy')
+    expect(prompt).toContain('机器可读动作目录')
+    for (const action of MAINTENANCE_ACTION_API) expect(prompt).toContain(`"type": "${action.type}"`)
+  })
+
+  it('publishes strict MCP-shaped schemas for every maintenance action', () => {
+    const actions = new Map(MAINTENANCE_ACTION_API.map((action) => [action.type, action]))
+    expect(actions.get('set_hierarchy_parents')?.input_schema).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+      required: ['concept_id', 'parent_concept_ids', 'reason'],
+    })
+    expect(actions.get('set_hierarchy_parents')?.input_schema.properties.parent_concept_ids).toMatchObject({ type: 'array', items: { type: 'string' } })
+    expect(actions.get('remove_alias')?.input_schema.required).toContain('alias_id')
+    expect(actions.get('set_relation_status')?.input_schema.properties.status).toMatchObject({ enum: ['proposed', 'confirmed', 'rejected'] })
+    const serialized = JSON.parse(formatMaintenanceActionApi()) as Array<{ input_schema: { additionalProperties: boolean } }>
+    expect(serialized.every((action) => action.input_schema.additionalProperties === false)).toBe(true)
   })
 })
 

@@ -206,13 +206,25 @@ export type MaintenanceSuggestionType =
   | 'merge'
   | 'alias'
   | 'relation'
+  | 'add_relation'
+  | 'update_relation'
+  | 'delete_relation'
+  | 'remove_relation'
+  | 'set_relation_status'
+  | 'confirm_relation'
+  | 'reject_relation'
+  | 'remove_alias'
+  | 'membership_relink'
   | 'unit_relink'
   | 'unit_revision'
   | 'create_concept'
   | 'update_concept'
   | 'move_concept'
+  | 'set_hierarchy_parents'
   | 'remove_hierarchy'
   | 'archive_concept'
+  | 'delete_concept'
+  | 'restore_concept'
 
 export interface MaintenanceSuggestion {
   type: MaintenanceSuggestionType
@@ -220,16 +232,30 @@ export interface MaintenanceSuggestion {
   reason?: string
   concept_id?: string
   alias?: string
+  alias_id?: string
   /** Canonical relation endpoints. For related edges, the pair is undirected. */
+  relation_id?: string
   source_concept_id?: string
   target_concept_id?: string
   /** Legacy aliases accepted when applying older maintenance task results. */
   parent_concept_id?: string | null
+  /** Full multi-parent replacement used by set_hierarchy_parents. */
+  parent_concept_ids?: string[]
   child_concept_id?: string
   relation_type?: RelationType
+  /** Review state used by set_relation_status/confirm_relation/reject_relation. */
+  status?: RelationStatus
+  /** Replacement endpoint aliases accepted by the maintenance protocol. */
+  new_source_concept_id?: string
+  new_target_concept_id?: string
+  new_relation_type?: RelationType
   unit_id?: string
   /** Many-to-many replacement/addition set for a unit_relink suggestion. */
   concept_ids?: string[]
+  /** Replace or append direct Session/Message/Unit memberships. */
+  target_type?: ConceptMembershipTarget
+  target_id?: string
+  replace?: boolean
   title?: string
   summary?: string
   notes?: string
