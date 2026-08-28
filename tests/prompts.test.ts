@@ -58,6 +58,9 @@ describe('conversation prompt', () => {
     expect(prompt).toContain('回答中实际出现的词组')
     expect(prompt).toContain('编号列表、项目符号和表格')
     expect(prompt).toContain('严禁使用“原文”“正文”“主题名称”等占位文字')
+    expect(prompt).toContain('教材的章节大标题或小标题')
+    expect(prompt).toContain('多个具有独立知识含义的概念词，可以分别标记多个推荐词')
+    expect(prompt).toContain('思维导图一样表达清晰、可导航的直接上下位结构')
     expect(prompt).not.toContain(']]原文[[/nexus]]')
   })
 
