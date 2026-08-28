@@ -641,6 +641,7 @@ export function buildMaintenancePrompt(input: {
   concepts: Array<{ id: string; name: string; aliases: string[]; summary?: string; notes: string }>
   relations: Array<{ sourceId: string; targetId: string; type: string; status: string }>
   units: Array<{ id: string; title: string; summary: string; session: string; conceptIds: string[] }>
+  messages?: Array<{ id: string; sessionId: string; role: string; content: string }>
   includeMessages?: string
   disclosure?: DisclosureContext
   scope?: { conceptIds?: string[]; unitIds?: string[] }
@@ -712,6 +713,7 @@ ${actionApi}
 
 知识单元：
 ${JSON.stringify(input.units, null, 2)}
+${input.messages?.length ? `\n可选阅读片段来源消息（仅可用于 unit_create；消息 ID 必须原样引用，且只能选择同一 Session 的未归档消息）：\n${JSON.stringify(input.messages, null, 2)}` : ''}
 ${scopeText}
 ${input.includeMessages ? `\n补充原文：\n${input.includeMessages}` : ''}
 ${disclosureText}

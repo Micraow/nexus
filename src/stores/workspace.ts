@@ -1610,13 +1610,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         ? unitScope.filter((unit) => unitConcepts.value.some((link) => link.unitId === unit.id && requestedConceptIds.has(link.conceptId))).map((unit) => unit.id)
         : []
     const focusUnits = focusUnitIds.map((id) => unitScope.find((unit) => unit.id === id)).filter(Boolean) as KnowledgeUnit[]
-    if (!conceptScope.length && !unitScope.length) throw new Error('没有可供维护检查的知识主题或知识单元')
+    const activeMessages = messages.value.filter((message) => activeSessionIds.value.has(message.sessionId))
+    if (!conceptScope.length && !unitScope.length && !activeMessages.length) throw new Error('没有可供维护检查的知识主题、阅读片段或消息')
     const conceptIds = new Set(conceptScope.map((concept) => concept.id))
     const unitIds = new Set(unitScope.map((unit) => unit.id))
     const prompt = buildMaintenancePrompt({
       concepts: conceptScope.map((concept) => ({ id: concept.id, name: concept.name, aliases: aliases.value.filter((alias) => alias.conceptId === concept.id).map((alias) => alias.alias), summary: concept.summary ?? '', notes: concept.notes })),
       relations: relations.value.filter((relation) => conceptIds.has(relation.parentConceptId) && conceptIds.has(relation.childConceptId)).map((relation) => ({ sourceId: relation.parentConceptId, targetId: relation.childConceptId, type: relation.relationType, status: relation.status })),
       units: unitScope.map((unit) => ({ id: unit.id, title: unit.title ?? '', summary: unit.summary ?? '', session: sessions.value.find((session) => session.id === unit.sessionId)?.title ?? '', conceptIds: unitConcepts.value.filter((link) => link.unitId === unit.id).map((link) => link.conceptId) })),
+      messages: activeMessages.map((message) => ({ id: message.id, sessionId: message.sessionId, role: message.role, content: message.content.slice(0, 600) })),
       includeMessages: input.includeFullContent && focusUnits.length ? focusUnits.map((unit) => `## ${unit.id}\n${unitMessages(unit.id).map((message) => `${message.role}: ${message.content}`).join('\n')}`).join('\n\n') : undefined,
       // Keep the disclosure catalog graph-wide too. Focused full text is
       // included above, while root references must not hide unlinked topics.

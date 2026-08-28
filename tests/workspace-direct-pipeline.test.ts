@@ -423,6 +423,26 @@ describe('direct concept extraction import pipeline', () => {
     expect(parsed.reason).toBe('模型检查后未发现需要修改的地方。')
   })
 
+  it('lets graph maintenance create a reading unit from unassigned messages', () => {
+    const sessionId = store.createConversationTask({ question: '导入消息片段' })
+    const task = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
+    expect(store.applyTaskResult(task.id, JSON.stringify({ answer: '可复用的说明', units: [], memberships: [], disclosure_requests: [] })).ok).toBe(true)
+    const messages = store.messages.filter((message) => message.sessionId === sessionId)
+    expect(messages.every((message) => !message.unitId)).toBe(true)
+    const maintenanceId = store.createMaintenanceTask()
+    const maintenance = store.tasks.find((item) => item.id === maintenanceId)!
+    const result = store.applyTaskResult(maintenance.id, JSON.stringify({
+      reason: '两条消息构成连续解释，形成可复用片段',
+      suggestions: [{ type: 'unit_create', session_id: sessionId, message_ids: messages.map((message) => message.id), title: '连续解释', summary: '可复用的说明', reason: '消息内容连续且具备独立阅读价值', concept_ids: [] }],
+      disclosure_requests: [],
+    }))
+    expect(result.ok, result.errors.join('; ')).toBe(true)
+    expect(store.applyMaintenanceSuggestion(maintenanceId, 0).ok).toBe(true)
+    const unit = store.units.find((item) => item.sessionId === sessionId && item.title === '连续解释')
+    expect(unit).toBeTruthy()
+    expect(store.messages.filter((message) => message.unitId === unit?.id)).toHaveLength(messages.length)
+  })
+
   it('accepts conversation hierarchy suggestions and stores them as proposed edges', () => {
     const parentId = store.createConcept('网络基础')
     const sessionId = store.createConversationTask({ question: '解释一个更具体的网络主题' })
