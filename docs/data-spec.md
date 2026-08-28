@@ -320,7 +320,9 @@ Concept 提取结果必须包含 `concepts` 数组；全部复用目录中已有
 
 ### 4.3 维护建议
 
-维护任务只允许返回建议变更，不允许返回“直接执行 SQL”或不可追溯的自由文本命令。每条建议需要包含类型、目标 ID、影响范围、理由和可逆操作描述。
+维护任务扫描整个 active Concept 图谱；选中的主题、会话或知识单元只作为关注提示，不构成输入边界。任务只允许返回建议变更，不允许返回“直接执行 SQL”或不可追溯的自由文本命令。每条建议需要包含类型、目标 ID、影响范围、理由和可逆操作描述。除既有的 `merge`、`alias`、`relation`、`unit_relink`、`unit_revision` 外，维护结果可以提出 `create_concept`、`update_concept`、`move_concept`、`remove_hierarchy` 和 `archive_concept`；应用前必须验证端点、名称和 DAG 成环，所有写入走可撤销快照事务。
+
+`create_concept`/`move_concept` 的 `parent_concept_id` 表示直接父主题，`null` 仅在没有充分层级证据、确需提升为根时使用；新主题应优先挂到已有或同批次中最窄且有直接语义包含证据的父主题。`remove_hierarchy` 只删除指定父子引用，不删除 Concept；`archive_concept` 保留关系、归属和证据，可通过恢复操作撤销。维护产生的层级关系默认写入 `proposed`，等待用户确认。
 
 ### 4.4 Prompt Harness 与渐进式披露
 

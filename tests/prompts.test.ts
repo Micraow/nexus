@@ -3,6 +3,7 @@ import {
   buildConceptPrompt,
   buildConversationPrompt,
   buildHarnessPrompt,
+  buildMaintenancePrompt,
   buildOriginConceptPrompt,
   buildRepairPrompt,
   buildSegmentationPrompt,
@@ -51,6 +52,33 @@ describe('conversation prompt', () => {
     expect(prompt).toContain('回答中实际出现的词组')
     expect(prompt).toContain('严禁使用“原文”“正文”“主题名称”等占位文字')
     expect(prompt).not.toContain(']]原文[[/nexus]]')
+  })
+
+  it('makes hierarchy-first rules explicit for conversation concepts', () => {
+    const prompt = buildConversationPrompt({ question: '继续', context: '', topic: '网络' })
+    expect(prompt).toContain('根节点是例外')
+    expect(prompt).toContain('最窄且有直接证据的父主题')
+    expect(prompt).toContain('relations')
+  })
+})
+
+describe('maintenance prompt', () => {
+  it('describes a graph-wide scope and exposes root direct-child index', () => {
+    const prompt = buildMaintenancePrompt({
+      concepts: [
+        { id: 'root', name: '网络', aliases: [], summary: '网络', notes: '' },
+        { id: 'child', name: 'RoCE', aliases: [], summary: 'RDMA 网络', notes: '' },
+      ],
+      relations: [{ sourceId: 'root', targetId: 'child', type: 'hierarchy', status: 'confirmed' }],
+      units: [],
+      scope: { conceptIds: ['child'] },
+    })
+    expect(prompt).toContain('维护的是整个知识图谱')
+    expect(prompt).toContain('一级主题及直接子主题引用')
+    expect(prompt).toContain('"direct_children"')
+    expect(prompt).toContain('根节点是例外')
+    expect(prompt).toContain('create_concept')
+    expect(prompt).toContain('remove_hierarchy')
   })
 })
 

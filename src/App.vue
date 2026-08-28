@@ -856,10 +856,10 @@ function applyMaintenanceSuggestion(index: number): void {
 }
 
 function maintenanceSuggestionLabel(type: MaintenanceSuggestion['type']): string {
-  return ({ merge: '合并知识主题', alias: '添加别名', relation: '建立关系', unit_relink: '重新关联片段', unit_revision: '修订片段' } as Record<string, string>)[type] ?? '维护建议'
+  return ({ merge: '合并知识主题', alias: '添加别名', relation: '建立关系', create_concept: '创建知识主题', update_concept: '编辑知识主题', move_concept: '移动知识主题', remove_hierarchy: '解除父子关系', archive_concept: '归档知识主题', unit_relink: '重新关联片段', unit_revision: '修订片段' } as Record<string, string>)[type] ?? '维护建议'
 }
 
-function conceptName(conceptId?: string): string {
+function conceptName(conceptId?: string | null): string {
   return conceptId ? store.concepts.find((concept) => concept.id === conceptId)?.name ?? '未知知识主题' : '未指定'
 }
 
@@ -885,6 +885,11 @@ function maintenanceSuggestionSummary(suggestion: MaintenanceSuggestion): string
     const targetId = suggestion.target_concept_id ?? suggestion.child_concept_id
     return `${conceptName(sourceId)} ${suggestion.relation_type === 'hierarchy' ? '→' : '↔'} ${conceptName(targetId)}`
   }
+  if (suggestion.type === 'create_concept') return `${suggestion.name || '新知识主题'}${suggestion.parent_concept_id ? ` → ${conceptName(suggestion.parent_concept_id)}` : ' · 根主题'}`
+  if (suggestion.type === 'update_concept') return `${conceptName(suggestion.concept_id)} · ${suggestion.name || suggestion.summary || '更新主题信息'}`
+  if (suggestion.type === 'move_concept') return `${conceptName(suggestion.concept_id)} → ${suggestion.parent_concept_id ? conceptName(suggestion.parent_concept_id) : '根主题'}`
+  if (suggestion.type === 'remove_hierarchy') return `${conceptName(suggestion.parent_concept_id)} → ${conceptName(suggestion.child_concept_id)}`
+  if (suggestion.type === 'archive_concept') return conceptName(suggestion.concept_id)
   if (suggestion.type === 'unit_relink') return `${store.units.find((unit) => unit.id === suggestion.unit_id)?.title || '未命名阅读片段'} → ${conceptName(suggestion.concept_id)}`
   return `${store.units.find((unit) => unit.id === suggestion.unit_id)?.title || '未命名阅读片段'} · ${suggestion.title || suggestion.summary || '修订标题或摘要'}`
 }

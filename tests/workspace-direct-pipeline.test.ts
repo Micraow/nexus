@@ -251,6 +251,60 @@ describe('direct concept extraction import pipeline', () => {
     expect(() => store.createFollowUpTask({ sessionId, parentNodeId: root.id, question: '重复追问' })).toThrow('待完成')
   })
 
+  it('creates graph-wide maintenance prompts even when a focus scope is supplied', () => {
+    const rootId = store.createConcept('全库根主题')
+    const otherId = store.createConcept('未选中的主题')
+    store.createRelation(rootId, otherId, 'hierarchy')
+    const taskId = store.createMaintenanceTask({ conceptIds: [otherId] })
+    const task = store.tasks.find((item) => item.id === taskId)!
+    expect(task.scopeLabel).toContain('全库知识图谱')
+    expect(task.prompt).toContain(rootId)
+    expect(task.prompt).toContain(otherId)
+    expect(task.prompt).toContain('一级主题及直接子主题引用')
+    expect(task.prompt).toContain('用户附加关注范围')
+  })
+
+  it('accepts conversation hierarchy suggestions and stores them as proposed edges', () => {
+    const parentId = store.createConcept('网络基础')
+    const sessionId = store.createConversationTask({ question: '解释一个更具体的网络主题' })
+    const task = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
+    const question = store.messages.find((message) => message.sessionId === sessionId && message.role === 'user')!
+    const answerMessageId = String(question.metadata?.answerMessageId)
+    const result = store.applyTaskResult(task.id, JSON.stringify({
+      answer: '这是一个更具体的主题。',
+      concepts: [{ client_ref: 'new:1', name: '具体网络主题', summary: '网络基础下的具体主题。', aliases: [] }],
+      memberships: [{ target_type: 'message', target_id: answerMessageId, concept_ids: ['new:1'] }],
+      relations: [{ source: parentId, target: 'new:1', type: 'hierarchy' }],
+      units: [],
+      disclosure_requests: [],
+    }))
+
+    expect(result.ok, result.errors.join('; ')).toBe(true)
+    const child = store.concepts.find((concept) => concept.name === '具体网络主题')!
+    expect(store.relations).toContainEqual(expect.objectContaining({
+      parentConceptId: parentId,
+      childConceptId: child.id,
+      relationType: 'hierarchy',
+      status: 'proposed',
+    }))
+  })
+
+  it('applies graph maintenance Concept creation with a proposed parent edge', () => {
+    const parentId = store.createConcept('维护父主题')
+    const taskId = store.createMaintenanceTask()
+    const task = store.tasks.find((item) => item.id === taskId)!
+    const result = store.applyTaskResult(task.id, JSON.stringify({
+      suggestions: [{ type: 'create_concept', name: '维护子主题', summary: '更具体的知识主题', parent_concept_id: parentId, reason: '语义范围更窄' }],
+      disclosure_requests: [],
+    }))
+
+    expect(result.ok, result.errors.join('; ')).toBe(true)
+    const applied = store.applyMaintenanceSuggestion(taskId, 0)
+    expect(applied.ok, applied.error).toBe(true)
+    const child = store.concepts.find((concept) => concept.name === '维护子主题')!
+    expect(store.relations).toContainEqual(expect.objectContaining({ parentConceptId: parentId, childConceptId: child.id, relationType: 'hierarchy', status: 'proposed' }))
+  })
+
   it('does not issue duplicate API requests when queue and detail start the same task', async () => {
     let resolveFetch: ((response: Response) => void) | undefined
     const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { resolveFetch = resolve }))
