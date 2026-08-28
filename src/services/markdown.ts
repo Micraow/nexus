@@ -132,21 +132,42 @@ function markerLabel(name: string, label: string): string {
  * the rendered output; unknown suggested names remain non-interactive.
  */
 function linkifyMarkedConcepts(raw: string, matcher: ConceptMatcher | null): InlineToken[] {
-  const pattern = /\[\[nexus:(existing|suggested):([^\]]+)\]\]([\s\S]*?)\[\[\/nexus\]\]/gi
+  const openingPattern = /\[\[nexus:(existing|suggested):([^\]]+)\]\]/gi
+  const closingPattern = /\[\[\/nexus\]\]/gi
   const tokens: InlineToken[] = []
   let cursor = 0
-  let match: RegExpExecArray | null
-  while ((match = pattern.exec(raw))) {
-    if (match.index > cursor) tokens.push(...linkifyConcepts(raw.slice(cursor, match.index), matcher))
-    const kind = match[1].toLowerCase() as 'existing' | 'suggested'
-    // Older prompts used literal placeholders such as “原文” for the body.
-    // Keep those responses readable by displaying the marker's topic name.
-    const label = markerLabel(match[2].trim(), match[3] ?? '')
-    const id = matcher?.ids.get(match[2].trim()) ?? matcher?.ids.get(label.trim()) ?? ''
-    tokens.push({ type: 'mention', value: conceptMentionHtml(label, id, kind, match[2].trim()) })
-    cursor = match.index + match[0].length
+  const pushPlain = (value: string): void => {
+    // A stray closing delimiter is presentation syntax, not answer content.
+    tokens.push(...linkifyConcepts(value.replace(/\[\[\/nexus\]\]/gi, ''), matcher))
   }
-  if (cursor < raw.length) tokens.push(...linkifyConcepts(raw.slice(cursor), matcher))
+  for (;;) {
+    openingPattern.lastIndex = cursor
+    const opening = openingPattern.exec(raw)
+    if (!opening) break
+    if (opening.index > cursor) pushPlain(raw.slice(cursor, opening.index))
+    const kind = opening[1].toLowerCase() as 'existing' | 'suggested'
+    const name = opening[2].trim()
+    const bodyStart = openingPattern.lastIndex
+
+    // A malformed opener must not consume a later, valid marker. Treat it as
+    // a standalone topic mention so the remainder of the answer remains
+    // ordinary Markdown and known topics can still be linkified.
+    openingPattern.lastIndex = bodyStart
+    const nextOpening = openingPattern.exec(raw)
+    closingPattern.lastIndex = bodyStart
+    const closing = closingPattern.exec(raw)
+    if (closing && (!nextOpening || closing.index < nextOpening.index)) {
+      const label = markerLabel(name, raw.slice(bodyStart, closing.index))
+      const id = matcher?.ids.get(name) ?? matcher?.ids.get(label.trim()) ?? ''
+      tokens.push({ type: 'mention', value: conceptMentionHtml(label, id, kind, name) })
+      cursor = closingPattern.lastIndex
+    } else {
+      const id = matcher?.ids.get(name) ?? ''
+      tokens.push({ type: 'mention', value: conceptMentionHtml(name, id, kind, name) })
+      cursor = bodyStart
+    }
+  }
+  if (cursor < raw.length) pushPlain(raw.slice(cursor))
   return tokens
 }
 

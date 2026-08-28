@@ -108,6 +108,37 @@ describe('renderMarkdown', () => {
     expect(html).not.toContain('onerror="')
   })
 
+  it('does not let an unclosed marker swallow a later suggested marker', () => {
+    const html = renderMarkdown('[[nexus:existing:无损以太网与 PFC/ECN/DCQCN]] 所描述的 PFC/ECN 框架。继续了解 [[nexus:suggested:HPCC 高精度拥塞控制]]HPCC 高精度拥塞控制[[/nexus]]。', {
+      concepts: [{ id: 'lossless', name: '无损以太网与 PFC/ECN/DCQCN' }],
+    })
+    expect(html).not.toContain('[[nexus:')
+    expect(html).toContain('md-concept-existing')
+    expect(html).toContain('md-concept-suggested')
+    expect(html).toContain('>HPCC 高精度拥塞控制</span>')
+    expect(html.indexOf('</span> 所描述的 PFC/ECN 框架。继续了解 <span class="md-concept md-concept-suggested"')).toBeGreaterThan(-1)
+  })
+
+  it('renders empty marker bodies using the topic name', () => {
+    const html = renderMarkdown('建议 [[nexus:suggested:HPCC 高精度拥塞控制]][[/nexus]]。')
+    expect(html).toContain('md-concept-suggested')
+    expect(html).toContain('>HPCC 高精度拥塞控制</span>')
+    expect(html).not.toContain('>原文</span>')
+  })
+
+  it('keeps topic markers and known mentions inside list items', () => {
+    const html = renderMarkdown('- [[nexus:suggested:HPCC]]HPCC[[/nexus]] 与 RDMA\n- 继续讨论 ECN。', {
+      concepts: [
+        { id: 'rdma', name: 'RDMA' },
+        { id: 'ecn', name: 'ECN' },
+      ],
+    })
+    expect(html).toContain('<ul><li>')
+    expect(html).toContain('md-concept-suggested')
+    expect(html).toContain('data-concept-id="rdma"')
+    expect(html).toContain('data-concept-id="ecn"')
+  })
+
   it('does not linkify concept names inside inline code', () => {
     const html = renderMarkdown('保持 `RDMA` 原样', { concepts: [{ id: 'c1', name: 'RDMA' }] })
     expect(html).toContain('<code>RDMA</code>')
