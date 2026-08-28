@@ -152,6 +152,8 @@ function edgeOnPath(edge: PositionedEdge): boolean {
         role="treeitem"
         tabindex="0"
         :aria-label="nodeLabel(item.node)"
+        :aria-level="item.node.depth + 1"
+        :aria-selected="item.node.id === selectedNodeId"
         :aria-current="item.node.id === selectedNodeId ? 'true' : undefined"
         :data-node-id="item.node.id"
         :data-x="item.x"
