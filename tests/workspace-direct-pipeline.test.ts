@@ -37,14 +37,39 @@ describe('direct concept extraction import pipeline', () => {
     vi.unstubAllGlobals()
   })
 
-  it('creates triage and origin tasks without segmentation or KnowledgeUnits', () => {
+  it('creates triage first and defers origin tasks until the session is classified as knowledge', () => {
     const report = store.importJsonText(JSON.stringify(payload()))
     const created = store.tasks.filter((task) => report.taskIds.includes(task.id))
 
-    expect(created.map((task) => task.type).sort()).toEqual(['origin_concepts', 'session_triage'])
+    expect(created.map((task) => task.type).sort()).toEqual(['session_triage'])
     expect(created.some((task) => task.type === 'segmentation')).toBe(false)
     expect(store.units).toHaveLength(0)
-    expect(created.find((task) => task.type === 'origin_concepts')?.prompt).toContain('禁止返回 unit membership')
+
+    const triage = created[0]
+    const result = store.applyTaskResult(triage.id, JSON.stringify({
+      kind: 'knowledge',
+      confidence: 0.95,
+      reason: '包含可沉淀的技术知识。',
+      retain_in_graph: true,
+    }))
+    expect(result.ok, result.errors.join('; ')).toBe(true)
+    const originTasks = store.tasks.filter((task) => task.type === 'origin_concepts' && task.inputRevision.startsWith(`${report.importedSessionIds[0]}:`))
+    expect(originTasks).toHaveLength(1)
+    expect(originTasks[0].prompt).toContain('禁止返回 unit membership')
+  })
+
+  it('does not create origin tasks for imported sessions classified as non-knowledge', () => {
+    const report = store.importJsonText(JSON.stringify(payload()))
+    const triage = store.tasks.find((task) => report.taskIds.includes(task.id) && task.type === 'session_triage')!
+    const result = store.applyTaskResult(triage.id, JSON.stringify({
+      kind: 'discussion',
+      confidence: 0.9,
+      reason: '这是缺少可复用结论的讨论。',
+      retain_in_graph: false,
+    }))
+
+    expect(result.ok, result.errors.join('; ')).toBe(true)
+    expect(store.tasks.some((task) => task.type === 'origin_concepts' && task.inputRevision.startsWith(`${report.importedSessionIds[0]}:`))).toBe(false)
   })
 
   it('keeps imported root-card messages in context when the session is continued', () => {
@@ -66,7 +91,10 @@ describe('direct concept extraction import pipeline', () => {
   it('uses chunk message IDs as targets and keeps chunk concepts out of session/unit links', () => {
     store.updateConfig({ llm: { ...store.config.llm, tokenBudget: 1000 } })
     const report = store.importJsonText(JSON.stringify(payload(8)))
-    const originTasks = store.tasks.filter((task) => report.taskIds.includes(task.id) && task.type === 'origin_concepts')
+    const triage = store.tasks.find((task) => report.taskIds.includes(task.id) && task.type === 'session_triage')!
+    const triageResult = store.applyTaskResult(triage.id, JSON.stringify({ kind: 'knowledge', confidence: 1, reason: '知识密集型会话。', retain_in_graph: true }))
+    expect(triageResult.ok, triageResult.errors.join('; ')).toBe(true)
+    const originTasks = store.tasks.filter((task) => task.type === 'origin_concepts' && task.inputRevision.startsWith(`${report.importedSessionIds[0]}:`))
     expect(originTasks.length).toBeGreaterThan(1)
 
     const task = originTasks.find((item) => item.inputRevision.includes(':chunk:'))!
@@ -117,7 +145,7 @@ describe('direct concept extraction import pipeline', () => {
       unassigned_message_indices: [],
     }))
 
-    expect(report.taskIds).toHaveLength(2)
+    expect(report.taskIds).toHaveLength(1)
     expect(result.ok).toBe(false)
     expect(store.units).toHaveLength(0)
     store.retryTask(taskId)

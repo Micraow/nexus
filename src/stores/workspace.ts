@@ -843,6 +843,30 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     return id
   }
 
+  function createOriginConceptTasks(session: Session, sessionMessages: Message[]): string[] {
+    const chunks = splitMessageChunks(sessionMessages, config.value.llm.tokenBudget)
+    return chunks.map((chunk, chunkIndex) => {
+      const chunkSuffix = chunks.length > 1 ? `:chunk:${chunk.start}:${chunk.end}:${chunks.length}` : ''
+      return createTask({
+        type: 'origin_concepts',
+        mode: config.value.llm.mode ?? 'prompt_paste',
+        providerId: config.value.llm.defaultProvider,
+        model: null,
+        promptVersion: PROMPT_VERSION,
+        inputRevision: `${session.id}:${session.revision}${chunkSuffix}`,
+        prompt: buildOriginConceptPrompt(
+          session,
+          chunk.messages,
+          promptDisclosureContext(),
+          chunks.length > 1 ? { index: chunkIndex + 1, total: chunks.length } : undefined,
+          config.value.llm.conceptLimit,
+        ),
+        status: 'pending',
+        scopeLabel: chunks.length > 1 ? `${session.title} · 起始知识主题 ${chunkIndex + 1}/${chunks.length}` : `${session.title} · 起始知识主题`,
+      })
+    })
+  }
+
   function exportKnowledgeBase(): string {
     const payload = {
       export_version: 1 as const,
@@ -970,7 +994,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, NULL, NULL, ?, 0, ?)', [rootId, sessionId, conversation.title?.trim() || '起始对话', now])
         const session = sessionFromRow(db.query<Row>('SELECT * FROM sessions WHERE id = ?', [sessionId])[0])
         const importedMessages = db.query<Row>('SELECT * FROM messages WHERE session_id = ? ORDER BY order_in_session', [sessionId]).map(messageFromRow)
-        const chunks = splitMessageChunks(importedMessages, config.value.llm.tokenBudget)
         const triageTaskId = createTask({
           type: 'session_triage',
           mode: config.value.llm.mode ?? 'prompt_paste',
@@ -983,27 +1006,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           scopeLabel: `${session.title} · 会话分类`,
         })
         report.taskIds.push(triageTaskId)
-        chunks.forEach((chunk, chunkIndex) => {
-          const chunkSuffix = chunks.length > 1 ? `:chunk:${chunk.start}:${chunk.end}:${chunks.length}` : ''
-          const taskId = createTask({
-            type: 'origin_concepts',
-            mode: config.value.llm.mode ?? 'prompt_paste',
-            providerId: config.value.llm.defaultProvider,
-            model: null,
-            promptVersion: PROMPT_VERSION,
-            inputRevision: `${session.id}:${session.revision}${chunkSuffix}`,
-            prompt: buildOriginConceptPrompt(
-              session,
-              chunk.messages,
-              promptDisclosureContext(),
-              chunks.length > 1 ? { index: chunkIndex + 1, total: chunks.length } : undefined,
-              config.value.llm.conceptLimit,
-            ),
-            status: 'pending',
-            scopeLabel: chunks.length > 1 ? `${session.title} · 起始知识主题 ${chunkIndex + 1}/${chunks.length}` : `${session.title} · 起始知识主题`,
-          })
-          report.taskIds.push(taskId)
-        })
         report.importedSessionIds.push(sessionId)
       })
     })
@@ -2259,6 +2261,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         const now = isoNow()
         db.run('UPDATE sessions SET knowledge_kind = ?, knowledge_confidence = ?, knowledge_judgment = ?, knowledge_retain_in_graph = ?, updated_at = ? WHERE id = ?', [kind, confidence, String(reason).trim(), retainInGraph ? 1 : 0, now, targetId])
         db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = ?, validation_errors = NULL, error_message = NULL, updated_at = ? WHERE id = ?', ['success', responseText, JSON.stringify(data), now, taskId])
+        if (kind === 'knowledge') {
+          const existingOriginTask = db.query<Row>('SELECT id FROM llm_tasks WHERE type = ? AND input_revision LIKE ? LIMIT 1', ['origin_concepts', `${targetId}:%`])[0]
+          if (!existingOriginTask && triageSession) {
+            createOriginConceptTasks(triageSession, messages.value.filter((message) => message.sessionId === targetId).sort((left, right) => left.orderInSession - right.orderInSession))
+          }
+        } else {
+          db.run("UPDATE llm_tasks SET status = 'cancelled', error_message = ?, updated_at = ? WHERE type = 'origin_concepts' AND input_revision LIKE ? AND status IN ('pending', 'running', 'needs_review')", ['会话分类不是 knowledge，已跳过起始知识主题提取。', now, `${targetId}:%`])
+        }
       })
       return { ok: true, errors: [] }
     }
@@ -2852,18 +2862,25 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       while (!queuePaused.value) {
         const pending = tasks.value.filter((task) => task.status === 'pending' && task.mode === 'api')
         if (!pending.length) break
+        const triagePending = pending.filter((task) => task.type === 'session_triage')
+        const runnable = (triagePending.length ? triagePending : pending).filter((task) => {
+          if (task.type !== 'origin_concepts') return true
+          const sessionId = ownerSessionId(task)
+          return sessions.value.find((session) => session.id === sessionId)?.knowledgeKind === 'knowledge'
+        })
         // Keep at most one in-flight task per owning session so dependent
         // tasks of the same session always run in order.
         const batch: LLMTask[] = []
         const busySessions = new Set<string>()
         const limit = normalizeApiConcurrency(config.value.llm.concurrency)
-        for (const task of pending) {
+        for (const task of runnable) {
           const owner = ownerSessionId(task)
           if (owner && busySessions.has(owner)) continue
           if (owner) busySessions.add(owner)
           batch.push(task)
           if (batch.length >= limit) break
         }
+        if (!batch.length) break
         queueActiveCount.value += batch.length
         await Promise.all(batch.map((task) => executeTask(task.id)))
         queueActiveCount.value = Math.max(0, queueActiveCount.value - batch.length)
