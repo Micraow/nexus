@@ -63,4 +63,38 @@ describe('ConceptTree hierarchy', () => {
     expect(target.querySelectorAll(':scope > .concept-tree > .concept-tree-branch')).toHaveLength(1)
     expect(target.querySelector('.concept-tree-children .concept-tree-label')?.textContent).toBe('子主题')
   })
+
+  it('does not treat related edges as hierarchy or hide a root', async () => {
+    const target = mountTree([{
+      id: 'related',
+      parentConceptId: 'root',
+      childConceptId: 'child',
+      relationType: 'related',
+      source: 'manual',
+      status: 'confirmed',
+      createdAt: now,
+      updatedAt: now,
+    }])
+    await nextTick()
+
+    expect([...target.querySelectorAll('.concept-tree-label')].map((label) => label.textContent)).toEqual(['根主题', '子主题'])
+    expect(target.querySelectorAll('.concept-tree-children')).toHaveLength(0)
+  })
+
+  it('does not expose a review badge for a related proposal', async () => {
+    const target = mountTree([{
+      id: 'related-proposal',
+      parentConceptId: 'root',
+      childConceptId: 'child',
+      relationType: 'related',
+      source: 'maintenance',
+      status: 'proposed',
+      createdAt: now,
+      updatedAt: now,
+    }])
+    await nextTick()
+
+    expect(target.querySelectorAll('.concept-tree-proposed')).toHaveLength(0)
+    expect(target.querySelectorAll('.concept-tree-label')).toHaveLength(2)
+  })
 })
