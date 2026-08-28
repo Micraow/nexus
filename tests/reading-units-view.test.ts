@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { createApp, nextTick } from 'vue'
 import ReadingUnitsView from '@/components/ReadingUnitsView.vue'
-import type { KnowledgeUnit, Message, Session } from '@/types/domain'
+import type { Concept, KnowledgeUnit, Message, Session } from '@/types/domain'
 
 const session = (id: string, title: string): Session => ({
   id,
@@ -37,7 +37,18 @@ const units = [
   unit('older', 's1', '## 旧片段', '2026-08-26T00:00:00.000Z', '2026-08-27T00:00:00.000Z'),
   unit('newer', 's1', '[[nexus:suggested:新片段]]新片段[[/nexus]]', '2026-08-28T00:00:00.000Z', '2026-08-29T00:00:00.000Z'),
 ]
-const messages: Message[] = [{ id: 'm1', sessionId: 's1', unitId: 'newer', role: 'assistant', content: '**完整回答**', orderInSession: 1 }]
+const concepts: Concept[] = [
+  { id: 'active-topic', name: '真实主题', normalizedName: '真实主题', notes: '', status: 'active', createdAt: '2026-08-27T00:00:00.000Z', updatedAt: '2026-08-28T00:00:00.000Z' },
+  { id: 'archived-topic', name: '幽灵主题', normalizedName: '幽灵主题', notes: '', status: 'archived', createdAt: '2026-08-27T00:00:00.000Z', updatedAt: '2026-08-28T00:00:00.000Z' },
+]
+const messages: Message[] = [{
+  id: 'm1',
+  sessionId: 's1',
+  unitId: 'newer',
+  role: 'assistant',
+  content: '**完整回答**：[[nexus:existing:真实主题]]真实主题[[/nexus]]、[[nexus:existing:幽灵主题]]幽灵主题[[/nexus]]，以及 [[nexus:suggested:建议主题]]建议主题[[/nexus]]。',
+  orderInSession: 1,
+}]
 const mounted: Array<ReturnType<typeof createApp>> = []
 
 afterEach(() => {
@@ -45,10 +56,10 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 
-async function mountView(selectedUnitId: string | null = 'newer'): Promise<HTMLElement> {
+async function mountView(selectedUnitId: string | null = 'newer', onSelectConcept?: (conceptId: string) => void): Promise<HTMLElement> {
   const target = document.createElement('div')
   document.body.appendChild(target)
-  const app = createApp(ReadingUnitsView, { units, sessions, messages, selectedUnitId })
+  const app = createApp(ReadingUnitsView, { units, sessions, messages, concepts, selectedUnitId, onSelectConcept })
   mounted.push(app)
   app.mount(target)
   await nextTick()
@@ -63,6 +74,26 @@ describe('ReadingUnitsView', () => {
     expect(target.querySelector('.unit-detail .md-body')?.innerHTML).toContain('<strong>完整回答</strong>')
     expect(target.textContent).not.toContain('[[nexus:')
     expect(target.textContent).not.toContain('**新片段摘要**')
+  })
+
+  it('only links active local Concepts and emits their id when activated', async () => {
+    const selectedConceptIds: string[] = []
+    const target = await mountView('newer', (conceptId) => selectedConceptIds.push(conceptId))
+    const detail = target.querySelector<HTMLElement>('.unit-detail .md-body')!
+    const confirmed = detail.querySelector<HTMLElement>('[data-concept-id="active-topic"]')!
+
+    expect(confirmed.classList.contains('md-concept-existing')).toBe(true)
+    expect(detail.querySelector('[data-concept-id="archived-topic"]')).toBeNull()
+    expect(detail.textContent).toContain('幽灵主题')
+    expect(detail.querySelector('[data-suggested-concept="建议主题"]')?.classList.contains('md-concept-suggested')).toBe(true)
+
+    confirmed.click()
+    expect(selectedConceptIds).toEqual(['active-topic'])
+    confirmed.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    expect(selectedConceptIds).toEqual(['active-topic', 'active-topic'])
+
+    detail.querySelector<HTMLElement>('[data-suggested-concept="建议主题"]')!.click()
+    expect(selectedConceptIds).toEqual(['active-topic', 'active-topic'])
   })
 
   it('supports chronological and title sorting plus cleaned-text search', async () => {
