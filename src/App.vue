@@ -1074,6 +1074,17 @@ function confirmConceptRelation(relationId: string, status: 'confirmed' | 'rejec
   }
 }
 
+function confirmAllProposedRelations(): void {
+  const pending = [...proposedConceptRelations.value]
+  if (!pending.length) return
+  try {
+    pending.forEach((relation) => store.confirmRelation(relation.id, 'confirmed'))
+    notify(`已确认 ${pending.length} 条关系`)
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '批量确认关系失败')
+  }
+}
+
 function deleteConceptRelation(relationId: string): void {
   if (!window.confirm('删除这条知识主题关系？')) return
   try {
@@ -2023,6 +2034,7 @@ onBeforeUnmount(() => {
         <div v-if="activeView === 'tasks'" class="queue-toolbar">
           <span class="queue-status">{{ store.queueRunning ? (store.queuePaused ? '队列已暂停' : `正在处理 ${store.queueActiveCount} 个任务`) : '队列空闲' }}</span>
           <span v-if="store.config.llm.mode === 'api' && !store.queueRunning && queueEstimate.count" class="queue-estimate">待处理 {{ queueEstimate.count }} 个任务 · 覆盖 {{ queueEstimate.sessions }} 个会话 · 预计调用约 {{ queueEstimate.count }} 次</span>
+          <button v-if="proposedConceptRelations.length" class="button secondary-button confirm-all-relations" type="button" @click="confirmAllProposedRelations"><Check :size="14" />确认全部 {{ proposedConceptRelations.length }} 条关系</button>
           <button v-if="store.config.llm.mode === 'api' && !store.queueRunning" class="button primary-button" @click="startTaskQueue"><Send :size="14" />开始 API 队列</button>
           <button v-if="store.queueRunning && !store.queuePaused" class="button secondary-button" @click="pauseTaskQueue"><Pause :size="14" />暂停</button>
           <button v-if="store.queueRunning && store.queuePaused" class="button secondary-button" @click="resumeTaskQueue"><Play :size="14" />继续</button>
