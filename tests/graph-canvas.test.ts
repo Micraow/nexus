@@ -343,6 +343,24 @@ describe('GraphCanvas progressive disclosure', () => {
     expect(target.querySelector('[data-ref-id="root"]')?.getAttribute('transform')).toBe('translate(120,140)')
   })
 
+  it('fits the graph into the clickable area left of a floating detail panel', async () => {
+    const { target, state } = mountReactiveSnapshot({
+      revision: 101,
+      nodes: [{ id: 'concept:root', type: 'concept', refId: 'root', label: '根', degree: 0, unitCount: 0, x: 120, y: 140, fixed: true }],
+      edges: [],
+    }, { viewportRightInset: 0, reducedMotion: true })
+    await nextTick()
+    const initialTransform = target.querySelector('.graph-viewport')?.getAttribute('transform') ?? ''
+
+    state.viewportRightInset = 200
+    await nextTick()
+    const insetTransform = target.querySelector('.graph-viewport')?.getAttribute('transform') ?? ''
+    const translateX = (value: string): number => Number(value.match(/translate\(([-\d.]+)/)?.[1])
+
+    expect(insetTransform).not.toBe(initialTransform)
+    expect(translateX(insetTransform)).toBeLessThan(translateX(initialTransform))
+  })
+
   it('keeps existing nodes stable through progressive expand and recursive collapse', async () => {
     const snapshot: GraphSnapshot = {
       revision: 11,

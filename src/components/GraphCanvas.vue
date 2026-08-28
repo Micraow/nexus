@@ -50,6 +50,8 @@ const props = withDefaults(
     expandableConceptIds?: string[]
     /** Opt in to fitting after a topology update; disabled by default. */
     fitOnTopologyChange?: boolean
+    /** Screen space occupied by a floating panel on the right. */
+    viewportRightInset?: number
   }>(),
   {
     selectedUnitIds: () => [],
@@ -64,6 +66,7 @@ const props = withDefaults(
     showProposed: false,
     expandableConceptIds: () => [],
     fitOnTopologyChange: false,
+    viewportRightInset: 0,
   },
 )
 
@@ -103,6 +106,7 @@ let dragMoved = false
 let suppressClickNodeId: string | null = null
 let suppressClickTimer: number | null = null
 let lastNodeSignature = ''
+let lastViewportRightInset = 0
 // Coordinates are retained for future re-expansion, while this set tracks
 // only the nodes that were visible in the previous render. The distinction
 // lets a collapsed branch fade back in when it is opened again.
@@ -370,6 +374,10 @@ function render(): void {
   }
   const element = svg.value
   const { width, height } = canvasSize()
+  const viewportRightInset = Math.max(0, Math.min(props.viewportRightInset, width - 240))
+  const layoutWidth = width - viewportRightInset
+  const viewportInsetChanged = viewportRightInset !== lastViewportRightInset
+  lastViewportRightInset = viewportRightInset
   renderedSize = { width, height }
   const root = d3.select(element)
   const snapshot = visibleSnapshot()
@@ -464,8 +472,8 @@ function render(): void {
   rootConcepts.forEach((node, rootIndex) => {
     if (seedPositions.has(node.id)) return
     const angle = rootCount > 1 ? (rootIndex / rootCount) * Math.PI * 2 - Math.PI / 2 : 0
-    const radius = rootCount > 1 ? Math.min(width, height) * 0.24 : 0
-    seedPositions.set(node.id, { x: width / 2 + Math.cos(angle) * radius, y: height / 2 + Math.sin(angle) * radius })
+    const radius = rootCount > 1 ? Math.min(layoutWidth, height) * 0.24 : 0
+    seedPositions.set(node.id, { x: layoutWidth / 2 + Math.cos(angle) * radius, y: height / 2 + Math.sin(angle) * radius })
   })
   const snapshotNodeById = new Map(snapshot.nodes.map((node) => [node.id, node]))
   const ensureSeedPosition = (nodeId: string, visiting = new Set<string>()): { x: number; y: number } | undefined => {
@@ -488,7 +496,7 @@ function render(): void {
     const angle = angleOffset + (ringIndex / Math.max(ringSize, 1)) * Math.PI * 2
     const baseRadius = node.type === 'concept' ? 112 : node.type === 'unit' ? 62 : 44
     const radius = baseRadius + ring * (node.type === 'concept' ? 58 : 34)
-    const position = { x: (anchor?.x ?? width / 2) + Math.cos(angle) * radius, y: (anchor?.y ?? height / 2) + Math.sin(angle) * radius }
+    const position = { x: (anchor?.x ?? layoutWidth / 2) + Math.cos(angle) * radius, y: (anchor?.y ?? height / 2) + Math.sin(angle) * radius }
     seedPositions.set(nodeId, position)
     return position
   }
@@ -507,7 +515,7 @@ function render(): void {
       const anchor = anchorId ? seedPositions.get(anchorId) : undefined
       const angle = (stableHash(node.id) % 6283) / 1000 + index * 0.17
       const radius = node.type === 'concept' ? 76 : node.type === 'unit' ? 48 : 34
-      copy.x = (anchor?.x ?? width / 2) + Math.cos(angle) * radius
+      copy.x = (anchor?.x ?? layoutWidth / 2) + Math.cos(angle) * radius
       copy.y = (anchor?.y ?? height / 2) + Math.sin(angle) * radius
     }
     if (copy.x != null && copy.y != null) seedPositions.set(node.id, { x: copy.x, y: copy.y })
@@ -518,7 +526,7 @@ function render(): void {
   if (!nodes.length && !userMovedViewport) hasFittedData = false
   lastNodeSignature = nodeSignature
   lastVisibleNodeIds = new Set(nodes.map((node) => node.id))
-  const shouldFitView = !userMovedViewport && nodes.length > 0 && (!hasFittedData || (topologyChanged && props.fitOnTopologyChange))
+  const shouldFitView = nodes.length > 0 && (viewportInsetChanged || (!userMovedViewport && (!hasFittedData || (topologyChanged && props.fitOnTopologyChange))))
   nodes.forEach((node) => {
     if (node.fixed && node.x != null && node.y != null) {
       node.fx = node.x
@@ -806,15 +814,15 @@ function render(): void {
   const chargeForce = d3
     .forceManyBody<GraphNode & d3.SimulationNodeDatum>()
     .strength((node) => (node as GraphNode).type === 'concept' ? -340 : -145)
-    .distanceMax(Math.max(width, height) * (largeGraph ? 1.1 : 1.6))
+    .distanceMax(Math.max(layoutWidth, height) * (largeGraph ? 1.1 : 1.6))
   simulation = d3
     .forceSimulation(nodes)
     // Explicit springs + repulsion + collision keep related nodes connected
     // without letting dense sessions collapse into one pile.
     .force('link', linkForce)
     .force('charge', chargeForce)
-    .force('center', d3.forceCenter(width / 2, height / 2))
-    .force('x', d3.forceX<GraphNode & d3.SimulationNodeDatum>(width / 2).strength(largeGraph ? 0.014 : 0.02))
+    .force('center', d3.forceCenter(layoutWidth / 2, height / 2))
+    .force('x', d3.forceX<GraphNode & d3.SimulationNodeDatum>(layoutWidth / 2).strength(largeGraph ? 0.014 : 0.02))
     .force('y', d3.forceY<GraphNode & d3.SimulationNodeDatum>(height / 2).strength(largeGraph ? 0.014 : 0.02))
     .force('collide', d3.forceCollide<GraphNode & d3.SimulationNodeDatum>().radius((node) => (node as GraphNode).type === 'concept' ? 50 : 28).strength(0.86).iterations(largeGraph ? 1 : 2))
     .velocityDecay(largeGraph ? 0.68 : 0.64)
@@ -825,7 +833,7 @@ function render(): void {
         .attr('y1', (edge) => edgePoints(edge).y1)
         .attr('x2', (edge) => edgePoints(edge).x2)
         .attr('y2', (edge) => edgePoints(edge).y2)
-      nodeSelection.attr('transform', (node) => `translate(${node.x ?? width / 2},${node.y ?? height / 2})`)
+      nodeSelection.attr('transform', (node) => `translate(${node.x ?? layoutWidth / 2},${node.y ?? height / 2})`)
   }
   // Paint the seeded positions before the first physics tick. Topology
   // updates can otherwise leave one rendered frame with an empty canvas.
@@ -862,7 +870,7 @@ function render(): void {
   if (shouldFitView) {
     let fitted = false
     const fitView = (freeze = false): void => {
-      if (fitted || userMovedViewport || generation !== renderGeneration) return
+      if (fitted || (!viewportInsetChanged && userMovedViewport) || generation !== renderGeneration) return
       const xs = nodes.map((node) => node.x).filter((value) => value != null) as number[]
       const ys = nodes.map((node) => node.y).filter((value) => value != null) as number[]
       if (!xs.length) return
@@ -871,8 +879,8 @@ function render(): void {
       const minY = Math.min(...ys) - 60
       const maxY = Math.max(...ys) + 60
       // 大量消息节点的布局跨度可能超过画布，允许缩到 zoom 下限后再由用户放大查看。
-      const scale = Math.min(1.4, Math.max(0.1, Math.min(width / Math.max(maxX - minX, 1), height / Math.max(maxY - minY, 1))))
-      const transform = d3.zoomIdentity.translate(width / 2, height / 2).scale(scale).translate(-(minX + maxX) / 2, -(minY + maxY) / 2)
+      const scale = Math.min(1.4, Math.max(0.1, Math.min(layoutWidth / Math.max(maxX - minX, 1), height / Math.max(maxY - minY, 1))))
+      const transform = d3.zoomIdentity.translate(layoutWidth / 2, height / 2).scale(scale).translate(-(minX + maxX) / 2, -(minY + maxY) / 2)
       fitted = true
       hasFittedData = true
       if (freeze) simulation?.stop()
@@ -881,7 +889,7 @@ function render(): void {
       fittingProgrammatically = false
     }
     simulation.on('end.fit', fitView)
-    if (props.reducedMotion) {
+    if (props.reducedMotion || viewportInsetChanged) {
       fitView()
     } else {
       // 极大图谱或后台节流时 end 事件可能很晚，给用户一个确定的最终视口。
@@ -964,7 +972,7 @@ watch(() => {
   const expanded = (props.expandedConceptIds ?? []).slice().sort().join(',')
   const expandable = (props.expandableConceptIds ?? []).slice().sort().join(',')
   const hierarchy = props.hierarchyRelations?.map((relation) => `${relation.parentConceptId}:${relation.childConceptId}:${relation.relationType}:${relation.status ?? ''}`).sort().join('|') ?? 'unspecified'
-  return `${props.snapshot.revision}|${nodes}|${edges}|${expanded}|${expandable}|${hierarchy}|${props.showProposed ? 1 : 0}|${props.reducedMotion ? 1 : 0}|${props.maxVisibleLevel ?? ''}|${props.expandedConceptDepth ?? ''}|${props.visibleNodeDepth ?? ''}|${typeof props.visibleNodeLevels === 'number' ? props.visibleNodeLevels : mapSignature(props.visibleNodeLevels)}|${mapSignature(props.conceptHierarchy)}|${mapSignature(props.conceptChildren)}|${props.fitOnTopologyChange ? 1 : 0}`
+  return `${props.snapshot.revision}|${nodes}|${edges}|${expanded}|${expandable}|${hierarchy}|${props.showProposed ? 1 : 0}|${props.reducedMotion ? 1 : 0}|${props.maxVisibleLevel ?? ''}|${props.expandedConceptDepth ?? ''}|${props.visibleNodeDepth ?? ''}|${typeof props.visibleNodeLevels === 'number' ? props.visibleNodeLevels : mapSignature(props.visibleNodeLevels)}|${mapSignature(props.conceptHierarchy)}|${mapSignature(props.conceptChildren)}|${props.fitOnTopologyChange ? 1 : 0}|${props.viewportRightInset}`
 }, render)
 
 watch(() => props.selectedUnitIds.slice(), (selectedIds) => {
