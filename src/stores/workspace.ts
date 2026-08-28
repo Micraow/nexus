@@ -2621,10 +2621,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           const message = payload.choices?.[0]?.message
           let content = typeof message?.content === 'string' ? message.content : ''
           if (task.type === 'maintenance' && message?.tool_calls?.length) {
-            const suggestions = message.tool_calls
-              .map((call) => maintenanceToolCallSuggestion(call.function?.name ?? '', call.function?.arguments ?? ''))
-              .filter((suggestion): suggestion is Record<string, unknown> => Boolean(suggestion))
-            if (!suggestions.length) throw new Error('Provider 返回了无法识别的维护工具调用')
+            const suggestions = message.tool_calls.map((call) => maintenanceToolCallSuggestion(call.function?.name ?? '', call.function?.arguments ?? ''))
+            if (suggestions.some((suggestion) => !suggestion)) throw new Error('Provider 返回了无法识别的维护工具调用')
             content = JSON.stringify({ suggestions, disclosure_requests: [] })
           }
           if (!content) throw new Error('Provider 没有返回可用内容')
