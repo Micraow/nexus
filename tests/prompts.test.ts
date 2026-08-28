@@ -122,6 +122,23 @@ describe('maintenance prompt', () => {
     for (const action of MAINTENANCE_ACTION_API) expect(prompt).toContain(`"type": "${action.type}"`)
   })
 
+  it('requires graph maintenance to audit and repair missing reading units', () => {
+    const prompt = buildMaintenancePrompt({
+      concepts: [{ id: 'root', name: '网络', aliases: [], summary: '网络', notes: '' }],
+      relations: [],
+      units: [],
+      messages: [
+        { id: 'm1', sessionId: 's1', role: 'user', content: '什么是拥塞控制？' },
+        { id: 'm2', sessionId: 's1', role: 'assistant', content: '拥塞控制用于避免网络过载。' },
+      ],
+    })
+    expect(prompt).toContain('阅读片段覆盖审计（必查项）')
+    expect(prompt).toContain('当前有 2 条未归属消息，分布在 1 个 Session')
+    expect(prompt).toContain('必须提出 unit_create')
+    expect(prompt).toContain('不能因为图谱层级无需修改而忽略')
+    expect(prompt).toContain('分别交代 Concept/关系检查与阅读片段覆盖检查')
+  })
+
   it('publishes strict MCP-shaped schemas for every maintenance action', () => {
     const actions = new Map(MAINTENANCE_ACTION_API.map((action) => [action.type, action]))
     expect(actions.get('set_hierarchy_parents')?.input_schema).toMatchObject({
@@ -130,6 +147,7 @@ describe('maintenance prompt', () => {
       required: ['concept_id', 'parent_concept_ids', 'reason'],
     })
     expect(actions.get('set_hierarchy_parents')?.input_schema.properties.parent_concept_ids).toMatchObject({ type: 'array', items: { type: 'string' } })
+    expect(actions.get('unit_relink')?.input_schema.properties.replace).toMatchObject({ type: 'boolean' })
     expect(actions.get('create_concept')?.input_schema.properties.parent_concept_id).toMatchObject({ type: ['string', 'null'] })
     expect(actions.get('update_concept')?.inputSchema.properties.summary).toMatchObject({ type: 'string', maxLength: 120 })
     expect(actions.get('unit_revision')?.inputSchema.properties.title).toMatchObject({ type: 'string', maxLength: 30 })

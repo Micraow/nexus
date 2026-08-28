@@ -1708,7 +1708,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
             ? actual === null || typeof actual === 'string'
             : expected === 'string[]'
               ? Array.isArray(actual) && actual.every((item) => typeof item === 'string')
-              : expected === 'boolean'
+              : expected === 'boolean' || expected === 'boolean?'
                 ? typeof actual === 'boolean'
                 : Array.isArray(expected) ? typeof actual === 'string' && expected.includes(actual as never)
                   : false

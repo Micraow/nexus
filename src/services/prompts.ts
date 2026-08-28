@@ -94,7 +94,7 @@ export interface MaintenanceMcpToolsListResult {
 function maintenanceSchemaProperty(value: MaintenanceProperty, fieldName?: string): MaintenanceSchemaProperty {
   if (Array.isArray(value)) return { type: 'string', enum: value }
   if (value === 'string[]') return { type: 'array', items: { type: 'string', minLength: 1 }, uniqueItems: true }
-  if (value === 'boolean') return { type: 'boolean' }
+  if (value === 'boolean' || value === 'boolean?') return { type: 'boolean' }
   if (value === 'string|null' || value === 'string|null?') return { type: ['string', 'null'] }
   const schema: MaintenanceSchemaProperty = { type: 'string', minLength: 1 }
   if (value === 'string' || value === 'string?') schema.maxLength = fieldName === 'title' ? 30 : 120
@@ -675,6 +675,12 @@ export function buildMaintenancePrompt(input: {
         return child ? { id: child.id, name: child.name, summary: child.summary ?? '' } : { id }
       }),
     }))
+  const unassignedMessages = input.messages ?? []
+  const unassignedSessionCounts = new Map<string, number>()
+  unassignedMessages.forEach((message) => unassignedSessionCounts.set(message.sessionId, (unassignedSessionCounts.get(message.sessionId) ?? 0) + 1))
+  const unitCoverageAudit = unassignedMessages.length
+    ? `当前有 ${unassignedMessages.length} 条未归属消息，分布在 ${unassignedSessionCounts.size} 个 Session。阅读片段覆盖与 Concept 层级同等重要，必须逐个 Session 检查这些消息：只要同一 Session 中存在能构成独立、语义连续阅读内容的一组消息，就必须提出 unit_create，不能因为图谱层级无需修改而忽略。只有确实无法形成有意义片段时才可不创建；此时总体 reason 必须说明检查了多少条消息、涉及哪些 Session，以及不能分组的具体原因。`
+    : '当前没有未归属消息；阅读片段覆盖无需补建，但仍应检查已有片段的标题、摘要和主题归属。'
   const actionApi = `
 动作 API（MCP tools/list 兼容）：机器目录中的每个 name 都是一个可调用工具，调用参数就是 inputSchema 允许的 JSON 对象。API 模式可以直接返回这些工具调用；Prompt 粘贴模式必须把同样的参数放进 suggestions。每条调用或 suggestion 只能执行一个原子动作，应用前会校验并以可撤销事务写入；不要返回 SQL、脚本或未列出的字段。
 - create_concept：创建主题。参数 name、summary、notes、aliases（可为空字符串数组）、parent_concept_id（无父级用 null）或 parent_concept_ids（可为空数组，二者不能同时出现）；父级关系会以 proposed 等待确认。
@@ -704,6 +710,9 @@ ${formatMaintenanceActionApi()}
 
 本次任务维护的是整个知识图谱：下面列出全部 active Concept 及其 hierarchy 关系。用户附加关注范围只能帮助你优先检查，不能把其他主题当作不存在，也不能只返回局部层级。hierarchy 必须保持无环 DAG，related 永远不能代替 hierarchy。
 
+阅读片段覆盖审计（必查项）：
+${unitCoverageAudit}
+
 候选知识主题（id 必须原样引用）：
 ${JSON.stringify(input.concepts, null, 2)}
 
@@ -728,7 +737,7 @@ ${disclosureAvailability(input.disclosure)}
 
 只返回 JSON：
 {"reason":"对当前图谱是否需要变更的简短总体判断；即使没有建议也必须填写","suggestions":[{"type":"create_concept|update_concept|delete_concept|restore_concept|merge|alias|remove_alias|add_relation|relation|update_relation|delete_relation|remove_relation|set_relation_status|confirm_relation|reject_relation|move_concept|set_hierarchy_parents|remove_hierarchy|membership_relink|unit_relink|unit_create|unit_revision|archive_concept","reason":"可审计的事实依据","...":"严格使用动作 API 定义的参数"}],"disclosure_requests":[]}
-reason 是给用户看的总体说明：概括你检查了什么、为何提出或没有提出变更。只返回确有依据的建议；关系建议最多 2 条，不能仅凭共同出现推断 related；新主题优先匹配已有或同批次中最窄且有直接证据的父主题，只有没有足够层级证据时才允许成为根；不要把所有主题平铺为一级。没有建议时仍返回非空 reason，明确说明“未发现需要修改的地方”或指出缺少证据。不要输出解释文字。
+reason 是给用户看的总体说明：概括你检查了什么、为何提出或没有提出变更，并分别交代 Concept/关系检查与阅读片段覆盖检查。只返回确有依据的建议；关系建议最多 2 条，不能仅凭共同出现推断 related；新主题优先匹配已有或同批次中最窄且有直接证据的父主题，只有没有足够层级证据时才允许成为根；不要把所有主题平铺为一级。存在未归属消息时，不能只写“层级无需修改”就返回空建议，必须先按 Session 判断是否应执行 unit_create；没有建议时仍返回非空 reason，明确说明“未发现需要修改的地方”或指出缺少证据。不要输出解释文字。
 
 动作响应的规范格式：{"reason":"总体判断（必填）","suggestions":[{"type":"create_concept|update_concept|delete_concept|restore_concept|merge|alias|remove_alias|add_relation|relation|update_relation|delete_relation|remove_relation|set_relation_status|confirm_relation|reject_relation|move_concept|set_hierarchy_parents|remove_hierarchy|membership_relink|unit_relink|unit_create|unit_revision|archive_concept","reason":"可审计的事实依据","...":"严格使用上方动作 API 定义的参数"}],"disclosure_requests":[]}。每条 suggestion 的 type 与参数必须能一一映射到机器目录中的 nexus_maintenance_* 工具；没有变更时返回空 suggestions，但 reason 仍不可省略。`)
 }
