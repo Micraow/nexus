@@ -115,4 +115,18 @@ describe('GraphCanvas progressive disclosure', () => {
     await nextTick()
     expect([...expanded.querySelectorAll<SVGGElement>('.graph-node')].map((node) => node.dataset.refId).sort()).toEqual(['child', 'root'])
   })
+
+  it('uses hierarchy edges when a leaked child is incorrectly marked as depth zero', async () => {
+    const snapshot: GraphSnapshot = {
+      revision: 3,
+      nodes: [
+        { id: 'concept:root', type: 'concept', refId: 'root', label: '根主题', degree: 1, unitCount: 0, depth: 0, parentIds: [], hasChildren: true },
+        { id: 'concept:child', type: 'concept', refId: 'child', label: '子主题', degree: 1, unitCount: 0, depth: 0, parentIds: [], hasChildren: false },
+      ],
+      edges: [{ id: 'edge:h', source: 'concept:root', target: 'concept:child', type: 'hierarchy', weight: 1, status: 'confirmed' }],
+    }
+    const collapsed = mountSnapshot(snapshot)
+    await nextTick()
+    expect([...collapsed.querySelectorAll<SVGGElement>('.graph-node')].map((node) => node.dataset.refId)).toEqual(['root'])
+  })
 })

@@ -28,6 +28,23 @@ function mountTree(relations: ConceptRelation[], expandedIds: string[] = []): HT
 }
 
 describe('ConceptTree hierarchy', () => {
+  it('starts collapsed with only hierarchy roots visible', async () => {
+    const target = mountTree([{
+      id: 'confirmed',
+      parentConceptId: 'root',
+      childConceptId: 'child',
+      relationType: 'hierarchy',
+      source: 'manual',
+      status: 'confirmed',
+      createdAt: now,
+      updatedAt: now,
+    }])
+    await nextTick()
+
+    expect([...target.querySelectorAll('.concept-tree-label')].map((label) => label.textContent)).toEqual(['根主题'])
+    expect(target.querySelectorAll('.concept-tree-children')).toHaveLength(0)
+  })
+
   it('keeps proposed hierarchy in the tree while exposing its review badge', async () => {
     const target = mountTree([{
       id: 'proposal',

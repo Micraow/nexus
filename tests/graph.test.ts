@@ -38,6 +38,23 @@ describe('derived graph', () => {
     expect(graphSnapshotIsProgressiveCompatible(snapshot, { expandedConceptIds: ['root'] })).toBe(true)
   })
 
+  it('rejects a descendant mislabeled as depth zero when hierarchy topology exposes its parent', () => {
+    const snapshot = buildGraph({
+      concepts: [
+        { id: 'root', name: '根', normalizedName: '根', notes: '', status: 'active', createdAt: now, updatedAt: now },
+        { id: 'child', name: '子', normalizedName: '子', notes: '', status: 'active', createdAt: now, updatedAt: now },
+      ],
+      units: [], messages: [], unitConcepts: [],
+      relations: [{ id: 'h', parentConceptId: 'root', childConceptId: 'child', relationType: 'hierarchy', source: 'manual', status: 'confirmed', createdAt: now, updatedAt: now }],
+      revision: 1,
+      expandedConceptIds: ['root'],
+    })
+    const child = snapshot.nodes.find((node) => node.refId === 'child')!
+    child.depth = 0
+    child.parentIds = []
+    expect(graphSnapshotIsProgressiveCompatible(snapshot, { expandedConceptIds: [] })).toBe(false)
+  })
+
   it('builds concept co-occurrence with accumulated weight', () => {
     const snapshot = buildGraph({
       concepts: [

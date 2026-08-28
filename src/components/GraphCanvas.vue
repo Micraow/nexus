@@ -190,9 +190,11 @@ function visibleSnapshot(): { nodes: GraphNode[]; edges: GraphEdge[] } {
     || edges.some((edge) => edge.type === 'hierarchy')
   if (hasHierarchyMetadata && conceptNodes.length) {
     const roots = conceptNodes
-      .filter((node) => node.depth != null
-        ? node.depth === 0
-        : !(parentsByConcept.get(node.refId)?.size))
+      // Hierarchy topology wins over a potentially stale depth field. A
+      // leaked descendant marked as depth zero must still stay hidden until
+      // its parent is explicitly expanded.
+      .filter((node) => !(parentsByConcept.get(node.refId)?.size)
+        && (node.depth == null || node.depth === 0))
       .map((node) => node.refId)
     // Keep malformed/cyclic snapshots inspectable, matching the service
     // resolver's cycle fallback instead of rendering an empty graph.

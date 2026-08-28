@@ -258,12 +258,33 @@ export function graphSnapshotIsProgressiveCompatible(snapshot: GraphSnapshot, op
   if (conceptNodes.some((node) => node.depth == null || !Number.isFinite(node.depth))) return false
 
   const byId = new Map(conceptNodes.map((node) => [node.refId, node]))
-  const visible = new Set(conceptNodes.filter((node) => node.depth === 0).map((node) => node.refId))
+  // Do not trust `depth === 0` on its own: a stale/legacy Worker can mark a
+  // descendant as depth zero while still returning a hierarchy edge. Rebuild
+  // parent evidence from both node metadata and hierarchy edges first.
+  const parentIdsByConcept = new Map<string, Set<string>>()
+  conceptNodes.forEach((node) => {
+    const parentIds = (node.parentIds ?? (node.parentId ? [node.parentId] : []))
+      .map((id) => id.startsWith('concept:') ? id.slice('concept:'.length) : id)
+      .filter((id) => id !== node.refId && id.length > 0)
+    if (parentIds.length) parentIdsByConcept.set(node.refId, new Set(parentIds))
+  })
+  snapshot.edges.forEach((edge) => {
+    if (edge.type !== 'hierarchy') return
+    const source = edge.source.startsWith('concept:') ? edge.source.slice('concept:'.length) : edge.source
+    const target = edge.target.startsWith('concept:') ? edge.target.slice('concept:'.length) : edge.target
+    if (!byId.has(source) || !byId.has(target) || source === target) return
+    const parents = parentIdsByConcept.get(target) ?? new Set<string>()
+    parents.add(source)
+    parentIdsByConcept.set(target, parents)
+  })
+  const visible = new Set(conceptNodes
+    .filter((node) => !(parentIdsByConcept.get(node.refId)?.size)
+      && (node.depth == null || node.depth === 0))
+    .map((node) => node.refId))
   const expanded = new Set(options.expandedConceptIds ?? [])
   // An explicitly expanded descendant implicitly opens the ancestor path in
   // the real resolver, so mirror that normalization before checking a
   // candidate snapshot.
-  const parentIdsByConcept = new Map(conceptNodes.map((node) => [node.refId, node.parentIds ?? []]))
   ;[...(options.expandedConceptIds ?? [])].forEach((id) => {
     const pending = [id]
     const seen = new Set<string>()
@@ -271,7 +292,7 @@ export function graphSnapshotIsProgressiveCompatible(snapshot: GraphSnapshot, op
       const current = pending[index]
       if (seen.has(current)) continue
       seen.add(current)
-      ;(parentIdsByConcept.get(current) ?? []).forEach((parentId) => {
+      ;(parentIdsByConcept.get(current) ?? new Set<string>()).forEach((parentId) => {
         expanded.add(parentId)
         pending.push(parentId)
       })
@@ -284,7 +305,10 @@ export function graphSnapshotIsProgressiveCompatible(snapshot: GraphSnapshot, op
     const parent = byId.get(parentId)
     if (!parent) continue
     conceptNodes.forEach((child) => {
-      if (child.depth !== (parent.depth ?? 0) + 1 || !child.parentIds?.includes(parentId) || visible.has(child.refId)) return
+      if (!parentIdsByConcept.get(child.refId)?.has(parentId) || visible.has(child.refId)) return
+      // A legacy snapshot may omit depth; topology is authoritative for
+      // disclosure and still reveals only direct children of an expanded
+      // parent.
       visible.add(child.refId)
       queue.push(child.refId)
     })
