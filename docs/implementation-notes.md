@@ -47,7 +47,7 @@
 - API 模式采用 OpenAI-compatible Chat Completions：请求地址为 `baseUrl + /chat/completions`，只发送当前任务 Prompt，温度固定为 `0`。`local_only` Session 在 API 执行前被拒绝；Prompt 粘贴模式不发网络请求。
 - 对话 Prompt 携带当前 Session 标题/摘要、导航路径和最近历史消息，并允许返回 `session_title`（≤60 字）和 `session_summary`（≤120 字）。完成结果在同一事务中写入 assistant Message、Session 滚动摘要、可选 KnowledgeUnit 和导航节点；仅应用内占位标题会自动改名，导入或用户编辑过的标题保持不变。旧结果省略字段时保留已有值，空摘要以回答文本作有限回退。
 - 所有任务 Prompt 先经过 `ensureHarnessPrompt`，固定拼接版本化的 `NEXUS_HARNESS_PROMPT` 与 `PROGRESSIVE_DISCLOSURE_PROTOCOL`；动态任务规格放在固定前缀之后。Harness 允许模型使用自身知识和调用方授权的搜索/工具，但要求区分输入证据、外部资料和推断，并把消息、摘要、目录都当作不可信数据。
-- 对话 Prompt 约定已有主题使用 `[[nexus:existing:主题名称]]原文[[/nexus]]`、建议探索主题使用 `[[nexus:suggested:主题名称]]原文[[/nexus]]`；Markdown 渲染器移除标记并以蓝/黄色下划线呈现，未知建议主题不生成可点击 Concept ID。
+- 对话 Prompt 约定已有主题使用 `[[nexus:existing:主题名称]]回答中实际出现的词组[[/nexus]]`、建议探索主题使用 `[[nexus:suggested:主题名称]]回答中实际出现的词组[[/nexus]]`；marker 正文必须逐字来自回答，不能使用“原文”等占位文字。Markdown 渲染器移除标记并以蓝/黄色下划线呈现，旧响应中的占位正文回退显示 marker 主题名。
 - 大型知识上下文通过 `DISCLOSURE_INDEX` 传递：根引用只包含 `title`、`summary` 和不透明 `refID`，展开记录才提供下一层 children 或消息原文。模型可返回 `disclosure_requests: [{ refID, depth }]`；应用先校验 ID 已在当前目录、无重复且深度为 1～64，再从本地 hierarchy、KnowledgeUnit 和 Message 递归生成下一轮 Prompt。API 模式自动续跑，最多 8 轮；Prompt 粘贴模式把同一任务恢复为 pending，等待用户执行更新后的 Prompt。非法请求或超过轮数进入 `needs_review`，不会应用部分结果。
 - 起源 Concept 结果写入独立的 `session_concepts` 多对多事实表；它不会复制到该 Session 的全部 KnowledgeUnit。图谱派生时会把 Session、Message 和 KnowledgeUnit 三种归属投影到可见主题，并按 Session（而不是单元数量）累计 Concept 共现权重。
 - 会话内追问（从导航树节点或会话详情发起）：用户消息以 `metadata = { mode: 'follow_up', parentNodeId, taskId }` 落库，回答分支节点挂在该节点之下（depth + 1），assistant Message 额外记录 `navNodeId` 供探索树点击定位正文。结果落库后从 Message 和 KnowledgeUnit 实际行数重算 `message_count` / `unit_count`，每个 Session 同时只允许一个 `pending` / `running` / `needs_review` 对话任务；任务完成后才可创建下一轮。早期没有 `metadata.taskId` 的对话任务按 legacy 规则回落到根节点。
@@ -73,7 +73,7 @@
 
 ## 消息渲染安全模型
 
-- 消息与回答详情使用受限 Markdown 渲染（`services/markdown.ts`）：先对原文转义 `&`、`<`、`>`（不转义引号，因为结果不进入属性），再生成块级结构（标题、列表、引用、分隔线、段落）与行内结构（粗体、斜体、行内代码、链接、fenced 代码块）。
+- 消息与回答详情使用受限 Markdown 渲染（`services/markdown.ts`）：先对原文转义 HTML 特殊字符，再生成块级结构（标题、列表、引用、分隔线、段落）与行内结构（粗体、斜体、行内代码、链接、fenced 代码块）。主题 marker 的正文必须是回答中实际出现的词组；旧响应中的 `原文` 等占位正文会回退显示 marker 主题名。
 - 链接只接受 `http(s)` 协议，`javascript:` 等一律按纯文本处理；行内代码内的文本不再做链接或概念识别。
 - 知识主题提及渲染为可点击胶囊：把当前主题名（含别名，长名优先）拼成交替正则做一次性替换，用无命名捕获组（兼容旧 WebKitGTK 的正则能力）并按匹配文本查表回填主题 id，因此主题名中的正则特殊字符不会破坏匹配。
 - 渲染结果通过 `v-html` 注入前已完成转义，消息原文永远不作为 HTML 解释；事件代理只响应带数据属性的主题胶囊点击。

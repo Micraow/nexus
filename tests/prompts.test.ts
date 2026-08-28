@@ -48,6 +48,9 @@ describe('conversation prompt', () => {
     expect(prompt).toContain('"client_ref":"new:1"')
     expect(prompt).toContain('即使 units 为空')
     expect(prompt).toContain('黄色建议不要创建为 Concept')
+    expect(prompt).toContain('回答中实际出现的词组')
+    expect(prompt).toContain('严禁使用“原文”“正文”“主题名称”等占位文字')
+    expect(prompt).not.toContain(']]原文[[/nexus]]')
   })
 })
 

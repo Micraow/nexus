@@ -46,7 +46,7 @@ function renderMath(source: string, displayMode: boolean): string {
 
 interface ConceptMatcher {
   pattern: RegExp
-  /** Maps the escaped, matched name back to the concept id. */
+  /** Maps a matched, unescaped name back to the concept id. */
   ids: Map<string, string>
 }
 
@@ -56,9 +56,9 @@ function buildConceptMatcher(concepts: MarkdownConcept[]): ConceptMatcher | null
   const ordered = usable.slice().sort((left, right) => right.name.length - left.name.length)
   const ids = new Map<string, string>()
   const sources = ordered.map((concept) => {
-    const escapedName = escapeHtml(concept.name.trim())
-    ids.set(escapedName, concept.id)
-    return escapeRegExp(escapedName)
+    const name = concept.name.trim()
+    ids.set(name, concept.id)
+    return escapeRegExp(name)
   })
   return { pattern: new RegExp(sources.join('|')), ids }
 }
@@ -87,26 +87,43 @@ function fencedCodeHtml(language: string, code: string): string {
 }
 
 function conceptMentionHtml(label: string, id: string, kind: 'existing' | 'suggested', name = label): string {
+  const escapedLabel = escapeHtml(label)
   if (kind === 'suggested') {
-    return `<span class="md-concept md-concept-suggested" role="link" tabindex="0" data-suggested-concept="${name}" aria-label="继续探索 ${name}" title="继续探索">${label}</span>`
+    const escapedName = escapeHtml(name)
+    return `<span class="md-concept md-concept-suggested" role="link" tabindex="0" data-suggested-concept="${escapedName}" aria-label="继续探索 ${escapedName}" title="继续探索">${escapedLabel}</span>`
   }
-  return `<span class="md-concept md-concept-existing"${id ? ` role="link" tabindex="0" data-concept-id="${escapeHtml(id)}"` : ''}>${label}</span>`
+  return `<span class="md-concept md-concept-existing"${id ? ` role="link" tabindex="0" data-concept-id="${escapeHtml(id)}"` : ''}>${escapedLabel}</span>`
 }
 
 function linkifyConcepts(raw: string, matcher: ConceptMatcher | null): InlineToken[] {
-  if (!matcher) return raw ? [{ type: 'text', value: raw }] : []
+  if (!matcher) return raw ? [{ type: 'text', value: escapeHtml(raw) }] : []
   const tokens: InlineToken[] = []
   let rest = raw
   for (;;) {
     const found = matcher.pattern.exec(rest)
     if (!found || found[0].length === 0) break
-    if (found.index > 0) tokens.push({ type: 'text', value: rest.slice(0, found.index) })
+    if (found.index > 0) tokens.push({ type: 'text', value: escapeHtml(rest.slice(0, found.index)) })
     const id = matcher.ids.get(found[0]) ?? ''
     tokens.push({ type: 'mention', value: conceptMentionHtml(found[0], id, 'existing') })
     rest = rest.slice(found.index + found[0].length)
   }
-  if (rest) tokens.push({ type: 'text', value: rest })
+  if (rest) tokens.push({ type: 'text', value: escapeHtml(rest) })
   return tokens
+}
+
+const LEGACY_MARKER_PLACEHOLDERS = new Set([
+  '原文',
+  '正文',
+  '显示文本',
+  '主题名称',
+  '主题名',
+  'label',
+  'text',
+])
+
+function markerLabel(name: string, label: string): string {
+  const normalized = label.trim()
+  return !normalized || LEGACY_MARKER_PLACEHOLDERS.has(normalized.toLowerCase()) ? name : label
 }
 
 /**
@@ -122,7 +139,9 @@ function linkifyMarkedConcepts(raw: string, matcher: ConceptMatcher | null): Inl
   while ((match = pattern.exec(raw))) {
     if (match.index > cursor) tokens.push(...linkifyConcepts(raw.slice(cursor, match.index), matcher))
     const kind = match[1].toLowerCase() as 'existing' | 'suggested'
-    const label = match[3] || match[2]
+    // Older prompts used literal placeholders such as “原文” for the body.
+    // Keep those responses readable by displaying the marker's topic name.
+    const label = markerLabel(match[2].trim(), match[3] ?? '')
     const id = matcher?.ids.get(match[2].trim()) ?? matcher?.ids.get(label.trim()) ?? ''
     tokens.push({ type: 'mention', value: conceptMentionHtml(label, id, kind, match[2].trim()) })
     cursor = match.index + match[0].length
@@ -135,7 +154,7 @@ function linkifyMarkedConcepts(raw: string, matcher: ConceptMatcher | null): Inl
 function tokenizeInline(line: string, matcher: ConceptMatcher | null): InlineToken[] {
   const tokens: InlineToken[] = []
   const pushText = (value: string): void => {
-    tokens.push(...linkifyMarkedConcepts(escapeHtml(value), matcher))
+    tokens.push(...linkifyMarkedConcepts(value, matcher))
   }
   // Protect strong spans before concept linkification so `**bold Concept**`
   // keeps both markers in one token.

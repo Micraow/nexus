@@ -81,6 +81,33 @@ describe('renderMarkdown', () => {
     expect(html).not.toContain('nexus:suggested')
   })
 
+  it('renders markers embedded in a paragraph without leaking delimiters', () => {
+    const html = renderMarkdown('前缀 [[nexus:suggested:量子纠错]]量子纠错[[/nexus]] 后缀。')
+    expect(html).toContain('<p>前缀 <span class="md-concept md-concept-suggested"')
+    expect(html).toContain('>量子纠错</span> 后缀。</p>')
+    expect(html).not.toContain('[[nexus:')
+  })
+
+  it('falls back to the marker name for legacy placeholder bodies', () => {
+    const html = renderMarkdown('建议 [[nexus:suggested:量子纠错]]原文[[/nexus]]，旧格式 [[nexus:existing:RDMA]]主题名称[[/nexus]]。', {
+      concepts: [{ id: 'c1', name: 'RDMA' }],
+    })
+    expect(html).toContain('data-suggested-concept="量子纠错"')
+    expect(html).toContain('>量子纠错</span>')
+    expect(html).toContain('data-concept-id="c1"')
+    expect(html).toContain('>RDMA</span>')
+    expect(html).not.toContain('>原文</span>')
+    expect(html).not.toContain('>主题名称</span>')
+  })
+
+  it('escapes marker text and attributes against HTML injection', () => {
+    const html = renderMarkdown('[[nexus:suggested:<img src=x onerror="alert(1)">]]<img src=x onerror="alert(1)">[[/nexus]]')
+    expect(html).toContain('data-suggested-concept="&lt;img src=x onerror=&quot;alert(1)&quot;&gt;"')
+    expect(html).toContain('&lt;img src=x onerror=&quot;alert(1)&quot;&gt;')
+    expect(html).not.toContain('<img')
+    expect(html).not.toContain('onerror="')
+  })
+
   it('does not linkify concept names inside inline code', () => {
     const html = renderMarkdown('保持 `RDMA` 原样', { concepts: [{ id: 'c1', name: 'RDMA' }] })
     expect(html).toContain('<code>RDMA</code>')
