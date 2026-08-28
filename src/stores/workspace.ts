@@ -1610,7 +1610,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         ? unitScope.filter((unit) => unitConcepts.value.some((link) => link.unitId === unit.id && requestedConceptIds.has(link.conceptId))).map((unit) => unit.id)
         : []
     const focusUnits = focusUnitIds.map((id) => unitScope.find((unit) => unit.id === id)).filter(Boolean) as KnowledgeUnit[]
-    const activeMessages = messages.value.filter((message) => activeSessionIds.value.has(message.sessionId))
+    // Maintenance may create optional reading units only from messages that
+    // are not already claimed by another unit; omit assigned messages from
+    // the catalog to keep the prompt focused and avoid duplicate proposals.
+    const activeMessages = messages.value.filter((message) => activeSessionIds.value.has(message.sessionId) && !message.unitId)
     if (!conceptScope.length && !unitScope.length && !activeMessages.length) throw new Error('没有可供维护检查的知识主题、阅读片段或消息')
     const conceptIds = new Set(conceptScope.map((concept) => concept.id))
     const unitIds = new Set(unitScope.map((unit) => unit.id))
