@@ -416,8 +416,25 @@ function render(): void {
     const radius = rootCount > 1 ? Math.min(width, height) * 0.24 : 0
     seedPositions.set(node.id, { x: width / 2 + Math.cos(angle) * radius, y: height / 2 + Math.sin(angle) * radius })
   })
+  const snapshotNodeById = new Map(snapshot.nodes.map((node) => [node.id, node]))
+  const ensureSeedPosition = (nodeId: string, visiting = new Set<string>()): { x: number; y: number } | undefined => {
+    const existing = seedPositions.get(nodeId)
+    if (existing) return existing
+    if (visiting.has(nodeId)) return undefined
+    visiting.add(nodeId)
+    const anchorId = anchorByNode.get(nodeId)
+    const anchor = anchorId ? ensureSeedPosition(anchorId, visiting) : undefined
+    const node = snapshotNodeById.get(nodeId)
+    if (!node) return anchor
+    const index = snapshot.nodes.findIndex((candidate) => candidate.id === nodeId)
+    const angle = (stableHash(node.id) % 6283) / 1000 + index * 0.17
+    const radius = node.type === 'concept' ? 76 : node.type === 'unit' ? 48 : 34
+    const position = { x: (anchor?.x ?? width / 2) + Math.cos(angle) * radius, y: (anchor?.y ?? height / 2) + Math.sin(angle) * radius }
+    seedPositions.set(nodeId, position)
+    return position
+  }
   const nodes = snapshot.nodes.map((node, index) => {
-    const position = seedPositions.get(node.id)
+    const position = ensureSeedPosition(node.id)
     const copy = { ...node } as GraphNode & d3.SimulationNodeDatum
     if (position) {
       copy.x = position.x
@@ -496,6 +513,27 @@ function render(): void {
     .append('path')
     .attr('d', 'M0,-5L10,0L0,5')
     .attr('fill', '#2c6e9e')
+
+  const nodeById = new Map(nodes.map((node) => [node.id, node]))
+  const edgePoints = (edge: GraphEdge): { x1: number; y1: number; x2: number; y2: number } => {
+    const source = (typeof edge.source === 'string' ? nodeById.get(edge.source) : edge.source as unknown as GraphNode & d3.SimulationNodeDatum)
+    const target = (typeof edge.target === 'string' ? nodeById.get(edge.target) : edge.target as unknown as GraphNode & d3.SimulationNodeDatum)
+    const sx = source?.x ?? 0
+    const sy = source?.y ?? 0
+    const tx = target?.x ?? 0
+    const ty = target?.y ?? 0
+    const dx = tx - sx
+    const dy = ty - sy
+    const distance = Math.hypot(dx, dy) || 1
+    const sourceRadius = source ? nodeRadius(source) + 2 : 0
+    const targetRadius = target ? nodeRadius(target) + 2 : 0
+    return {
+      x1: sx + (dx / distance) * sourceRadius,
+      y1: sy + (dy / distance) * sourceRadius,
+      x2: tx - (dx / distance) * targetRadius,
+      y2: ty - (dy / distance) * targetRadius,
+    }
+  }
 
   const expanded = expandedConceptSet()
   const isExpanded = (node: GraphNode): boolean => expanded.has(node.refId) || node.expanded === true
@@ -738,10 +776,10 @@ function render(): void {
   let paintPending = false
   const paint = (): void => {
       linkSelection
-        .attr('x1', (edge) => (edge.source as unknown as GraphNode).x ?? 0)
-        .attr('y1', (edge) => (edge.source as unknown as GraphNode).y ?? 0)
-        .attr('x2', (edge) => (edge.target as unknown as GraphNode).x ?? 0)
-        .attr('y2', (edge) => (edge.target as unknown as GraphNode).y ?? 0)
+        .attr('x1', (edge) => edgePoints(edge).x1)
+        .attr('y1', (edge) => edgePoints(edge).y1)
+        .attr('x2', (edge) => edgePoints(edge).x2)
+        .attr('y2', (edge) => edgePoints(edge).y2)
       nodeSelection.attr('transform', (node) => `translate(${node.x ?? width / 2},${node.y ?? height / 2})`)
   }
   // Paint the seeded positions before the first physics tick. Topology
