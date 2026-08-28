@@ -44,6 +44,7 @@ describe('NavTree hierarchy', () => {
     await nextTick()
 
     expect([...target.querySelectorAll('.nav-tree-label')].map((label) => label.textContent)).toEqual(['根节点', '子节点', '孙节点'])
+    expect([...target.querySelectorAll<HTMLButtonElement>('.nav-tree-node')].map((button) => button.getAttribute('aria-label'))).toEqual(['根节点', '子节点', '孙节点'])
   })
 
   it('bubbles select and ask events from recursive branches', async () => {
