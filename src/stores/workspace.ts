@@ -6,6 +6,7 @@ import { DEFAULT_TOKEN_BUDGET, normalizeTokenBudget, parseConfigText, readConfig
 import { buildGraph, graphStats, graphViewFallbackIsCompatible, toggleExpandedConceptIds } from '@/services/graph'
 import { buildSearchDocuments, searchKnowledge } from '@/services/search'
 import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildOriginConceptPrompt, buildRepairPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, ensureHarnessPrompt, listedDisclosureRefIds, parseDisclosureContext, PROMPT_VERSION, renderQuickPhrase, replaceDisclosureContext } from '@/services/prompts'
+import { conversationMessageBranchNodeId } from '@/services/conversation'
 import { importPayloadSchema, parseImportPayload, validateConceptIdList, validateConceptMemberships, validateDisclosureRequests, validateOriginConceptResult, validateSegmentationResult, validateUnitText } from '@/services/validation'
 import type { DisclosureContext } from '@/services/prompts'
 import { combineSegmentationChunks, splitMessageChunks } from '@/utils/chunks'
@@ -2614,10 +2615,28 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     mutate(() => db.run('DELETE FROM quick_phrases WHERE id = ? AND is_builtin = 0', [id]))
   }
 
-  function buildConversationHistory(sessionId: string, maxMessages = 40): string {
-    const history = messages.value
+  function buildConversationHistory(sessionId: string, maxMessages = 40, branchNodeId?: string, excludeMessageId?: string): string {
+    const sessionMessages = messages.value
       .filter((message) => message.sessionId === sessionId)
       .sort((left, right) => left.orderInSession - right.orderInSession)
+    const pathNodeIds = branchNodeId ? (() => {
+      const byId = new Map(navNodes.value.filter((node) => node.sessionId === sessionId).map((node) => [node.id, node]))
+      const ids = new Set<string>()
+      const seen = new Set<string>()
+      let current = byId.get(branchNodeId)
+      while (current && !seen.has(current.id)) {
+        seen.add(current.id)
+        ids.add(current.id)
+        current = current.parentId ? byId.get(current.parentId) : undefined
+      }
+      return ids
+    })() : null
+    const history = sessionMessages.filter((message) => {
+      if (excludeMessageId && message.id === excludeMessageId) return false
+      if (!pathNodeIds) return true
+      const branchId = conversationMessageBranchNodeId(message, sessionMessages)
+      return branchId != null && pathNodeIds.has(branchId)
+    })
     if (!history.length) return ''
     const visible = history.length > maxMessages ? history.slice(-maxMessages) : history
     const omitted = history.length - visible.length
@@ -2732,7 +2751,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         db.run('INSERT OR IGNORE INTO message_concepts(message_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [messageId, input.topicId, 'manual', now])
       }
       db.run('UPDATE sessions SET message_count = message_count + 1, updated_at = ? WHERE id = ?', [now, session.id])
-      taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${session.id}:${revision}`, prompt: buildConversationPrompt({ question, topic, context, navigationPath: buildNavigationPath(session.id, parentNode.id), conversationHistory: buildConversationHistory(session.id), sessionTitle: session.title, sessionSummary: session.summary ?? '', targetSessionId: session.id, targetMessageId: messageId, targetAssistantMessageId: assistantMessageId, disclosure: promptDisclosureContext({ unitIds: input.sourceUnitIds ?? [], messageIds: input.sourceMessageIds ?? [], includeFullContent: input.includeFullContent ?? false }) }), status: 'pending', scopeLabel: `${session.title} · 追问` })
+      taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${session.id}:${revision}`, prompt: buildConversationPrompt({ question, topic, context, navigationPath: buildNavigationPath(session.id, parentNode.id), conversationHistory: buildConversationHistory(session.id, 40, parentNode.id, messageId), sessionTitle: session.title, sessionSummary: session.summary ?? '', targetSessionId: session.id, targetMessageId: messageId, targetAssistantMessageId: assistantMessageId, disclosure: promptDisclosureContext({ unitIds: input.sourceUnitIds ?? [], messageIds: input.sourceMessageIds ?? [], includeFullContent: input.includeFullContent ?? false }) }), status: 'pending', scopeLabel: `${session.title} · 追问` })
       db.run('UPDATE messages SET metadata = ? WHERE id = ?', [JSON.stringify({ mode: 'follow_up', topicId: input.topicId ?? null, parentNodeId: parentNode.id, taskId, answerMessageId: assistantMessageId }), messageId])
       writeSourceReferences(session.id, input.sourceUnitIds ?? [], input.sourceMessageIds ?? [], input.includeFullContent ?? false)
     })

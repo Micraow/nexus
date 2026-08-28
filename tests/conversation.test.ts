@@ -58,4 +58,10 @@ describe('conversation branch task mapping', () => {
     expect(conversationMessageBranchNodeId(messages[1], messages)).toBe('branch-b')
     expect(conversationMessageBranchNodeId(messages[2], messages)).toBe('root')
   })
+
+  it('keeps the opening question on the shared root branch', () => {
+    const opening = message('opening', 'user', { mode: 'new', parentNodeId: 'root', answerMessageId: 'answer' })
+    const answer = message('answer', 'assistant', { navNodeId: 'branch' })
+    expect(conversationMessageBranchNodeId(opening, [opening, answer])).toBe('root')
+  })
 })

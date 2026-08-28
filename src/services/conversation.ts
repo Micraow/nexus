@@ -57,6 +57,11 @@ export function conversationMessageBranchNodeId(message: Message, messages: Mess
     return typeof metadata.navNodeId === 'string' && metadata.navNodeId.trim() ? metadata.navNodeId : null
   }
   if (message.role !== 'user') return null
+  // The opening question belongs to the shared navigation root. Follow-up
+  // questions move to the answer-created child once that answer exists.
+  if (metadata.mode !== 'follow_up') {
+    return typeof metadata.parentNodeId === 'string' && metadata.parentNodeId.trim() ? metadata.parentNodeId : null
+  }
   if (typeof metadata.answerMessageId === 'string' && metadata.answerMessageId.trim()) {
     const answer = messages.find((candidate) => candidate.id === metadata.answerMessageId && candidate.role === 'assistant')
     const answerNodeId = parseMetadata(answer?.metadata).navNodeId
