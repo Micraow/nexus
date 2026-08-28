@@ -47,6 +47,22 @@ describe('direct concept extraction import pipeline', () => {
     expect(created.find((task) => task.type === 'origin_concepts')?.prompt).toContain('禁止返回 unit membership')
   })
 
+  it('keeps imported root-card messages in context when the session is continued', () => {
+    const report = store.importJsonText(JSON.stringify(payload()))
+    const session = store.sessions.find((item) => report.importedSessionIds.includes(item.id))!
+    const root = store.navNodes.find((node) => node.sessionId === session.id && !node.parentId)!
+    const taskId = store.createFollowUpTask({
+      sessionId: session.id,
+      parentNodeId: root.id,
+      question: '请在导入内容基础上继续说明',
+    })
+    const task = store.tasks.find((item) => item.id === taskId)!
+
+    expect(task.prompt).toContain('message 0')
+    expect(task.prompt).toContain('message 1')
+    expect(task.prompt).toContain('请在导入内容基础上继续说明')
+  })
+
   it('uses chunk message IDs as targets and keeps chunk concepts out of session/unit links', () => {
     store.updateConfig({ llm: { ...store.config.llm, tokenBudget: 1000 } })
     const report = store.importJsonText(JSON.stringify(payload(8)))

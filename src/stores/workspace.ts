@@ -3112,11 +3112,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       }
       return ids
     })() : null
+    const rootNodeIds = new Set(navNodes.value
+      .filter((node) => node.sessionId === sessionId && !node.parentId)
+      .map((node) => node.id))
     const history = sessionMessages.filter((message) => {
       if (excludeMessageId && message.id === excludeMessageId) return false
       if (!pathNodeIds) return true
       const branchId = conversationMessageBranchNodeId(message, sessionMessages)
-      return branchId != null && pathNodeIds.has(branchId)
+      if (branchId != null) return pathNodeIds.has(branchId)
+      // Imported and legacy messages predate the navigation metadata. They
+      // are presented on the synthetic root card, so continuing from any
+      // descendant of that root must keep them in the conversation context.
+      return [...rootNodeIds].some((rootId) => pathNodeIds.has(rootId))
     })
     if (!history.length) return ''
     const visible = history.length > maxMessages ? history.slice(-maxMessages) : history
