@@ -418,12 +418,19 @@ function render(): void {
   const links = snapshot.edges.map((edge) => ({ ...edge }))
   const knownNodeIds = previousVisibleNodeIds
   const anchorByNode = new Map<string, string>()
+  const childrenByAnchor = new Map<string, string[]>()
   links.forEach((edge) => {
     if (edge.type !== 'hierarchy' && edge.type !== 'association') return
     // Only a deterministic seed for newly disclosed nodes; D3 still settles
     // the final position through the force simulation.
-    if (!anchorByNode.has(edge.target)) anchorByNode.set(edge.target, edge.source)
+    if (!anchorByNode.has(edge.target)) {
+      anchorByNode.set(edge.target, edge.source)
+      const siblings = childrenByAnchor.get(edge.source) ?? []
+      siblings.push(edge.target)
+      childrenByAnchor.set(edge.source, siblings)
+    }
   })
+  childrenByAnchor.forEach((siblings) => siblings.sort())
   // A user can expand a root before the first simulation tick has populated
   // nodePositions. The previous rendered node set still constitutes a valid
   // layout because deterministic seeds were already painted synchronously.
@@ -462,8 +469,16 @@ function render(): void {
     const node = snapshotNodeById.get(nodeId)
     if (!node) return anchor
     const index = snapshot.nodes.findIndex((candidate) => candidate.id === nodeId)
-    const angle = (stableHash(node.id) % 6283) / 1000 + index * 0.17
-    const radius = node.type === 'concept' ? 76 : node.type === 'unit' ? 48 : 34
+    const siblings = anchorId ? (childrenByAnchor.get(anchorId) ?? []) : []
+    const siblingIndex = siblings.indexOf(nodeId)
+    const ringCapacity = node.type === 'concept' ? 8 : 12
+    const ring = siblingIndex >= 0 ? Math.floor(siblingIndex / ringCapacity) : 0
+    const ringIndex = siblingIndex >= 0 ? siblingIndex % ringCapacity : index
+    const ringSize = siblingIndex >= 0 ? Math.min(ringCapacity, siblings.length - ring * ringCapacity) : 1
+    const angleOffset = anchorId ? (stableHash(anchorId) % 6283) / 1000 : (stableHash(node.id) % 6283) / 1000
+    const angle = angleOffset + (ringIndex / Math.max(ringSize, 1)) * Math.PI * 2
+    const baseRadius = node.type === 'concept' ? 112 : node.type === 'unit' ? 62 : 44
+    const radius = baseRadius + ring * (node.type === 'concept' ? 58 : 34)
     const position = { x: (anchor?.x ?? width / 2) + Math.cos(angle) * radius, y: (anchor?.y ?? height / 2) + Math.sin(angle) * radius }
     seedPositions.set(nodeId, position)
     return position

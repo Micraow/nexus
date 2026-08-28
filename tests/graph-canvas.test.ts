@@ -70,6 +70,12 @@ async function flushResizeObserver(): Promise<void> {
   await nextTick()
 }
 
+function translationOf(node: Element | null): { x: number; y: number } {
+  const match = node?.getAttribute('transform')?.match(/^translate\(([-\d.]+),([-\d.]+)\)$/)
+  if (!match) throw new Error('Graph node has no translation')
+  return { x: Number(match[1]), y: Number(match[2]) }
+}
+
 function mountGraph(listeners: Record<string, (...args: unknown[]) => void> = {}, hasChildren = true): HTMLElement {
   return mountSnapshot({
     revision: 1,
@@ -359,6 +365,29 @@ describe('GraphCanvas progressive disclosure', () => {
 
     expect(target.querySelector('[data-ref-id="root"]')?.getAttribute('transform')).toBe(rootTransform)
     expect(target.querySelector('[data-ref-id="child"]')).toBeTruthy()
+  })
+
+  it('seeds direct children around their parent instead of clustering in one direction', async () => {
+    const childIds = ['alpha', 'beta', 'gamma', 'delta']
+    const snapshot: GraphSnapshot = {
+      revision: 14,
+      nodes: [
+        { id: 'concept:root', type: 'concept', refId: 'root', label: '根', degree: 4, unitCount: 0, parentIds: [], childCount: 4, descendantCount: 4, hasChildren: true },
+        ...childIds.map((id) => ({ id: `concept:${id}`, type: 'concept' as const, refId: id, label: id, degree: 1, unitCount: 0, parentIds: ['root'] })),
+      ],
+      edges: childIds.map((id) => ({ id: `edge:${id}`, source: 'concept:root', target: `concept:${id}`, type: 'hierarchy' as const, weight: 1, status: 'confirmed' as const })),
+    }
+    const { target, state } = mountReactiveSnapshot(snapshot, { expandedConceptIds: [], reducedMotion: false })
+    await nextTick()
+    state.expandedConceptIds = ['root']
+    await nextTick()
+
+    const parent = translationOf(target.querySelector('[data-ref-id="root"]'))
+    const quadrants = new Set(childIds.map((id) => {
+      const child = translationOf(target.querySelector(`[data-ref-id="${id}"]`))
+      return `${child.x >= parent.x ? 'right' : 'left'}-${child.y >= parent.y ? 'down' : 'up'}`
+    }))
+    expect(quadrants.size).toBeGreaterThanOrEqual(3)
   })
 
   it('only creates topology fade layers when reduced motion is disabled', async () => {
