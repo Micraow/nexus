@@ -55,7 +55,7 @@ import { DEFAULT_CONCEPT_LIMIT, MAX_API_CONCURRENCY, MAX_CONCEPT_LIMIT, MIN_API_
 import { saveTextFile } from '@/services/files'
 import type { SaveFileRequest } from '@/services/files'
 import { conversationTaskForNode, suggestedExplorationQuestion, unfinishedConversationTask } from '@/services/conversation'
-import { conversationCardMessages } from '@/components/conversation-card-messages'
+import { conversationCardMessages, createPendingConversationTask } from '@/components/conversation-card-messages'
 import { resolveConceptEvidence } from '@/services/concept-evidence'
 import { paginateMessages } from '@/services/message-pagination'
 import { renderMarkdown } from '@/services/markdown'
@@ -1158,18 +1158,21 @@ function submitComposer(): void {
   if (composerTokenEstimate.value > store.config.llm.tokenBudget) return notify(`上下文约 ${composerTokenEstimate.value.toLocaleString()} tokens，超过当前预算，请移除阅读片段或关闭完整原文`)
   if (composerFollowUp.value) {
     try {
-      const taskId = store.createFollowUpTask({
-        sessionId: composerFollowUp.value.sessionId,
-        parentNodeId: composerFollowUp.value.nodeId,
-        question: composerQuestion.value,
-        topicId: composerTopicId.value ?? undefined,
-        sourceUnitIds: composerSourceUnitIds.value,
-        sourceMessageIds: composerSourceMessageIds.value,
-        includeFullContent: composerIncludeFull.value,
-      })
-      if (pendingConversationBranch.value && pendingConversationBranch.value.parentId === composerFollowUp.value.nodeId) {
-        pendingConversationBranch.value = { ...pendingConversationBranch.value, started: true, taskId }
-      }
+      const created = createPendingConversationTask(
+        pendingConversationBranch.value,
+        composerFollowUp.value.nodeId,
+        () => store.createFollowUpTask({
+          sessionId: composerFollowUp.value!.sessionId,
+          parentNodeId: composerFollowUp.value!.nodeId,
+          question: composerQuestion.value,
+          topicId: composerTopicId.value ?? undefined,
+          sourceUnitIds: composerSourceUnitIds.value,
+          sourceMessageIds: composerSourceMessageIds.value,
+          includeFullContent: composerIncludeFull.value,
+        }),
+      )
+      const taskId = created.taskId
+      pendingConversationBranch.value = created.pending
       composerOpen.value = false
       composerQuestion.value = ''
       composerPhraseId.value = ''

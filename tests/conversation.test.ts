@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { conversationMessageBranchNodeId, conversationMessagesForNode, conversationTaskForNode, suggestedExplorationQuestion, unfinishedConversationTask } from '@/services/conversation'
-import { conversationCardMessages } from '@/components/conversation-card-messages'
+import { conversationCardMessages, createPendingConversationTask } from '@/components/conversation-card-messages'
 import type { LLMTask, Message } from '@/types/domain'
 
 const task = (id: string, status: LLMTask['status'], createdAt: string): LLMTask => ({
@@ -88,5 +88,15 @@ describe('conversation branch task mapping', () => {
 
     expect(conversationCardMessages('root', messages, pending).map((item) => item.id)).toEqual(['opening', 'answer-a'])
     expect(conversationCardMessages('pending-nav', messages, pending).map((item) => item.id)).toEqual(['suggested-question'])
+  })
+
+  it('locks a temporary branch only after task creation succeeds', () => {
+    const pending = { id: 'pending-nav', parentId: 'root', started: false }
+    expect(() => createPendingConversationTask(pending, 'root', () => { throw new Error('create failed') })).toThrow('create failed')
+    expect(pending.started).toBe(false)
+
+    const created = createPendingConversationTask(pending, 'root', () => 'task-created')
+    expect(created.taskId).toBe('task-created')
+    expect(created.pending).toEqual({ ...pending, started: true, taskId: 'task-created' })
   })
 })
