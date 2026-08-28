@@ -11,6 +11,9 @@ import {
   buildTitleSummaryPrompt,
   formatDisclosureContext,
   formatMaintenanceActionApi,
+  maintenanceActionDefinition,
+  maintenanceMcpToolsList,
+  maintenanceToolCallSuggestion,
   listMaintenanceMcpTools,
   NEXUS_HARNESS_PROMPT,
   MAINTENANCE_ACTION_API,
@@ -123,6 +126,12 @@ describe('maintenance prompt', () => {
     expect(actions.get('create_concept')?.properties).toHaveProperty('reason', 'string')
     expect(listMaintenanceMcpTools().every((tool) => Object.keys(tool).sort().join(',') === 'description,inputSchema,name')).toBe(true)
     expect(listMaintenanceMcpTools().map((tool) => tool.name)).toContain('nexus_maintenance_set_hierarchy_parents')
+    expect(maintenanceMcpToolsList().tools).toEqual(listMaintenanceMcpTools())
+    expect(maintenanceActionDefinition('nexus_maintenance_merge')?.type).toBe('merge')
+    expect(maintenanceActionDefinition('set_hierarchy_parents')?.name).toBe('nexus_maintenance_set_hierarchy_parents')
+    expect(maintenanceToolCallSuggestion('nexus_maintenance_update_concept', JSON.stringify({ concept_id: 'c1', summary: '新摘要', reason: '证据' }))).toEqual({ type: 'update_concept', concept_id: 'c1', summary: '新摘要', reason: '证据' })
+    expect(maintenanceToolCallSuggestion('nexus_maintenance_update_concept', '{bad')).toBeNull()
+    expect(maintenanceToolCallSuggestion('nexus_maintenance_unknown', '{}')).toBeNull()
   })
 })
 

@@ -5,7 +5,7 @@ import { httpRequest } from '@/services/http'
 import { DEFAULT_TOKEN_BUDGET, normalizeTokenBudget, parseConfigText, readConfigText, writeConfig } from '@/services/config'
 import { buildGraph, graphSnapshotIsProgressiveCompatible, graphStats, graphViewFallbackIsCompatible, resolveVisibleConceptIds, toggleExpandedConceptIds } from '@/services/graph'
 import { buildSearchDocuments, searchKnowledge } from '@/services/search'
-import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildOriginConceptPrompt, buildRepairPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, ensureHarnessPrompt, formatMaintenanceActionApi, listMaintenanceMcpTools, listedDisclosureRefIds, MAINTENANCE_ACTION_API, parseDisclosureContext, PROMPT_VERSION, renderQuickPhrase, replaceDisclosureContext } from '@/services/prompts'
+import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildOriginConceptPrompt, buildRepairPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, ensureHarnessPrompt, formatMaintenanceActionApi, listMaintenanceMcpTools, listedDisclosureRefIds, MAINTENANCE_ACTION_API, maintenanceToolCallSuggestion, parseDisclosureContext, PROMPT_VERSION, renderQuickPhrase, replaceDisclosureContext } from '@/services/prompts'
 import { conversationMessageBranchNodeId } from '@/services/conversation'
 import { importPayloadSchema, parseImportPayload, validateConceptIdList, validateConceptMemberships, validateDisclosureRequests, validateOriginConceptResult, validateSegmentationResult, validateUnitText } from '@/services/validation'
 import type { DisclosureContext } from '@/services/prompts'
@@ -2581,18 +2581,52 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         abortControllers.set(taskId, controller)
         const timeout = window.setTimeout(() => controller.abort(), 45_000)
         try {
+          const requestBody: Record<string, unknown> = {
+            model: task.model || provider.model,
+            temperature: 0,
+            messages: [{ role: 'user', content: task.prompt }],
+          }
+          // Expose maintenance operations as OpenAI-compatible functions when
+          // the provider supports tool calling. The resulting calls are still
+          // converted into suggestions and pass the same local validator.
+          if (task.type === 'maintenance') {
+            requestBody.tools = listMaintenanceMcpTools().map((tool) => ({
+              type: 'function',
+              function: {
+                name: tool.name,
+                description: tool.description,
+                parameters: tool.inputSchema,
+              },
+            }))
+            requestBody.tool_choice = 'auto'
+          }
           const response = await httpRequest(`${provider.baseUrl.replace(/\/$/, '')}/chat/completions`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.apiKey}` },
-            body: JSON.stringify({ model: task.model || provider.model, temperature: 0, messages: [{ role: 'user', content: task.prompt }] }),
+            body: JSON.stringify(requestBody),
             signal: controller.signal,
           })
           if (!response.ok) {
             const retryable = response.status === 408 || response.status === 429 || response.status >= 500
             throw Object.assign(new Error(`Provider 返回 HTTP ${response.status}`), { retryable })
           }
-          const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> }
-          const content = payload.choices?.[0]?.message?.content
+          const payload = await response.json() as {
+            choices?: Array<{
+              message?: {
+                content?: string | null
+                tool_calls?: Array<{ function?: { name?: string; arguments?: string | Record<string, unknown> } }>
+              }
+            }>
+          }
+          const message = payload.choices?.[0]?.message
+          let content = typeof message?.content === 'string' ? message.content : ''
+          if (task.type === 'maintenance' && message?.tool_calls?.length) {
+            const suggestions = message.tool_calls
+              .map((call) => maintenanceToolCallSuggestion(call.function?.name ?? '', call.function?.arguments ?? ''))
+              .filter((suggestion): suggestion is Record<string, unknown> => Boolean(suggestion))
+            if (!suggestions.length) throw new Error('Provider 返回了无法识别的维护工具调用')
+            content = JSON.stringify({ suggestions, disclosure_requests: [] })
+          }
           if (!content) throw new Error('Provider 没有返回可用内容')
           const result = applyTaskResult(taskId, content)
           if (result.continued) {

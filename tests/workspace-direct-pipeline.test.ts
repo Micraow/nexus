@@ -671,4 +671,31 @@ describe('direct concept extraction import pipeline', () => {
     await expect(first).resolves.toEqual({ ok: true })
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
+
+  it('exposes maintenance MCP tools and normalizes tool calls through the suggestion validator', async () => {
+    const conceptId = store.createConcept('工具调用主题')
+    let requestBody: Record<string, unknown> | undefined
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: null, tool_calls: [{ function: { name: 'nexus_maintenance_update_concept', arguments: JSON.stringify({ concept_id: conceptId, summary: '工具更新摘要', reason: '维护证据' }) } }] } }] }),
+      } as Response
+    }))
+    store.updateConfig({
+      llm: {
+        ...store.config.llm,
+        mode: 'api',
+        defaultProvider: 'maintenance-provider',
+        providers: [{ id: 'maintenance-provider', name: 'Maintenance', baseUrl: 'https://example.test/v1', model: 'maintenance-model', apiKey: 'test-key' }],
+      },
+    })
+    const taskId = store.createMaintenanceTask({ conceptIds: [conceptId] })
+    await expect(store.executeTask(taskId)).resolves.toEqual({ ok: true })
+    const tools = requestBody?.tools as Array<{ type: string; function: { name: string; parameters: { additionalProperties: boolean } } }>
+    expect(tools.some((tool) => tool.type === 'function' && tool.function.name === 'nexus_maintenance_update_concept')).toBe(true)
+    expect(tools.find((tool) => tool.function.name === 'nexus_maintenance_set_hierarchy_parents')?.function.parameters.additionalProperties).toBe(false)
+    const task = store.tasks.find((item) => item.id === taskId)!
+    expect(JSON.parse(task.parsedResult ?? '{}')).toMatchObject({ suggestions: [{ type: 'update_concept', concept_id: conceptId, summary: '工具更新摘要', reason: '维护证据' }] })
+  })
 })
