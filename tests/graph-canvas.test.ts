@@ -174,4 +174,23 @@ describe('GraphCanvas progressive disclosure', () => {
     await nextTick()
     expect([...target.querySelectorAll<SVGGElement>('.graph-node')].map((node) => node.dataset.refId)).toEqual(['root'])
   })
+
+  it('hides Reading Unit association links until the link itself is hovered', async () => {
+    const target = mountSnapshot({
+      revision: 7,
+      nodes: [
+        { id: 'concept:root', type: 'concept', refId: 'root', label: '根', degree: 1, unitCount: 1 },
+        { id: 'unit:u1', type: 'unit', refId: 'u1', label: '片段', degree: 1, unitCount: 0 },
+      ],
+      edges: [{ id: 'edge:a', source: 'concept:root', target: 'unit:u1', type: 'association', weight: 1 }],
+    })
+    await nextTick()
+    const link = target.querySelector<SVGLineElement>('.graph-link-unit')!
+    expect(link).toBeTruthy()
+    expect(link.getAttribute('class')).not.toContain('is-hovered')
+    link.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }))
+    expect(link.getAttribute('class')).toContain('is-hovered')
+    link.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }))
+    expect(link.getAttribute('class')).not.toContain('is-hovered')
+  })
 })

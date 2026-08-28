@@ -613,6 +613,23 @@ function render(): void {
       activateNode(event, node)
     })
 
+  // Association lines to Reading Units are intentionally invisible at rest
+  // to keep the overview legible. They remain hit-testable and reveal on
+  // direct pointer hover (or when one of their endpoint nodes is highlighted).
+  linkSelection
+    .on('mouseenter.unit-link', function (_event, edge) {
+      const source = typeof edge.source === 'string' ? edge.source : (edge.source as unknown as GraphNode).id
+      const target = typeof edge.target === 'string' ? edge.target : (edge.target as unknown as GraphNode).id
+      if (!source.startsWith('unit:') && !target.startsWith('unit:')) return
+      d3.select(this).classed('is-hovered', true)
+    })
+    .on('mouseleave.unit-link', function (_event, edge) {
+      const source = typeof edge.source === 'string' ? edge.source : (edge.source as unknown as GraphNode).id
+      const target = typeof edge.target === 'string' ? edge.target : (edge.target as unknown as GraphNode).id
+      if (!source.startsWith('unit:') && !target.startsWith('unit:')) return
+      d3.select(this).classed('is-hovered', false)
+    })
+
   const drag = d3
     .drag<SVGGElement, GraphNode & d3.SimulationNodeDatum>()
     .on('start', (event, node) => {
