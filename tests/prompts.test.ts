@@ -98,12 +98,16 @@ describe('maintenance prompt', () => {
       required: ['concept_id', 'parent_concept_ids', 'reason'],
     })
     expect(actions.get('set_hierarchy_parents')?.input_schema.properties.parent_concept_ids).toMatchObject({ type: 'array', items: { type: 'string' } })
+    expect(actions.get('create_concept')?.input_schema.properties.parent_concept_id).toMatchObject({ type: ['string', 'null'] })
+    expect(actions.get('set_hierarchy_parents')?.input_schema.properties.parent_concept_ids).toMatchObject({ uniqueItems: true })
     expect(actions.get('remove_alias')?.input_schema.required).toContain('alias_id')
     expect(actions.get('set_relation_status')?.input_schema.properties.status).toMatchObject({ enum: ['proposed', 'confirmed', 'rejected'] })
     const serialized = JSON.parse(formatMaintenanceActionApi()) as Array<{ input_schema: { additionalProperties: boolean } }>
     expect(serialized.every((action) => action.input_schema.additionalProperties === false)).toBe(true)
     expect(actions.get('create_concept')).toMatchObject({ name: 'nexus_maintenance_create_concept', description: expect.any(String) })
     expect(actions.get('create_concept')?.inputSchema).toEqual(actions.get('create_concept')?.input_schema)
+    expect(actions.get('remove_relation')).toMatchObject({ alias_for: 'delete_relation', deprecated: true })
+    expect(actions.get('delete_relation')?.inputSchema.properties.reason).toMatchObject({ type: 'string', minLength: 1 })
   })
 })
 
@@ -215,7 +219,10 @@ describe('Session and Message Concept extraction contract', () => {
     expect(prompt).toContain('source 是直接父主题、target 是直接子主题')
     expect(prompt).toContain('上位概念/下位概念')
     expect(prompt).toContain('related 是无向、非层级的稳定语义关系')
-    expect(prompt).toContain('最多返回 2 条最强 related')
+    expect(prompt).toContain('普通 Concept 提取和对话响应绝不能返回 related')
+    expect(prompt).toContain('普通提取只能返回 hierarchy 建议')
+    expect(prompt).toContain('"type":"hierarchy","status":"proposed"')
+    expect(prompt).not.toContain('"type":"hierarchy|related"')
     expect(prompt).toContain('不要为了把所有 Concept 连起来而补关系')
     expect(prompt).toContain('语义范围最窄且确实包含它的已有父主题')
     expect(prompt).toContain('同批次父主题')

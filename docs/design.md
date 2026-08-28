@@ -606,7 +606,7 @@ LLM 只返回建议变更：合并、别名、创建/编辑/软删除（归档�
 
 折叠层级下仍保留数据密度：隐藏 Concept 通过 hierarchy 向上投影到每条父链上的第一个可见祖先。每个 Session 汇总其直接、消息级和 KnowledgeUnit 级归属，再按两个不同的原始 Concept 配对投影；同一 Session 对每一对可见代表 Concept 只贡献一次共现权重，多个单元、消息或隐藏叶节点落在同一对代表节点时不会重复计数，单个多父 Concept 也不会凭空制造根节点共现，不同 Session 才会累加。KnowledgeUnit 节点仅在全局开关打开时出现，Message 节点仅按消息开关或保留会话筛选出现；这些局部披露不改变 Concept 的层级可见性。
 
-`related` 是独立的无向边：可以在可见节点之间绘制，也可以随筛选隐藏，但从不触发祖先路径、子节点展开、根节点计算或 hierarchy 布局约束。待确认关系只有在 `showProposed=true` 时进入派生图谱。知识维护 Prompt 使用与校验器共享的 `MAINTENANCE_ACTION_API` 工具目录，严格暴露 Concept 创建/编辑/归档/恢复/合并、别名增删、关系增删改与审核、多父 hierarchy 整体替换/解除、归属迁移和片段修订；每条动作必须有非空 `reason`，未知动作或字段拒绝，写入走可撤销事务。
+`related` 是独立的无向边：可以在可见节点之间绘制，也可以随筛选隐藏，但从不触发祖先路径、子节点展开、根节点计算或 hierarchy 布局约束。默认 related 由软件根据共享 Session/Message 事实派生，普通 Concept 提取和对话不得直接返回 related；只有知识维护动作 API 能显式编辑持久化 related。待确认关系只有在 `showProposed=true` 时进入派生图谱。知识维护 Prompt 使用与校验器共享的 `MAINTENANCE_ACTION_API` 工具目录，按 MCP 标准暴露 `name`、`description`、`inputSchema`（并保留 `input_schema` 兼容字段），严格暴露 Concept 创建/编辑/归档/恢复/合并、别名增删、关系增删改与审核、多父 hierarchy 整体替换/解除、归属迁移和片段修订；每条动作必须有非空 `reason`，未知动作或字段拒绝，写入走可撤销事务。
 
 交互：
 

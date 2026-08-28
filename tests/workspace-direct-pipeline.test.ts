@@ -122,6 +122,24 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.messageConcepts).toContainEqual(expect.objectContaining({ messageId: openingMessage!.id, conceptId }))
   })
 
+  it('keeps the store graph roots-only until each hierarchy level is opened', () => {
+    const rootId = store.createConcept('图谱根主题')
+    const childId = store.createConcept('图谱子主题')
+    const grandchildId = store.createConcept('图谱孙主题')
+    store.createRelation(rootId, childId, 'hierarchy')
+    store.createRelation(childId, grandchildId, 'hierarchy')
+
+    const rootsOnly = store.viewGraph()
+    expect(rootsOnly.nodes.filter((node) => node.type === 'concept').map((node) => node.refId)).toEqual([rootId])
+
+    const firstLevel = store.viewGraph({ expandedConceptIds: [rootId] })
+    expect(firstLevel.nodes.filter((node) => node.type === 'concept').map((node) => node.refId).sort()).toEqual([childId, rootId].sort())
+    expect(firstLevel.nodes.some((node) => node.refId === grandchildId)).toBe(false)
+
+    const secondLevel = store.viewGraph({ expandedConceptIds: [rootId, childId] })
+    expect(secondLevel.nodes.filter((node) => node.type === 'concept').map((node) => node.refId).sort()).toEqual([childId, grandchildId, rootId].sort())
+  })
+
   it('accepts a conversation answer without creating a KnowledgeUnit', () => {
     const sessionId = store.createConversationTask({ question: '只回答一个即时问题，不沉淀知识片段' })
     const task = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!

@@ -32,10 +32,13 @@ export interface DisclosureContext {
 
 type MaintenanceProperty = string | readonly string[]
 type MaintenanceSchemaProperty = {
-  type: 'string' | 'array' | 'boolean'
+  type: 'string' | 'array' | 'boolean' | readonly ('string' | 'null')[]
   enum?: readonly string[]
-  items?: { type: 'string' }
-  nullable?: boolean
+  items?: { type: 'string'; minLength?: number }
+  minLength?: number
+  maxLength?: number
+  minItems?: number
+  uniqueItems?: boolean
 }
 
 export interface MaintenanceActionDefinition {
@@ -66,10 +69,12 @@ export interface MaintenanceActionDefinition {
 
 function maintenanceSchemaProperty(value: MaintenanceProperty): MaintenanceSchemaProperty {
   if (Array.isArray(value)) return { type: 'string', enum: value }
-  if (value === 'string[]') return { type: 'array', items: { type: 'string' } }
+  if (value === 'string[]') return { type: 'array', items: { type: 'string', minLength: 1 }, uniqueItems: true }
   if (value === 'boolean') return { type: 'boolean' }
-  if (value === 'string|null' || value === 'string|null?') return { type: 'string', nullable: true }
-  return { type: 'string' }
+  if (value === 'string|null' || value === 'string|null?') return { type: ['string', 'null'] }
+  const schema: MaintenanceSchemaProperty = { type: 'string', minLength: 1 }
+  if (value === 'string') schema.maxLength = 120
+  return schema
 }
 
 function maintenanceAction(
@@ -81,7 +86,7 @@ function maintenanceAction(
 ): MaintenanceActionDefinition {
   const schemaProperties: Record<string, MaintenanceSchemaProperty> = {}
   Object.entries(properties).forEach(([key, value]) => { schemaProperties[key] = maintenanceSchemaProperty(value) })
-  schemaProperties.reason = { type: 'string' }
+  schemaProperties.reason = { type: 'string', minLength: 1 }
   return {
     type,
     name: `nexus_maintenance_${type}`,
@@ -126,7 +131,7 @@ export const MAINTENANCE_ACTION_API: readonly MaintenanceActionDefinition[] = [
   maintenanceAction('add_relation', ['source_concept_id', 'target_concept_id', 'relation_type', 'reason'], { source_concept_id: 'string', target_concept_id: 'string', relation_type: ['hierarchy', 'related'] }, '新增 proposed 关系；hierarchy 为父→子，related 按无向边处理'),
   maintenanceAction('update_relation', ['relation_id', 'reason'], { relation_id: 'string', source_concept_id: 'string?', target_concept_id: 'string?', relation_type: ['hierarchy', 'related'] }, '修改关系端点或类型并重置为 proposed'),
   maintenanceAction('delete_relation', ['relation_id', 'reason'], { relation_id: 'string' }, '删除一条关系；删除是幂等的'),
-  maintenanceAction('remove_relation', ['relation_id', 'reason'], { relation_id: 'string' }, 'delete_relation 的兼容别名'),
+  maintenanceAlias('remove_relation', 'delete_relation', ['relation_id', 'reason'], { relation_id: 'string' }, 'delete_relation 的兼容别名；新任务应使用 delete_relation'),
   maintenanceAlias('relation', 'add_relation', ['source_concept_id', 'target_concept_id', 'relation_type', 'reason'], { source_concept_id: 'string', target_concept_id: 'string', relation_type: ['hierarchy', 'related'] }, 'add_relation 的兼容别名；旧结果可使用 parent_concept_id/child_concept_id'),
   maintenanceAction('set_relation_status', ['relation_id', 'status', 'reason'], { relation_id: 'string', status: ['proposed', 'confirmed', 'rejected'] }, '设置关系审核状态；confirmed/rejected 只应在用户明确授权审核时使用', '普通维护扫描不得自行确认或拒绝关系，除非任务明确要求审核'),
   maintenanceAction('confirm_relation', ['relation_id', 'reason'], { relation_id: 'string' }, '将关系标记为 confirmed；set_relation_status 的明确别名', '只在任务明确要求确认时使用'),
@@ -179,7 +184,7 @@ export const NEXUS_HARNESS_PROMPT = `你是 Nexus 织知任务运行时中的结
 3. 可以使用模型自身知识、推理能力以及调用方明确允许的外部搜索/工具来补充答案，但必须区分“输入证据”“外部资料”和“推断”；没有证据时明确说不确定，不能把推测写成已确认事实。
 4. 术语约定：Concept 是可跨会话复用的知识主题；KnowledgeUnit 是同一 Session 内语义连续的一段内容；hierarchy 表示 source 为父、target 为子；related 是无向关联，不存在父子顺序。
    Concept 层级优先：根节点是例外。新主题先匹配已有或同批次中最窄且有直接证据的父主题；只有没有足够层级证据时才留在根，不能把所有主题平铺成一级。
-5. 关系必须有直接语义证据。不能仅因两个主题共同出现、同属一个单元或看起来相关就建立 related；宁可返回空关系，也不要凑数。除非任务另有说明，建议关系保持最少且可解释。
+5. 关系策略：普通 Concept 提取和对话只允许提出有直接证据的 hierarchy；related 由软件根据共享 Session/Message 事实自动派生，普通模型不得返回或写入 related。只有知识维护动作 API 可以显式编辑持久化 related，且必须遵守该 API 的审核边界。
 6. 遵守任务说明中的字段、长度、索引、数量和版本约束。不得遗漏输入范围内必须处理的项目，不得杜撰 ID。遇到无法满足的约束，按输出契约报告问题。
 7. 输出必须是一个 JSON 对象，不要 Markdown 围栏、前后解释、注释或额外键；字符串中的 Markdown 只允许在契约明确允许时出现。`
 
@@ -456,7 +461,7 @@ export function buildOriginConceptPrompt(
     ? `输入范围：这是长会话的技术窗口 ${validWindow.index}/${validWindow.total}。窗口只用于控制上下文长度，不是 KnowledgeUnit、知识边界或独立会话；不要按窗口边界命名 Concept，也不要仅凭局部窗口给整个 Session 建立归属。`
     : '输入范围：完整 Session。'
 
-  return buildHarnessPrompt(`请直接从下面的 Session 和 Message 提取 1～8 个稳定、可复用的核心 Concept（包括复用已有 Concept 与新候选），并建立可追溯的多对多归属。探讨、比较或操作流程也可以包含稳定知识；不要为了生成主题而先把对话分段。
+  return buildHarnessPrompt(`请直接从下面的 Session 和 Message 提取 1～8 个稳定、可复用的核心 Concept（包括复用已有 Concept 与新候选），并建立可追溯的多对多归属。但是现在你只能建立hierarchy关系。探讨、比较或操作流程也可以包含稳定知识；不要为了生成主题而先把对话分段。
 
 Session：${session.title}
 Session ID：${session.id}
@@ -476,10 +481,10 @@ Concept 与归属：
 - 对每个新 Concept，先在 DISCLOSURE_INDEX 中查找语义范围最窄且确实包含它的已有父主题；不要只因它是一级根主题就把它当作父级。若一级目录不足以判断，必须请求展开相关分支。也要检查本次 concepts 中是否已有更合适的直接父主题。
 - 找到合适的直接父主题时必须返回 hierarchy；只有没有任何可解释的已有父主题或同批次父主题时，才可以不返回 hierarchy 并让新 Concept 暂作根。不要把多数新 Concept 并列为根，也不要为了避开层级而改用 related。
 - hierarchy 中 source 是直接父主题、target 是直接子主题。只有 target 的语义范围严格包含于 source，且二者是稳定的“上位概念/下位概念”关系时才能使用；因果、先后、组成步骤、同会话出现或一般相关都不是 hierarchy。不要同时返回可由其他边推导出的传递关系。
-- related 是无向、非层级的稳定语义关系，不存在父子顺序。仅共同出现或都属于本 Session 不足以建立 related；最多返回 2 条最强 related，宁可为空。
-- 关系端点使用已披露的 Concept refID 或本次 concepts 的 client_ref。所有关系都是建议，status 只能省略或为 proposed，绝不能写 confirmed/rejected；应用会在本地去重、做 DAG 环检测，用户确认后才会改变状态。不要为了把所有 Concept 连起来而补关系。
+- related 是无向、非层级的稳定语义关系，不存在父子顺序；它由软件根据共享 Session/Message 事实自动派生，普通 Concept 提取和对话响应绝不能返回 related。只有知识维护动作 API 可以显式添加、修改或删除持久化 related。
+- 关系端点使用已披露的 Concept refID 或本次 concepts 的 client_ref。普通提取只能返回 hierarchy 建议，status 只能省略或为 proposed，绝不能写 confirmed/rejected；应用会在本地去重、做 DAG 环检测，用户确认后才会改变状态。不要为了把所有 Concept 连起来而补关系。
 
-只返回 JSON：{"concepts":[{"client_ref":"new:1","name":"...","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"memberships":[{"target_type":"message","target_id":"上面列出的 Message ID","concept_ids":["已披露的 Concept refID 或 new:1","另一个 Concept refID 或 client_ref"]}],"relations":[{"source":"Concept refID 或 client_ref","target":"Concept refID 或 client_ref","type":"hierarchy|related","status":"proposed"}],"disclosure_requests":[]}`)
+只返回 JSON：{"concepts":[{"client_ref":"new:1","name":"...","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"memberships":[{"target_type":"message","target_id":"上面列出的 Message ID","concept_ids":["已披露的 Concept refID 或 new:1","另一个 Concept refID 或 client_ref"]}],"relations":[{"source":"Concept refID 或 client_ref","target":"Concept refID 或 client_ref","type":"hierarchy","status":"proposed"}],"disclosure_requests":[]}`)
 }
 
 export function buildRepairPrompt(originalResponse: string, errors: string[], disclosure?: DisclosureContext): string {
