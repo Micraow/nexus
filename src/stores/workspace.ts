@@ -1510,6 +1510,70 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     })
   }
 
+  /**
+   * Persist LLM relation suggestions without granting them confirmation
+   * authority. Validation has already limited refs to the current prompt and
+   * response-local client refs; this final guard also tolerates legacy task
+   * shapes while preventing duplicate, cyclic, or user-owned replacements.
+   */
+  function persistProposedConceptRelations(
+    rawRelations: unknown,
+    now: string,
+    resolveConceptRef: (ref: string) => string | null,
+  ): void {
+    if (!Array.isArray(rawRelations)) return
+    const pendingRelations: ConceptRelation[] = []
+    const relationKeys = new Set<string>(relations.value.map((relation) => {
+      const pair = relation.relationType === 'related'
+        ? [relation.parentConceptId, relation.childConceptId].sort().join('|')
+        : `${relation.parentConceptId}|${relation.childConceptId}`
+      return `${relation.relationType}:${pair}`
+    }))
+
+    rawRelations.forEach((rawRelation) => {
+      if (!rawRelation || typeof rawRelation !== 'object' || Array.isArray(rawRelation)) return
+      const value = rawRelation as Record<string, unknown>
+      const sourceRef = typeof value.source === 'string' ? value.source
+        : typeof value.parent === 'string' ? value.parent
+          : typeof value.source_name === 'string' ? value.source_name
+            : typeof value.parent_name === 'string' ? value.parent_name : ''
+      const targetRef = typeof value.target === 'string' ? value.target
+        : typeof value.child === 'string' ? value.child
+          : typeof value.target_name === 'string' ? value.target_name
+            : typeof value.child_name === 'string' ? value.child_name : ''
+      const relationType = value.type === 'hierarchy' ? 'hierarchy' as const
+        : value.type === 'related' ? 'related' as const : null
+      const sourceRawId = resolveConceptRef(sourceRef)
+      const targetRawId = resolveConceptRef(targetRef)
+      if (!sourceRawId || !targetRawId || !relationType || sourceRawId === targetRawId) return
+
+      const [sourceId, targetId] = relationType === 'related' && sourceRawId > targetRawId
+        ? [targetRawId, sourceRawId]
+        : [sourceRawId, targetRawId]
+      if (relationType === 'hierarchy' && wouldCreateHierarchyCycle(sourceId, targetId, [...relations.value, ...pendingRelations])) return
+
+      const pair = relationType === 'related' ? [sourceId, targetId].sort().join('|') : `${sourceId}|${targetId}`
+      const relationKey = `${relationType}:${pair}`
+      if (relationKeys.has(relationKey)) return
+      relationKeys.add(relationKey)
+
+      const relation: ConceptRelation = {
+        id: createId('relation'),
+        parentConceptId: sourceId,
+        childConceptId: targetId,
+        relationType,
+        source: 'llm',
+        status: 'proposed',
+        createdAt: now,
+        updatedAt: now,
+      }
+      pendingRelations.push(relation)
+      // The unique key makes this a no-op for an existing user-confirmed
+      // relation instead of replacing its source or status.
+      db.run('INSERT OR IGNORE INTO concept_relations(id, parent_concept_id, child_concept_id, relation_type, source, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [relation.id, sourceId, targetId, relationType, 'llm', 'proposed', now, now])
+    })
+  }
+
   function createMaintenanceTask(input: { conceptIds?: string[]; unitIds?: string[]; includeFullContent?: boolean } = {}): string {
     const requestedConceptIds = input.conceptIds?.length ? new Set(input.conceptIds) : null
     const requestedUnitIds = input.unitIds?.length ? new Set(input.unitIds) : null
@@ -1936,32 +2000,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           // default membership.
           persistConceptMemberships(data.memberships, now, resolveConceptRef, false)
         }
-        const pendingRelations: ConceptRelation[] = []
-        const relationKeys = new Set<string>(relations.value.map((relation) => {
-          const pair = relation.relationType === 'related'
-            ? [relation.parentConceptId, relation.childConceptId].sort().join('|')
-            : `${relation.parentConceptId}|${relation.childConceptId}`
-          return `${relation.relationType}:${pair}`
-        }))
-        if (Array.isArray(data.relations)) data.relations.slice(0, 2).forEach((rawRelation) => {
-          if (!rawRelation || typeof rawRelation !== 'object') return
-          const value = rawRelation as Record<string, unknown>
-          const sourceName = typeof value.source === 'string' ? value.source : typeof value.parent === 'string' ? value.parent : typeof value.source_name === 'string' ? value.source_name : typeof value.parent_name === 'string' ? value.parent_name : ''
-          const targetName = typeof value.target === 'string' ? value.target : typeof value.child === 'string' ? value.child : typeof value.target_name === 'string' ? value.target_name : typeof value.child_name === 'string' ? value.child_name : ''
-          const sourceRawId = resolveConceptRef(sourceName) ?? conceptIdsByName.get(normalizeText(sourceName))
-          const targetRawId = resolveConceptRef(targetName) ?? conceptIdsByName.get(normalizeText(targetName))
-          const relationType = value.type === 'related' ? 'related' as const : value.type === 'hierarchy' ? 'hierarchy' as const : null
-          if (!sourceRawId || !targetRawId || !relationType || sourceRawId === targetRawId) return
-          const [sourceId, targetId] = relationType === 'related' && sourceRawId > targetRawId ? [targetRawId, sourceRawId] : [sourceRawId, targetRawId]
-          if (relationType === 'hierarchy' && wouldCreateHierarchyCycle(sourceId, targetId, [...relations.value, ...pendingRelations])) return
-          const pair = relationType === 'related' ? [sourceId, targetId].sort().join('|') : `${sourceId}|${targetId}`
-          const relationKey = `${relationType}:${pair}`
-          if (relationKeys.has(relationKey)) return
-          relationKeys.add(relationKey)
-          const relation: ConceptRelation = { id: createId('relation'), parentConceptId: sourceId, childConceptId: targetId, relationType, source: 'llm', status: 'proposed', createdAt: now, updatedAt: now }
-          pendingRelations.push(relation)
-          db.run('INSERT OR IGNORE INTO concept_relations(id, parent_concept_id, child_concept_id, relation_type, source, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [relation.id, sourceId, targetId, relationType, 'llm', 'proposed', now, now])
-        })
+        persistProposedConceptRelations(data.relations, now, resolveConceptRef)
         db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = ?, validation_errors = NULL, updated_at = ? WHERE id = ?', ['success', responseText, JSON.stringify(data), now, taskId])
       })
       return { ok: true, errors: [] }
@@ -2042,7 +2081,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           conceptIds: promptConceptIds(task),
         }).map((issue) => `${issue.path}: ${issue.message}`))
         errors.push(...validateConceptIdList(data.concept_ids, promptConceptIds(task)).map((issue) => `${issue.path}: ${issue.message}`))
-        if (Array.isArray(data.relations) && data.relations.length) errors.push('conversation.relations: 对话结果暂不接受关系建议，请通过知识维护任务确认关系')
       } else {
         // Older conversation prompts had no response-local Concept contract
         // and could target an already existing optional KnowledgeUnit.
@@ -2050,6 +2088,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           ...conversationTargetIds,
           ...units.value.filter((unit) => unit.sessionId === targetId).map((unit) => unit.id),
         ]))
+        // Legacy responses may still carry relation suggestions. Validate
+        // their endpoints against the disclosed catalog before applying them.
+        if (Object.prototype.hasOwnProperty.call(data, 'relations')) {
+          errors.push(...validateOriginConceptResult({ concepts: [], memberships: [], relations: data.relations }, {
+            targetIds: conversationTargetIds,
+            conceptIds: promptConceptIds(task),
+          }).map((issue) => `${issue.path}: ${issue.message}`))
+        }
       }
       if (errors.length) {
         markTask(taskId, errors.some((error) => error.includes('版本')) ? 'stale' : 'needs_review', responseText, errors)
@@ -2122,6 +2168,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           })
         })
         persistConceptMemberships(data.memberships, now, resolveConversationConceptRef, false)
+        persistProposedConceptRelations(data.relations, now, resolveConversationConceptRef)
         const currentTitle = conversationSession?.title ?? '新的知识对话'
         const fallbackTitle = normalizedUnits[0]?.title || compactSessionText(userMessage?.content, 60)
         const nextTitle = conversationSession && isGeneratedConversationTitle(conversationSession)

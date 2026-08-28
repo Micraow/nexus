@@ -457,9 +457,9 @@ API 服务支持结构化输出时，同时使用接口级 JSON Schema；Prompt 
 
 ### 6.0 固定 Harness 与渐进式披露
 
-每个任务 Prompt 都先拼接版本化的固定前缀 `NEXUS_HARNESS_PROMPT` 和 `PROGRESSIVE_DISCLOSURE_PROTOCOL`，再附加该任务的规格和数据。固定前缀按字节保持稳定（当前 `PROMPT_VERSION=2026-08-v4-direct-concepts`），任务重试或披露续跑只能替换动态数据段，不能删改行为契约。
+每个任务 Prompt 都先拼接版本化的固定前缀 `NEXUS_HARNESS_PROMPT` 和 `PROGRESSIVE_DISCLOSURE_PROTOCOL`，再附加该任务的规格和数据。固定前缀按字节保持稳定（当前 `PROMPT_VERSION=2026-08-v5-hierarchy-aware`），任务重试或披露续跑只能替换动态数据段，不能删改行为契约。
 
-当任务需要参考较大的知识树时，Prompt 在 `DISCLOSURE_INDEX` 中提供首层目录和已经展开的记录。目录项至少包含不透明的 `refID`、`title` 和 `summary`；摘要是导航线索，不得冒充消息原文。展开记录可提供 `children`（下一层同样只含 `refID`/标题/摘要），并可在明确请求时提供 `content`（知识单元或消息原文）。
+当任务需要参考较大的知识树时，Prompt 在 `DISCLOSURE_INDEX` 中提供首层目录和已经展开的记录。目录项至少包含不透明的 `refID`、`title` 和 `summary`；摘要是导航线索，不得冒充消息原文。展开记录可提供 `children`（下一层同样只含 `refID`/标题/摘要），并可在明确请求时提供 `content`（知识单元或消息原文）。当前 `PROMPT_VERSION` 为 `2026-08-v5-hierarchy-aware`。
 
 模型需要更多证据时，可以在输出 JSON 中返回 `disclosure_requests`，例如 `{ "refID": "目录中已有的 ID", "depth": 1 }`。本地先校验数组、唯一 `refID`、引用必须来自当前目录以及 `depth` 为 1～64 的整数；校验失败进入 `needs_review`，不应用任何部分结果。校验通过后，应用从本地事实表按 `refID` 递归展开指定层数，保留根引用和原文，替换 Prompt 中的动态 `DISCLOSURE_INDEX` 并将同一任务重新排队。任务最多连续披露 8 轮，超出后暂停供用户检查。
 
@@ -573,6 +573,8 @@ LLM 只返回建议变更：合并、别名、父子关系、相关关系、重�
 一次任务可以创建/复用多个 Concept，并为 Session、Message 和可选 KnowledgeUnit 分别返回 `concept_ids[]`。关联分别写入 SessionConcept、MessageConcept 和 UnitConcept；同一目标可以同时支撑多个主题。
 
 新 Concept 的名称、摘要和别名在同一结果中返回。`hierarchy` 只用于可证明的上位/下位关系并通过 DAG 校验；一般关联使用无向 `related`。明显关系可标记为 LLM 来源，无法确定的关系进入 `proposed`，不能为了让塔形更满而强行补父子边。
+
+新增 Concept 时，Prompt harness 要求优先检查当前目录和同批次候选中语义范围最窄的直接父主题；只有确无合适上位主题才允许暂作根，不能把多数候选并列为一级根。对话与提取结果中的关系统一按 `proposed` 落库，应用在写入前校验端点、去重并检测 hierarchy 环，不替换已有用户确认关系。
 
 ### M4 知识图谱
 

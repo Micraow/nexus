@@ -299,6 +299,8 @@ Concept ID 导入 `message_concepts`，同时保留 metadata 原文以便回溯�
 - 同一个 Session、Message 或 KnowledgeUnit 可以归属多个 Concept，不得压缩为单个“主主题”；
 - 新 Concept 的名称、摘要和别名在同一结果中返回；引用现有 Concept 时 ID 必须来自当前目录；
 - `hierarchy` 只表达严格的上位/下位关系并通过 DAG 校验；一般关联使用无向 `related`；
+- 新 Concept 提取优先匹配当前目录或同批次中语义范围最窄的直接父主题；只有不存在可解释的上位主题时才暂作根，不能把候选全部并列在根层。
+- 对话和 Concept 提取结果中的关系仅作为 `proposed` 建议写入；应用会校验端点属于当前任务、去重并检测 hierarchy 环，且不会用建议覆盖已有 `confirmed` 关系。
 - `knowledge`、`discussion`、`procedure` 和 `mixed` 都保留原始消息；`mixed` 必须继续执行 Message 级识别，没有稳定知识的目标可以返回空数组。
 
 长 Session 可以使用带重叠上下文的窗口分批提取候选。窗口必须携带全局 Message ID，最终在 Session 级完成去重、归一化、关系校验和归属合并；窗口边界是运行时机制，不得落库为 KnowledgeUnit 或被视为知识边界。

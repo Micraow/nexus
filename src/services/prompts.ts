@@ -5,7 +5,7 @@ import type { KnowledgeUnit, Message, Session } from '@/types/domain'
  * lets provider-side prompt caches reuse the behavioural contract while each
  * task appends its own spec and data below it.
  */
-export const PROMPT_VERSION = '2026-08-v4-direct-concepts'
+export const PROMPT_VERSION = '2026-08-v5-hierarchy-aware'
 
 export interface DisclosureReference {
   /** Opaque internal id. The model must never invent or rewrite it. */
@@ -311,12 +311,12 @@ KnowledgeUnit：${unit.title ?? '待命名'}（ID：${unit.id}）
 ${disclosureText}
 
 如果 DISCLOSURE_INDEX 中已有一级父主题与子主题引用，请先判断是否应复用已有主题；需要更多层级时按固定协议返回 disclosure_requests，不要自行创造 refID。
-关系语义：hierarchy 使用 source 作为父主题、target 作为子主题；related 只是两个主题之间的无向关联，不存在父子顺序。
+关系与层级：对每个新 Concept，优先查找 DISCLOSURE_INDEX 或本批次中语义范围最窄且直接包含它的父主题；只有确无合适上位主题才允许暂作根，不要把候选全部并列。hierarchy 使用 source 作为父主题、target 作为子主题；related 只是两个主题之间的无向关联，不存在父子顺序。
 关系必须有消息中的直接证据：不要因为两个 Concept 同时出现、属于同一知识单元或“看起来有关”就建立关系。每个 KnowledgeUnit 最多返回 0～2 条关系，宁可为空；不要为了凑数建立 related。只保留最强、最明确的关系。
 
 输出中的 memberships 是可选的细粒度归属声明；同一目标可以列出多个 Concept，必须使用 concept_ids 数组。只能引用 DISCLOSURE_INDEX 中已经出现的 Concept refID；新提取的 Concept 由 concepts 数组定义，应用会按本 KnowledgeUnit 的范围建立多对多关联。如果全部复用现有 Concept，concepts 可以返回空数组，但 concept_ids 不能同时为空。
 
-只返回 JSON：{"concepts":[{"name":"...","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"concept_ids":["已列出的 Concept refID"],"memberships":[{"target_type":"unit|message|session","target_id":"原始 ID","concept_ids":["Concept refID", "另一个 Concept refID"]}],"relations":[{"source":"Concept 名称","target":"Concept 名称","type":"hierarchy|related"}],"disclosure_requests":[]}`)
+只返回 JSON：{"concepts":[{"name":"...","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"concept_ids":["已列出的 Concept refID"],"memberships":[{"target_type":"unit|message|session","target_id":"原始 ID","concept_ids":["Concept refID", "另一个 Concept refID"]}],"relations":[{"source":"Concept 名称","target":"Concept 名称","type":"hierarchy|related","status":"proposed"}],"disclosure_requests":[]}`)
 }
 
 /** Session-wide Concept extraction uses the same contract as unit extraction. */
@@ -354,12 +354,14 @@ Concept 与归属：
 - Message 可以不归属任何 Concept；不要为了覆盖全部消息而制造主题。每个新候选至少要被一条 Message membership 引用。只有输入是完整 Session，且主题确实概括整个会话时，才添加 Session membership。
 - 禁止返回 unit membership，禁止创建、推断或默认关联 KnowledgeUnit。线性消息顺序和技术窗口都不是知识边界。
 
-关系：
+关系与层级：
+- 对每个新 Concept，先在 DISCLOSURE_INDEX 中查找语义范围最窄且确实包含它的已有父主题；不要只因它是一级根主题就把它当作父级。若一级目录不足以判断，必须请求展开相关分支。也要检查本次 concepts 中是否已有更合适的直接父主题。
+- 找到合适的直接父主题时必须返回 hierarchy；只有没有任何可解释的已有父主题或同批次父主题时，才可以不返回 hierarchy 并让新 Concept 暂作根。不要把多数新 Concept 并列为根，也不要为了避开层级而改用 related。
 - hierarchy 中 source 是直接父主题、target 是直接子主题。只有 target 的语义范围严格包含于 source，且二者是稳定的“上位概念/下位概念”关系时才能使用；因果、先后、组成步骤、同会话出现或一般相关都不是 hierarchy。不要同时返回可由其他边推导出的传递关系。
 - related 是无向、非层级的稳定语义关系，不存在父子顺序。仅共同出现或都属于本 Session 不足以建立 related；最多返回 2 条最强 related，宁可为空。
-- 关系端点使用已披露的 Concept refID 或本次 concepts 的 client_ref。不要为了把所有 Concept 连起来而补关系。
+- 关系端点使用已披露的 Concept refID 或本次 concepts 的 client_ref。所有关系都是建议，status 只能省略或为 proposed，绝不能写 confirmed/rejected；应用会在本地去重、做 DAG 环检测，用户确认后才会改变状态。不要为了把所有 Concept 连起来而补关系。
 
-只返回 JSON：{"concepts":[{"client_ref":"new:1","name":"...","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"memberships":[{"target_type":"message","target_id":"上面列出的 Message ID","concept_ids":["已披露的 Concept refID 或 new:1","另一个 Concept refID 或 client_ref"]}],"relations":[{"source":"Concept refID 或 client_ref","target":"Concept refID 或 client_ref","type":"hierarchy"}],"disclosure_requests":[]}`)
+只返回 JSON：{"concepts":[{"client_ref":"new:1","name":"...","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"memberships":[{"target_type":"message","target_id":"上面列出的 Message ID","concept_ids":["已披露的 Concept refID 或 new:1","另一个 Concept refID 或 client_ref"]}],"relations":[{"source":"Concept refID 或 client_ref","target":"Concept refID 或 client_ref","type":"hierarchy|related","status":"proposed"}],"disclosure_requests":[]}`)
 }
 
 export function buildRepairPrompt(originalResponse: string, errors: string[], disclosure?: DisclosureContext): string {
@@ -416,9 +418,11 @@ ${disclosureText}
 - 每个新主题必须至少归属于用户或 assistant Message；只有主题确实概括整个会话时才同时归属于 Session。不要把 Session 归属隐式复制给所有 Message。
 - 即使 units 为空，也要通过顶层 concepts 与 memberships 写明本轮确有证据的新主题或复用主题。没有新的稳定主题时 concepts 可以为空；没有直接归属时 memberships 可以为空。
 - units 只表示可选阅读片段。units[].concept_ids 只能引用已披露的已有主题；units[].concepts 可以定义只属于该阅读片段的新主题，但不能替代 Message/Session 的直接证据归属。
+- 对每个新 Concept，优先在 DISCLOSURE_INDEX 中找语义范围最窄的已有直接父主题，并检查本轮 concepts 是否存在更合适的直接父主题。目录层级不足时请求展开；找到合适父主题必须通过 relations 返回 hierarchy，只有确无合适上位主题才允许暂作根。不要把本轮 Concept 默认并列。
+- relations 可以表达 hierarchy 或 related。hierarchy 的 source 是父主题、target 是子主题；related 是无向且不改变根节点。关系端点只能是已披露 Concept refID 或本轮 client_ref；status 只能省略或为 proposed，绝不能写 confirmed/rejected。不要为了连接所有 Concept 编造关系。
 
 请只返回 JSON，格式如下：
-{"answer":"完整回答（可包含 Markdown）","session_title":"不超过 60 个字符的 Session 标题","session_summary":"不超过 120 个字符的 Session 滚动摘要","concepts":[{"client_ref":"new:1","name":"新 Concept 名称","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"memberships":[{"target_type":"session|message","target_id":"上面给出的 Session 或 Message ID","concept_ids":["已有 Concept refID 或 new:1"]}],"units":[{"title":"本次回答的知识单元标题","summary":"不超过 120 个中文字符的摘要","concept_ids":["已有 Concept refID"],"concepts":[{"name":"仅属于该阅读片段的新 Concept 名称","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}]}],"disclosure_requests":[]}
+{"answer":"完整回答（可包含 Markdown）","session_title":"不超过 60 个字符的 Session 标题","session_summary":"不超过 120 个字符的 Session 滚动摘要","concepts":[{"client_ref":"new:1","name":"新 Concept 名称","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"memberships":[{"target_type":"session|message","target_id":"上面给出的 Session 或 Message ID","concept_ids":["已有 Concept refID 或 new:1"]}],"relations":[{"source":"已有 Concept refID 或 new:1","target":"已有 Concept refID 或 new:1","type":"hierarchy|related","status":"proposed"}],"units":[{"title":"本次回答的知识单元标题","summary":"不超过 120 个中文字符的摘要","concept_ids":["已有 Concept refID"],"concepts":[{"name":"仅属于该阅读片段的新 Concept 名称","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}]}],"disclosure_requests":[]}
 
 session_title 和 session_summary 概括当前完整 Session，而不只是本轮问题；已有标题合适时原样返回。旧任务可以省略这两个字段，应用会保留已有值。units 是可选的阅读片段数组；它们打包本轮用户问题和回答，不表示知识主题层级。如果回答没有稳定、可复用的证据片段，返回空数组。不要返回解释文字。`)
 }

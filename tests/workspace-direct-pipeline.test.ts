@@ -195,6 +195,69 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.viewGraph().nodes.map((node) => node.refId)).toEqual(expect.arrayContaining([created.id, existingConceptId]))
   })
 
+  it('persists conversation hierarchy and related proposals without cycles or duplicates', () => {
+    const existingParentId = store.createConcept('网络协议')
+    const sessionId = store.createConversationTask({ question: '解释 TCP 拥塞控制的层级关系' })
+    const task = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
+    const question = store.messages.find((message) => message.sessionId === sessionId && message.role === 'user')!
+    const answerMessageId = String(question.metadata?.answerMessageId)
+
+    const result = store.applyTaskResult(task.id, JSON.stringify({
+      answer: 'TCP 拥塞控制是传输控制协议下的具体主题，并与网络协议相关。',
+      concepts: [
+        { client_ref: 'new:1', name: '传输控制协议', summary: '传输层协议的控制机制。', aliases: [] },
+        { client_ref: 'new:2', name: 'TCP 拥塞控制', summary: 'TCP 中调节发送速率的机制。', aliases: [] },
+      ],
+      memberships: [{ target_type: 'message', target_id: answerMessageId, concept_ids: ['new:1', 'new:2', existingParentId] }],
+      relations: [
+        { source: existingParentId, target: 'new:1', type: 'hierarchy', status: 'proposed' },
+        { source: 'new:1', target: 'new:2', type: 'hierarchy' },
+        { source: 'new:2', target: 'new:1', type: 'hierarchy' },
+        { source: 'new:2', target: existingParentId, type: 'related' },
+        { source: existingParentId, target: 'new:2', type: 'related' },
+      ],
+      units: [],
+      disclosure_requests: [],
+    }))
+
+    expect(result.ok, result.errors.join('; ')).toBe(true)
+    const transport = store.concepts.find((concept) => concept.name === '传输控制协议')!
+    const tcp = store.concepts.find((concept) => concept.name === 'TCP 拥塞控制')!
+    expect(store.relations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ parentConceptId: existingParentId, childConceptId: transport.id, relationType: 'hierarchy', source: 'llm', status: 'proposed' }),
+      expect.objectContaining({ parentConceptId: transport.id, childConceptId: tcp.id, relationType: 'hierarchy', source: 'llm', status: 'proposed' }),
+      expect.objectContaining({ relationType: 'related', source: 'llm', status: 'proposed' }),
+    ]))
+    expect(store.relations.filter((relation) => relation.relationType === 'hierarchy' && relation.parentConceptId === tcp.id && relation.childConceptId === transport.id)).toHaveLength(0)
+    expect(store.relations.filter((relation) => relation.relationType === 'related')).toHaveLength(1)
+    expect(store.conceptParentIds(tcp.id, true)).toContain(transport.id)
+  })
+
+  it('does not replace an existing confirmed relation with a conversation proposal', () => {
+    const parentId = store.createConcept('网络')
+    const childId = store.createConcept('路由协议')
+    const sessionId = store.createConversationTask({ question: '复用已有路由协议主题' })
+    const task = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
+    const question = store.messages.find((message) => message.sessionId === sessionId && message.role === 'user')!
+    const answerMessageId = String(question.metadata?.answerMessageId)
+    // Both concepts were disclosed while they were roots. Add the confirmed
+    // edge afterwards so the task still exercises the non-replacement guard.
+    store.createRelation(parentId, childId, 'hierarchy')
+    const result = store.applyTaskResult(task.id, JSON.stringify({
+      answer: '路由协议属于网络主题。',
+      concepts: [],
+      memberships: [{ target_type: 'message', target_id: answerMessageId, concept_ids: [childId] }],
+      relations: [{ source: parentId, target: childId, type: 'hierarchy', status: 'proposed' }],
+      units: [],
+      disclosure_requests: [],
+    }))
+
+    expect(result.ok, result.errors.join('; ')).toBe(true)
+    expect(store.relations.filter((relation) => relation.parentConceptId === parentId && relation.childConceptId === childId && relation.relationType === 'hierarchy')).toEqual([
+      expect.objectContaining({ source: 'manual', status: 'confirmed' }),
+    ])
+  })
+
   it('rejects a new conversation Concept without direct Message evidence', () => {
     const sessionId = store.createConversationTask({ question: '测试无证据主题' })
     const task = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!

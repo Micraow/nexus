@@ -50,6 +50,7 @@
 - 对话 Prompt 约定已有主题使用 `[[nexus:existing:主题名称]]回答中实际出现的词组[[/nexus]]`、建议探索主题使用 `[[nexus:suggested:主题名称]]回答中实际出现的词组[[/nexus]]`；marker 正文必须逐字来自回答，不能使用“原文”等占位文字。Markdown 渲染器移除标记并以蓝/黄色下划线呈现，旧响应中的占位正文回退显示 marker 主题名。
 - 大型知识上下文通过 `DISCLOSURE_INDEX` 传递：根引用只包含 `title`、`summary` 和不透明 `refID`，展开记录才提供下一层 children 或消息原文。模型可返回 `disclosure_requests: [{ refID, depth }]`；应用先校验 ID 已在当前目录、无重复且深度为 1～64，再从本地 hierarchy、KnowledgeUnit 和 Message 递归生成下一轮 Prompt。API 模式自动续跑，最多 8 轮；Prompt 粘贴模式把同一任务恢复为 pending，等待用户执行更新后的 Prompt。非法请求或超过轮数进入 `needs_review`，不会应用部分结果。
 - 起源 Concept 结果写入独立的 `session_concepts` 多对多事实表；它不会复制到该 Session 的全部 KnowledgeUnit。图谱派生时会把 Session、Message 和 KnowledgeUnit 三种归属投影到可见主题，并按 Session（而不是单元数量）累计 Concept 共现权重。
+- 新对话与起源 Concept 任务共用层级约束：优先选择最窄的已有或同批次父主题，仅在没有可解释父级时保留根节点。LLM 返回的 `hierarchy`/`related` 关系只以 `proposed` 写入，端点必须来自当前披露目录或响应内 `client_ref`；落库会去重、检测环，并保留已有 `confirmed` 关系。
 - 会话内追问（从导航树节点或会话详情发起）：用户消息以 `metadata = { mode: 'follow_up', parentNodeId, taskId }` 落库，回答分支节点挂在该节点之下（depth + 1），assistant Message 额外记录 `navNodeId` 供探索树点击定位正文。结果落库后从 Message 和 KnowledgeUnit 实际行数重算 `message_count` / `unit_count`，每个 Session 同时只允许一个 `pending` / `running` / `needs_review` 对话任务；任务完成后才可创建下一轮。早期没有 `metadata.taskId` 的对话任务按 legacy 规则回落到根节点。
 - 新对话或追问如果预选了现有知识主题，创建任务时立即写入该 Session 和首条用户 Message 的 `session_concepts` / `message_concepts`（source=`manual`）；这不等待 API 或 Prompt 粘贴结果，回答完成后仍按返回的单元和多目标归属继续补充事实。
 - 任务中心在队列启动前显示待处理任务数、覆盖的 Session 数和预计调用次数（按待处理 API 任务数估算，失败重试最多 ×3 不计入）；Session 数取 `inputRevision` 首段去重，`maintenance:` 前缀不计入。

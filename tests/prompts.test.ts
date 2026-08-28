@@ -48,6 +48,9 @@ describe('conversation prompt', () => {
     expect(prompt).toContain('"client_ref":"new:1"')
     expect(prompt).toContain('即使 units 为空')
     expect(prompt).toContain('黄色建议不要创建为 Concept')
+    expect(prompt).toContain('语义范围最窄的已有直接父主题')
+    expect(prompt).toContain('只有确无合适上位主题才允许暂作根')
+    expect(prompt).toContain('"type":"hierarchy|related","status":"proposed"')
     expect(prompt).toContain('回答中实际出现的词组')
     expect(prompt).toContain('严禁使用“原文”“正文”“主题名称”等占位文字')
     expect(prompt).not.toContain(']]原文[[/nexus]]')
@@ -128,6 +131,13 @@ describe('prompt harness and progressive disclosure', () => {
       expect(prompt).toContain('多个 Concept')
     })
   })
+
+  it('requires narrow parent matching for unit Concept extraction', () => {
+    const prompt = buildConceptPrompt(session, unit, [{ id: 'm', sessionId: 's', role: 'user' as const, content: '问题', orderInSession: 0 }], [])
+    expect(prompt).toContain('语义范围最窄且直接包含它的父主题')
+    expect(prompt).toContain('只有确无合适上位主题才允许暂作根')
+    expect(prompt).toContain('"status":"proposed"')
+  })
 })
 
 describe('Session and Message Concept extraction contract', () => {
@@ -157,6 +167,9 @@ describe('Session and Message Concept extraction contract', () => {
     expect(prompt).toContain('related 是无向、非层级的稳定语义关系')
     expect(prompt).toContain('最多返回 2 条最强 related')
     expect(prompt).toContain('不要为了把所有 Concept 连起来而补关系')
+    expect(prompt).toContain('语义范围最窄且确实包含它的已有父主题')
+    expect(prompt).toContain('同批次父主题')
+    expect(prompt).toContain('status 只能省略或为 proposed')
   })
 
   it('treats caller windows as technical input limits instead of knowledge boundaries', () => {
