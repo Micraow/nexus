@@ -717,8 +717,8 @@ ${disclosureText}
 ${disclosureAvailability(input.disclosure)}
 
 只返回 JSON：
-{"suggestions":[{"type":"create_concept|update_concept|delete_concept|restore_concept|merge|alias|remove_alias|add_relation|relation|update_relation|delete_relation|remove_relation|set_relation_status|confirm_relation|reject_relation|move_concept|set_hierarchy_parents|remove_hierarchy|membership_relink|unit_relink|unit_revision|archive_concept","reason":"可审计的事实依据","...":"严格使用动作 API 定义的参数"}],"disclosure_requests":[]}
-只返回确有依据的建议；关系建议最多 2 条，不能仅凭共同出现推断 related；新主题优先匹配已有或同批次中最窄且有直接证据的父主题，只有没有足够层级证据时才允许成为根；不要把所有主题平铺为一级。没有建议时返回空数组。不要输出解释文字。
+{"reason":"对当前图谱是否需要变更的简短总体判断；即使没有建议也必须填写","suggestions":[{"type":"create_concept|update_concept|delete_concept|restore_concept|merge|alias|remove_alias|add_relation|relation|update_relation|delete_relation|remove_relation|set_relation_status|confirm_relation|reject_relation|move_concept|set_hierarchy_parents|remove_hierarchy|membership_relink|unit_relink|unit_revision|archive_concept","reason":"可审计的事实依据","...":"严格使用动作 API 定义的参数"}],"disclosure_requests":[]}
+reason 是给用户看的总体说明：概括你检查了什么、为何提出或没有提出变更。只返回确有依据的建议；关系建议最多 2 条，不能仅凭共同出现推断 related；新主题优先匹配已有或同批次中最窄且有直接证据的父主题，只有没有足够层级证据时才允许成为根；不要把所有主题平铺为一级。没有建议时仍返回非空 reason，明确说明“未发现需要修改的地方”或指出缺少证据。不要输出解释文字。
 
-动作响应的规范格式：{"suggestions":[{"type":"create_concept|update_concept|delete_concept|restore_concept|merge|alias|remove_alias|add_relation|relation|update_relation|delete_relation|remove_relation|set_relation_status|confirm_relation|reject_relation|move_concept|set_hierarchy_parents|remove_hierarchy|membership_relink|unit_relink|unit_revision|archive_concept","reason":"可审计的事实依据","...":"严格使用上方动作 API 定义的参数"}],"disclosure_requests":[]}。每条 suggestion 的 type 与参数必须能一一映射到机器目录中的 nexus_maintenance_* 工具；没有变更时返回空 suggestions。`)
+动作响应的规范格式：{"reason":"总体判断（必填）","suggestions":[{"type":"create_concept|update_concept|delete_concept|restore_concept|merge|alias|remove_alias|add_relation|relation|update_relation|delete_relation|remove_relation|set_relation_status|confirm_relation|reject_relation|move_concept|set_hierarchy_parents|remove_hierarchy|membership_relink|unit_relink|unit_revision|archive_concept","reason":"可审计的事实依据","...":"严格使用上方动作 API 定义的参数"}],"disclosure_requests":[]}。每条 suggestion 的 type 与参数必须能一一映射到机器目录中的 nexus_maintenance_* 工具；没有变更时返回空 suggestions，但 reason 仍不可省略。`)
 }

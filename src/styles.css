@@ -264,6 +264,8 @@ textarea { resize: vertical; }
 .graph-link[data-edge-type="hierarchy"] { opacity: .9; }
 .graph-link[data-edge-type="co_occurrence"] { opacity: .48; }
 .graph-link[data-edge-type="related"], .graph-link[data-edge-type="association"], .graph-link[data-edge-type="conversation"] { opacity: .3; }
+.graph-link-unit { opacity: 0 !important; }
+.graph-link-unit.is-hovered { opacity: 1 !important; }
 .graph-link.is-dimmed { opacity: .08; }
 .graph-link.is-hovered { stroke: #7c3aed !important; opacity: 1; stroke-width: 3px; }
 .graph-viewport.is-large .graph-node-label-unit, .graph-viewport.is-large .graph-node-label-message { opacity: 0; }
@@ -367,6 +369,11 @@ textarea { resize: vertical; }
 .maintenance-relation-row span { color: var(--muted); font-size: calc(10px * var(--app-font-scale)); }
 .maintenance-relation-actions { display: flex; align-items: center; gap: 3px; }
 .maintenance-relation-actions .text-button { min-height: 29px; padding: 0 6px; font-size: calc(10px * var(--app-font-scale)); }
+/* Session privacy is no longer exposed as a user-facing mode. Legacy
+   local_only data remains readable for import compatibility, but the old
+   toggle/badge must not suggest that API tasks are selectively disabled. */
+.sessions-view .session-row .soft-tag,
+.sessions-view .session-meta-line .inline-toggle { display: none !important; }
 .pending-relation-inbox { margin: 15px 0; padding: 17px 19px; }
 .pending-relation-inbox .section-heading { align-items: center; }
 .pending-relation-inbox .section-heading p { margin: 5px 0 0; color: var(--muted); font-size: calc(11px * var(--app-font-scale)); }
@@ -610,6 +617,9 @@ body.fullscreen-active { overflow: hidden; }
 .branch-card-leave-to { opacity: 0; transform: translate(0, -24px) rotate(0deg) scale(.97); }
 .branch-card-move { transition: transform var(--motion) ease; }
 .conversation-branch-card-title { width: 100%; min-height: 44px; display: flex; align-items: center; gap: 9px; padding: 0 2px 11px; color: var(--muted); background: transparent; border-bottom: 1px solid var(--line); text-align: left; }
+.conversation-branch-card-title.current-title { padding: 0 0 11px; }
+.branch-card-title-main { min-width: 0; flex: 1; min-height: 44px; display: flex; align-items: center; gap: 9px; padding: 0 2px; color: inherit; background: transparent; text-align: left; }
+.branch-card-close { flex: 0 0 auto; }
 .conversation-branch-card-title:hover, .conversation-branch-card-title:focus-visible { color: var(--text); }
 .conversation-branch-card-title strong { min-width: 0; overflow: hidden; color: inherit; font-size: calc(14px * var(--app-font-scale)); text-overflow: ellipsis; white-space: nowrap; }
 .branch-card-dot { width: 12px; height: 12px; flex: 0 0 auto; border: 2px solid var(--primary); border-radius: 50%; background: var(--surface); box-shadow: 0 0 0 3px var(--primary-soft); }
