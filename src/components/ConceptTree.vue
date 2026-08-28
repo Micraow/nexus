@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ChevronRight, Layers3 } from 'lucide-vue-next'
+import { ChevronRight, Folder, FolderOpen } from 'lucide-vue-next'
 import type { Concept, ConceptRelation } from '@/types/domain'
 
 const props = withDefaults(defineProps<{
@@ -62,7 +62,7 @@ function hasProposedParent(conceptId: string): boolean {
           <ChevronRight class="concept-tree-chevron" :class="{ expanded: expandedIds.has(concept.id) }" :size="14" />
         </button>
         <span v-else class="concept-tree-spacer" />
-        <button class="concept-tree-select" :aria-label="`查看${concept.name}`" @click="emit('select', concept.id)"><Layers3 :size="14" /><span class="concept-tree-label">{{ concept.name }}</span></button>
+        <button class="concept-tree-select" :aria-label="`查看${concept.name}`" @click="emit('select', concept.id)"><FolderOpen v-if="childrenOf(concept.id).length && expandedIds.has(concept.id)" :size="15" /><Folder v-else-if="childrenOf(concept.id).length" :size="15" /><span v-else class="concept-tree-leaf" aria-hidden="true" /><span class="concept-tree-label">{{ concept.name }}</span></button>
         <span v-if="hasProposedParent(concept.id)" class="concept-tree-proposed" title="包含待确认的父主题关系">?</span>
       </div>
       <div v-if="childrenOf(concept.id).length && expandedIds.has(concept.id)" class="concept-tree-children">
