@@ -1429,6 +1429,10 @@ function handleRenderedClick(event: Event, message?: Message): void {
   const target = (event.target as HTMLElement).closest('[data-concept-id]')
   const conceptId = target?.getAttribute('data-concept-id')
   if (conceptId) {
+    // Conversation markers are topic citations, so open the canonical topic
+    // catalog entry rather than dropping the user into an unrelated graph
+    // module with only a floating drawer.
+    setView('concepts')
     openConcept(conceptId)
     return
   }

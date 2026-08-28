@@ -81,6 +81,16 @@ describe('renderMarkdown', () => {
     expect(html).not.toContain('nexus:suggested')
   })
 
+  it('keeps unknown existing markers as ordinary non-interactive text', () => {
+    const html = renderMarkdown('不存在的 [[nexus:existing:幽灵主题]]幽灵主题[[/nexus]] 不应显示成链接。', {
+      concepts: [{ id: 'c1', name: '真实主题' }],
+    })
+    expect(html).toContain('幽灵主题')
+    expect(html).not.toContain('md-concept-existing')
+    expect(html).not.toContain('data-concept-id')
+    expect(html).not.toContain('role="link"')
+  })
+
   it('renders markers embedded in a paragraph without leaking delimiters', () => {
     const html = renderMarkdown('前缀 [[nexus:suggested:量子纠错]]量子纠错[[/nexus]] 后缀。')
     expect(html).toContain('<p>前缀 <span class="md-concept md-concept-suggested"')
