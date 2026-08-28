@@ -2546,11 +2546,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           if (!existingUnit || existingUnit.sessionId !== targetId) errors.push(`unit_id ${unit.unitId} 不属于当前 Session`)
         }
       })
-      const conversationTargetIds = [
-        targetId,
-        ...messages.value.filter((message) => message.sessionId === targetId).map((message) => message.id),
-        plannedAssistantMessageId,
-      ]
+      // Memberships describe evidence for this answer only. Historical
+      // messages remain available as conversation context, but accepting them
+      // as target IDs lets a provider accidentally relink an unrelated turn
+      // (or a copied ID from another Session).
+      const conversationTargetIds = [targetId, userMessage?.id, plannedAssistantMessageId].filter((id): id is string => Boolean(id))
       if (directConceptsProvided) {
         errors.push(...validateOriginConceptResult({
           concepts: data.concepts,
@@ -3238,7 +3238,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       }
       const rootId = createId('nav')
       db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [rootId, targetSessionId, null, input.topicId ?? null, topic ? `围绕 ${topic}` : '新的知识对话', 0, now])
-      const taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${targetSessionId}:1`, prompt: buildConversationPrompt({ question, topic, context, targetSessionId, targetMessageId: messageId, targetAssistantMessageId: assistantMessageId, navigationPath: `1. ${topic ? `围绕 ${topic}` : '新的知识对话'}`, conversationHistory: '', sessionTitle: topic ? `围绕 ${topic} 的新对话` : '新的知识对话', sessionSummary: '', availableUnits: [], conceptLimit: config.value.llm.conceptLimit, disclosure: promptDisclosureContext({ unitIds: sourceUnitIds, messageIds: sourceMessageIds, includeFullContent: input.includeFullContent ?? false }) }), status: 'pending', scopeLabel: `新对话 · ${topic || '知识探索'}` })
+      const selectedTopicPath = input.topicId ? conceptExpansionPath(input.topicId, true) : []
+      const taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${targetSessionId}:1`, prompt: buildConversationPrompt({ question, topic, context, targetSessionId, targetMessageId: messageId, targetAssistantMessageId: assistantMessageId, navigationPath: `1. ${topic ? `围绕 ${topic}` : '新的知识对话'}`, conversationHistory: '', sessionTitle: topic ? `围绕 ${topic} 的新对话` : '新的知识对话', sessionSummary: '', availableUnits: [], conceptLimit: config.value.llm.conceptLimit, disclosure: promptDisclosureContext({ unitIds: sourceUnitIds, messageIds: sourceMessageIds, expandedRefIds: selectedTopicPath, includeFullContent: input.includeFullContent ?? false }) }), status: 'pending', scopeLabel: `新对话 · ${topic || '知识探索'}` })
       db.run('UPDATE messages SET metadata = ? WHERE id = ?', [JSON.stringify({ mode: 'new', topicId: input.topicId ?? null, parentNodeId: rootId, taskId, answerMessageId: assistantMessageId, sourceSessionId: sourceSession ?? null }), messageId])
       writeSourceReferences(targetSessionId, sourceUnitIds, sourceMessageIds, input.includeFullContent ?? false)
     })

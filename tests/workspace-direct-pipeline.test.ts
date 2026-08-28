@@ -415,6 +415,38 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.messages.filter((message) => message.sessionId === sessionId)).toHaveLength(1)
   })
 
+  it('limits conversation memberships to the current question and answer messages', () => {
+    const firstSessionId = store.createConversationTask({ question: '当前问题' })
+    const secondSessionId = store.createConversationTask({ question: '另一会话问题' })
+    const firstTask = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${firstSessionId}:`))!
+    const otherMessage = store.messages.find((message) => message.sessionId === secondSessionId && message.role === 'user')!
+    const result = store.applyTaskResult(firstTask.id, JSON.stringify({
+      answer: '回答',
+      units: [{ title: '当前回答片段', summary: '回答证据。', concept_ids: [], concepts: [] }],
+      memberships: [{ target_type: 'message', target_id: otherMessage.id, concept_ids: [] }],
+      disclosure_requests: [],
+    }))
+
+    expect(result.ok).toBe(false)
+    expect(result.errors.join('; ')).toContain('target_id 不在当前任务范围中')
+  })
+
+  it('allows a selected child Concept in a new conversation when it is disclosed', () => {
+    const rootId = store.createConcept('网络根主题')
+    const childId = store.createConcept('网络子主题')
+    store.createRelation(rootId, childId, 'hierarchy')
+    const sessionId = store.createConversationTask({ question: '围绕子主题回答', topicId: childId })
+    const task = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
+    const result = store.applyTaskResult(task.id, JSON.stringify({
+      answer: '回答',
+      units: [{ title: '子主题回答片段', summary: '回答证据。', concept_ids: [childId], concepts: [] }],
+      memberships: [],
+      disclosure_requests: [],
+    }))
+
+    expect(result.ok, result.errors.join('; ')).toBe(true)
+  })
+
   it('keeps follow-up context and accurate message counts, and blocks duplicate application', () => {
     const sessionId = store.createConversationTask({ question: '第一轮问题' })
     const firstTask = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
