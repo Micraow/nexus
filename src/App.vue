@@ -57,7 +57,7 @@ import type { SaveFileRequest } from '@/services/files'
 import { conversationTaskForNode, suggestedExplorationQuestion, unfinishedConversationTask } from '@/services/conversation'
 import { conversationCardMessages, createPendingConversationTask } from '@/components/conversation-card-messages'
 import { resolveConceptEvidence } from '@/services/concept-evidence'
-import { paginateMessages } from '@/services/message-pagination'
+import { messageSessionPages, paginateMessages } from '@/services/message-pagination'
 import { renderMarkdown } from '@/services/markdown'
 import { copyToClipboard } from '@/services/clipboard'
 import { parseMetadata } from '@/utils/metadata'
@@ -344,7 +344,21 @@ const activeConversationTask = computed(() => activeConversationSessionId.value
   : null)
 const activeConversationStreamingPreview = computed(() => {
   const task = activeConversationTask.value ?? activeConversationUnfinishedTask.value
-  return task?.type === 'conversation' ? store.streamingTaskPreview(task.id) : ''
+  if (task?.type !== 'conversation') return ''
+  const streamed = store.streamingTaskPreview(task.id)
+  if (streamed || !['needs_review', 'failed'].includes(task.status) || !task.response) return streamed
+  try {
+    const parsed = JSON.parse(task.response) as { answer?: unknown }
+    return typeof parsed.answer === 'string' ? parsed.answer.trim() : ''
+  } catch {
+    const match = task.response.match(/"answer"\s*:\s*"((?:\\.|[^"\\])*)/)?.[1]
+    if (!match) return ''
+    try {
+      return JSON.parse(`"${match}"`) as string
+    } catch {
+      return match.replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+    }
+  }
 })
 const activeConversationStatus = computed(() => {
   const task = activeConversationTask.value
@@ -368,8 +382,14 @@ const fullscreenMessages = computed<Message[]>(() => {
   }
   return store.messages.filter((message) => message.sessionId === target.sessionId).sort((left, right) => left.orderInSession - right.orderInSession)
 })
-const fullscreenPageCount = computed(() => Math.max(1, Math.ceil(fullscreenMessages.value.length / fullscreenPageSize)))
+const fullscreenMessagePages = computed(() => messageSessionPages(fullscreenMessages.value))
+const fullscreenPageCount = computed(() => Math.max(1, fullscreenMessagePages.value.length))
 const fullscreenPageMessages = computed(() => paginateMessages(fullscreenMessages.value, fullscreenPage.value, fullscreenPageSize))
+const fullscreenPageSession = computed(() => {
+  const page = fullscreenMessagePages.value[fullscreenPage.value]
+  return page ? store.sessions.find((session) => session.id === page.sessionId) ?? null : null
+})
+const fullscreenPageSessionTitle = computed(() => cleanGraphText(fullscreenPageSession.value?.title) || '未知会话')
 const fullscreenTitle = computed(() => {
   const target = fullscreenTarget.value
   if (target?.kind === 'message') return `消息 #${(fullscreenMessages.value[0]?.orderInSession ?? 0) + 1}`
@@ -2076,11 +2096,11 @@ onBeforeUnmount(() => {
                         <div v-else class="conversation-branch-card-title" aria-hidden="true"><span class="branch-card-dot" aria-hidden="true" /><strong>{{ displayText(card.node.label, '未命名探索节点') }}</strong><span class="branch-card-depth">第 {{ card.node.depth + 1 }} 层</span></div>
                         <div v-if="card.units.length" class="conversation-card-units" aria-label="当前阅读片段"><BookOpen :size="13" /><span>阅读片段：</span><button v-for="unit in card.units" :key="unit.id" type="button" class="conversation-unit-link" @click="openUnit(unit.id)">{{ displayText(unit.title, '未命名阅读片段') }}</button></div>
                         <article v-for="message in card.messages" :key="message.id" :data-conversation-message="message.id" class="conversation-message" :class="message.role"><div class="conversation-message-meta"><strong>{{ message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : '系统' }}</strong><span>消息 #{{ message.orderInSession + 1 }}</span></div><div class="md-body" v-html="renderedMessageContent(message.content, message)" @click="handleRenderedClick($event, message)" @keydown.enter.prevent="handleRenderedClick($event, message)" /></article>
+                        <article v-if="cardIndex === activeConversationBranchCards.length - 1 && activeConversationStreamingPreview" class="conversation-message assistant streaming-message" :class="{ 'needs-review-answer': activeConversationTask?.status === 'needs_review' || activeConversationTask?.status === 'failed' }" aria-live="polite"><div class="conversation-message-meta"><strong>AI</strong><span>{{ activeConversationTask?.status === 'needs_review' ? '待检查回答' : activeConversationTask?.status === 'failed' ? '任务错误 · 已保留回答' : '实时输出' }}</span></div><div class="md-body" v-html="renderMarkdown(activeConversationStreamingPreview)" /></article>
                       </section>
                     </TransitionGroup>
                   </div>
                   <div v-if="activeConversationTask?.status === 'running'" class="conversation-thinking"><LoaderCircle class="spin" :size="16" />AI 正在处理这次提问…</div>
-                  <article v-if="activeConversationStreamingPreview" class="conversation-message assistant streaming-message" aria-live="polite"><div class="conversation-message-meta"><strong>AI</strong><span>实时输出</span></div><div class="md-body" v-html="renderMarkdown(activeConversationStreamingPreview)" /></article>
                   <div v-if="!activeConversationCurrentCard?.messages.length" class="empty-state compact"><MessageSquare :size="26" /><strong>{{ activeConversationCurrentCard ? '这一分支还没有回答' : '等待第一条回答' }}</strong><span>{{ activeConversationCurrentCard ? '提交问题后，回答会留在当前分支。' : '回答完成后会显示在这里。' }}</span></div>
                   <div class="conversation-composer"><textarea v-model="composerQuestion" rows="3" aria-label="继续当前对话" placeholder="继续追问…" :disabled="Boolean(activeConversationUnfinishedTask)" @keydown.ctrl.enter.prevent="startConversationFollowUp" @keydown.meta.enter.prevent="startConversationFollowUp" /><div class="conversation-composer-footer"><span>{{ activeConversationUnfinishedTask ? '请先完成上一轮回答' : store.config.llm.mode === 'api' ? 'API 会直接执行' : 'Prompt 会在右侧浮层中处理' }}</span><button class="send-button" aria-label="发送追问" :disabled="!composerQuestion.trim() || Boolean(activeConversationUnfinishedTask)" @click="startConversationFollowUp"><Send :size="17" /></button></div></div>
                 </div>
@@ -2391,7 +2411,7 @@ onBeforeUnmount(() => {
 
     <div v-if="fullscreenTarget" class="fullscreen-backdrop" role="presentation" tabindex="-1" @click.self="closeFullscreen" @keydown.esc="closeFullscreen">
       <section class="fullscreen-viewer" role="dialog" aria-modal="true" aria-labelledby="fullscreen-title">
-        <header class="fullscreen-viewer-header"><div><span class="eyebrow">{{ fullscreenTarget.kind === 'message' ? 'MESSAGE VIEWER' : fullscreenTarget.kind === 'concept' ? 'TOPIC CONVERSATIONS' : 'SESSION VIEWER' }}</span><h2 id="fullscreen-title">{{ fullscreenTitle }}</h2><span class="detail-subtitle">{{ fullscreenMessages.length }} 条消息 · 第 {{ fullscreenPage + 1 }} / {{ fullscreenPageCount }} 页 · 本地内容</span></div><div class="fullscreen-viewer-actions"><button class="icon-button" aria-label="上一页" title="上一页" :disabled="fullscreenPage === 0" @click="changeFullscreenPage(-1)"><ArrowLeft :size="17" /></button><button class="icon-button" aria-label="下一页" title="下一页" :disabled="fullscreenPage >= fullscreenPageCount - 1" @click="changeFullscreenPage(1)"><ArrowRight :size="17" /></button><button class="icon-button" aria-label="关闭全屏查看" title="关闭" @click="closeFullscreen"><X :size="18" /></button></div></header>
+        <header class="fullscreen-viewer-header"><div><span class="eyebrow">{{ fullscreenTarget.kind === 'message' ? 'MESSAGE VIEWER' : fullscreenTarget.kind === 'concept' ? 'TOPIC CONVERSATIONS' : 'SESSION VIEWER' }}</span><h2 id="fullscreen-title">{{ fullscreenTitle }}</h2><span class="detail-subtitle">{{ fullscreenMessages.length }} 条消息 · 当前会话：{{ fullscreenPageSessionTitle }} · 第 {{ fullscreenPage + 1 }} / {{ fullscreenPageCount }} 页 · 本地内容</span></div><div class="fullscreen-viewer-actions"><button class="icon-button" aria-label="上一页" title="上一页" :disabled="fullscreenPage === 0" @click="changeFullscreenPage(-1)"><ArrowLeft :size="17" /></button><button class="icon-button" aria-label="下一页" title="下一页" :disabled="fullscreenPage >= fullscreenPageCount - 1" @click="changeFullscreenPage(1)"><ArrowRight :size="17" /></button><button class="icon-button" aria-label="关闭全屏查看" title="关闭" @click="closeFullscreen"><X :size="18" /></button></div></header>
         <div class="fullscreen-conversation">
           <article v-for="message in fullscreenPageMessages" :key="message.id" class="fullscreen-message" :class="message.role">
             <div class="fullscreen-message-header"><strong>{{ message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : '系统' }}</strong><span>消息 #{{ message.orderInSession + 1 }}</span><span v-if="fullscreenTarget.kind === 'concept'" class="fullscreen-message-session" :title="displayText(store.sessions.find((session) => session.id === message.sessionId)?.title, '未知会话')">{{ displayText(store.sessions.find((session) => session.id === message.sessionId)?.title, '未知会话') }}</span><time v-if="message.timestamp">{{ new Date(message.timestamp).toLocaleString('zh-CN') }}</time><button class="button secondary-button message-context-button" @click="toggleMessageContext(message.id)"><Check v-if="store.selectedContextMessageIds.includes(message.id)" :size="13" /><Plus v-else :size="13" />{{ store.selectedContextMessageIds.includes(message.id) ? '已加入上下文' : '加入上下文' }}</button></div>
