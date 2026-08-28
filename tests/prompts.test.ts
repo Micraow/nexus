@@ -10,7 +10,9 @@ import {
   buildSessionTriagePrompt,
   buildTitleSummaryPrompt,
   formatDisclosureContext,
+  formatMaintenanceActionApi,
   NEXUS_HARNESS_PROMPT,
+  MAINTENANCE_ACTION_API,
   parseDisclosureContext,
   PROGRESSIVE_DISCLOSURE_PROTOCOL,
   replaceDisclosureContext,
@@ -49,7 +51,12 @@ describe('conversation prompt', () => {
     expect(prompt).toContain('"client_ref":"new:1"')
     expect(prompt).toContain('即使 units 为空')
     expect(prompt).toContain('黄色建议不要创建为 Concept')
+    expect(prompt).toContain('语义范围最窄的已有直接父主题')
+    expect(prompt).toContain('只有确无合适上位主题才允许暂作根')
+    expect(prompt).toContain('relations 只表达 hierarchy')
+    expect(prompt).toContain('related 不由对话模型返回')
     expect(prompt).toContain('回答中实际出现的词组')
+    expect(prompt).toContain('编号列表、项目符号和表格')
     expect(prompt).toContain('严禁使用“原文”“正文”“主题名称”等占位文字')
     expect(prompt).not.toContain(']]原文[[/nexus]]')
   })
@@ -78,17 +85,31 @@ describe('maintenance prompt', () => {
     expect(prompt).toContain('"direct_children"')
     expect(prompt).toContain('根节点是例外')
     expect(prompt).toContain('create_concept')
-    expect(prompt).toContain('delete_concept')
-    expect(prompt).toContain('restore_concept')
-    expect(prompt).toContain('merge')
-    expect(prompt).toContain('alias')
     expect(prompt).toContain('remove_hierarchy')
-    expect(prompt).toContain('remove_relation')
-    expect(prompt).toContain('update_relation')
-    expect(prompt).toContain('membership_relink')
-    expect(prompt).toContain('unit_revision')
-    expect(prompt).toContain('幂等应用并撤销')
-    expect(prompt).toContain('related 只能由维护任务显式编辑')
+    expect(prompt).toContain('机器可读动作目录')
+    for (const action of MAINTENANCE_ACTION_API) expect(prompt).toContain(`"type": "${action.type}"`)
+  })
+
+  it('publishes strict MCP-shaped schemas for every maintenance action', () => {
+    const actions = new Map(MAINTENANCE_ACTION_API.map((action) => [action.type, action]))
+    expect(actions.get('set_hierarchy_parents')?.input_schema).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+      required: ['concept_id', 'parent_concept_ids', 'reason'],
+    })
+    expect(actions.get('set_hierarchy_parents')?.input_schema.properties.parent_concept_ids).toMatchObject({ type: 'array', items: { type: 'string' } })
+    expect(actions.get('create_concept')?.input_schema.properties.parent_concept_id).toMatchObject({ type: ['string', 'null'] })
+    expect(actions.get('update_concept')?.inputSchema.properties.summary).toMatchObject({ type: 'string', maxLength: 120 })
+    expect(actions.get('unit_revision')?.inputSchema.properties.title).toMatchObject({ type: 'string', maxLength: 30 })
+    expect(actions.get('set_hierarchy_parents')?.input_schema.properties.parent_concept_ids).toMatchObject({ uniqueItems: true })
+    expect(actions.get('remove_alias')?.input_schema.required).toContain('alias_id')
+    expect(actions.get('set_relation_status')?.input_schema.properties.status).toMatchObject({ enum: ['proposed', 'confirmed', 'rejected'] })
+    const serialized = JSON.parse(formatMaintenanceActionApi()) as Array<{ input_schema: { additionalProperties: boolean } }>
+    expect(serialized.every((action) => action.input_schema.additionalProperties === false)).toBe(true)
+    expect(actions.get('create_concept')).toMatchObject({ name: 'nexus_maintenance_create_concept', description: expect.any(String) })
+    expect(actions.get('create_concept')?.inputSchema).toEqual(actions.get('create_concept')?.input_schema)
+    expect(actions.get('remove_relation')).toMatchObject({ alias_for: 'delete_relation', deprecated: true })
+    expect(actions.get('delete_relation')?.inputSchema.properties.reason).toMatchObject({ type: 'string', minLength: 1 })
   })
 })
 
@@ -166,6 +187,13 @@ describe('prompt harness and progressive disclosure', () => {
       expect(prompt).toContain('多个 Concept')
     })
   })
+
+  it('requires narrow parent matching for unit Concept extraction', () => {
+    const prompt = buildConceptPrompt(session, unit, [{ id: 'm', sessionId: 's', role: 'user' as const, content: '问题', orderInSession: 0 }], [])
+    expect(prompt).toContain('语义范围最窄且直接包含它的父主题')
+    expect(prompt).toContain('只有确无合适上位主题才允许暂作根')
+    expect(prompt).toContain('"status":"proposed"')
+  })
 })
 
 describe('Session and Message Concept extraction contract', () => {
@@ -187,14 +215,20 @@ describe('Session and Message Concept extraction contract', () => {
     expect(prompt).not.toContain('默认关联到本 Session 中相关的所有 KnowledgeUnit')
   })
 
-  it('keeps ordinary extraction hierarchy-only and derives related signals locally', () => {
+  it('defines sparse hierarchy and related semantics independently', () => {
     const prompt = buildOriginConceptPrompt({ ...session, title: 'Spine Leaf与Clos关系', messageCount: 3 }, closMessages)
 
     expect(prompt).toContain('source 是直接父主题、target 是直接子主题')
     expect(prompt).toContain('上位概念/下位概念')
-    expect(prompt).toContain('普通 Concept 提取不返回 related')
-    expect(prompt).toContain('共享 Session/Message 计算共现/相关信号')
-    expect(prompt).not.toContain('最多返回 2 条最强 related')
+    expect(prompt).toContain('related 是无向、非层级的稳定语义关系')
+    expect(prompt).toContain('普通 Concept 提取和对话响应绝不能返回 related')
+    expect(prompt).toContain('普通提取只能返回 hierarchy 建议')
+    expect(prompt).toContain('"type":"hierarchy","status":"proposed"')
+    expect(prompt).not.toContain('"type":"hierarchy|related"')
+    expect(prompt).toContain('不要为了把所有 Concept 连起来而补关系')
+    expect(prompt).toContain('语义范围最窄且确实包含它的已有父主题')
+    expect(prompt).toContain('同批次父主题')
+    expect(prompt).toContain('status 只能省略或为 proposed')
   })
 
   it('treats caller windows as technical input limits instead of knowledge boundaries', () => {

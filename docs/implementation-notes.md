@@ -5,13 +5,13 @@
 ## 2026-08-28 图谱与主题页实现状态
 
 - 图谱默认只投影没有未拒绝 hierarchy 父节点的 active 根主题。提议父关系默认不绘制但仍阻止子主题成为根；Concept 主体的一次单击同时打开右侧详情并切换当前分支；有子主题时显示下一层，叶主题只打开详情。Enter/Space 与单击相同，图谱不提供独立的 `+/-` 展开控件。
-- 收起主题会递归清除后代的展开状态；隐藏后代通过 hierarchy 投影到最近可见祖先。`related` 永远不参与根节点、祖先路径、深度或展开；待确认的 hierarchy/related 只有在 `showProposed=true` 时绘制，提议 hierarchy 仍参与结构父级判定。
+- 收起主题会递归清除后代的展开状态；隐藏后代通过 hierarchy 投影到最近可见祖先。`related` 永远不参与根节点、祖先路径、深度或展开；维护任务产生的待确认 hierarchy/related 只有在 `showProposed=true` 时绘制，普通 LLM 产生的 related 会被拒绝并改由共享证据派生，提议 hierarchy 仍参与结构父级判定。
 - 共现边按 Session 去重：只要同一 Session 的两个不同 Concept 归属最终落到两个可见代表主题，该 Session 对这对主题贡献一次权重，不按消息或单元条数重复累计。多父后代投影到每条父链上第一个可见祖先，但单个多父 Concept 不会凭空产生根节点共现。`showUnits`/`showMessages`/保留会话筛选不会被主题展开绕过。
 - Worker 返回前的图谱缓存只允许在筛选项、深度和展开集合兼容时复用；更深展开、不同开关或收起后的旧快照不会短暂泄露到当前视图。新增节点沿用已有位置并以确定性种子布局，避免拓扑变化时整图闪烁。
 - 图谱显示选项默认收起，通过右下角按钮打开，避免在 1024/1440 宽度下遮住首屏根节点；375、768、1024、1440 四档视口均需保持画布非空且无横向溢出。
-- 知识主题目录采用左侧确认 hierarchy 树、右侧完整详情列。主题详情包含父/子/相关关系、来源与确认状态、关联 Session、可选 KnowledgeUnit、消息预览和一个顶部的跨 Session 分页全屏入口；点击父/子/相关主题后详情滚回顶部。主题目录不再额外弹出全局 Concept 抽屉。
+- 知识主题目录采用左侧 hierarchy 树、右侧完整详情列；未拒绝的待确认父子关系也保留在树结构中，并以状态标记提示。主题详情包含父/子/相关关系、来源与确认状态、关联 Session、可选 KnowledgeUnit、消息预览和一个顶部的跨 Session 分页全屏入口；点击父/子/相关主题后详情滚回顶部。主题目录不再额外弹出全局 Concept 抽屉。
 - “待确认”关系可能来自历史导入、整理结果或维护任务，并不表示打开主题时一定存在 API 请求；主题详情读取本地事实，不会隐式创建任务。KnowledgeUnit 继续作为可选的证据包和上下文来源，不是 Concept 提取或图谱展示的前置条件。
-- 知识维护任务始终扫描整个 active Concept 图谱；从主题、会话或阅读片段入口触发时，这些对象只作为 Prompt 中的附加关注范围。Prompt 提供全部一级主题及直接子主题引用，并明确根节点是例外、新主题优先匹配最窄父主题、related 不能代替 hierarchy。维护结果支持 `merge`、`alias`、创建/编辑/软删除/恢复/移动 Concept、添加/修改/删除 hierarchy 或 related、解除 hierarchy、Session/Message/KnowledgeUnit 归属重绑和 KnowledgeUnit 元数据修订；应用前做 DAG 环检测并通过独立快照事务记录，可撤销。`delete_concept` 与兼容的 `archive_concept` 只标记 archived，重复删除幂等；`restore_concept` 只恢复 archived，merged 主题保持不可恢复。
+- 知识维护任务始终扫描整个 active Concept 图谱；从主题、会话或阅读片段入口触发时，这些对象只作为 Prompt 中的附加关注范围。Prompt 提供全部一级主题及直接子主题引用，并明确根节点是例外、新主题优先匹配最窄父主题、related 不能代替 hierarchy。`MAINTENANCE_ACTION_API` 同时作为 Prompt 和应用校验的机器可读工具目录，使用 MCP 标准 `inputSchema`（并保留 `input_schema` 兼容字段，均为 `additionalProperties=false`）暴露 Concept CRUD、别名、关系增删改与审核、多父层级整体替换/解除、归属迁移和阅读片段修订；应用前做 DAG 环检测并通过快照事务记录，可撤销，未知动作/字段不落库。
 - 当前规模和已有 D3 力向布局、拖拽、键盘/ARIA、高亮及位置持久化已覆盖验收目标；在缺少性能基准和交互回归证据前不迁移 Sigma.js。若未来迁移，必须先以同一 fixture 对比初始布局稳定性、拖拽阈值、框选、无障碍和大图谱帧耗时。
 
 ## 运行边界
@@ -51,6 +51,7 @@
 - 对话 Prompt 约定已有主题使用 `[[nexus:existing:主题名称]]回答中实际出现的词组[[/nexus]]`、建议探索主题使用 `[[nexus:suggested:主题名称]]回答中实际出现的词组[[/nexus]]`；marker 正文必须逐字来自回答，不能使用“原文”等占位文字。Markdown 渲染器移除标记并以蓝/黄色下划线呈现，旧响应中的占位正文回退显示 marker 主题名。
 - 大型知识上下文通过 `DISCLOSURE_INDEX` 传递：根引用只包含 `title`、`summary` 和不透明 `refID`，展开记录才提供下一层 children 或消息原文。模型可返回 `disclosure_requests: [{ refID, depth }]`；应用先校验 ID 已在当前目录、无重复且深度为 1～64，再从本地 hierarchy、KnowledgeUnit 和 Message 递归生成下一轮 Prompt。API 模式自动续跑，最多 8 轮；Prompt 粘贴模式把同一任务恢复为 pending，等待用户执行更新后的 Prompt。非法请求或超过轮数进入 `needs_review`，不会应用部分结果。
 - 起源 Concept 结果写入独立的 `session_concepts` 多对多事实表；它不会复制到该 Session 的全部 KnowledgeUnit。图谱派生时会把 Session、Message 和 KnowledgeUnit 三种归属投影到可见主题，并按 Session（而不是单元数量）累计 Concept 共现权重。
+- 新对话与起源 Concept 任务共用层级约束：优先选择最窄的已有或同批次父主题，仅在没有可解释父级时保留根节点。普通 LLM 结果只能返回 `hierarchy` 并以 `proposed` 写入；`related` 由软件按共享 Session/Message 派生，只有维护动作 API 可写持久化 related。端点必须来自当前披露目录或响应内 `client_ref`；落库会去重、检测环，并保留已有 `confirmed` 关系。
 - 会话内追问（从导航树节点或会话详情发起）：用户消息以 `metadata = { mode: 'follow_up', parentNodeId, taskId }` 落库，回答分支节点挂在该节点之下（depth + 1），assistant Message 额外记录 `navNodeId` 供探索树点击定位正文。结果落库后从 Message 和 KnowledgeUnit 实际行数重算 `message_count` / `unit_count`，每个 Session 同时只允许一个 `pending` / `running` / `needs_review` 对话任务；任务完成后才可创建下一轮。早期没有 `metadata.taskId` 的对话任务按 legacy 规则回落到根节点。
 - 新对话或追问如果预选了现有知识主题，创建任务时立即写入该 Session 和首条用户 Message 的 `session_concepts` / `message_concepts`（source=`manual`）；这不等待 API 或 Prompt 粘贴结果，回答完成后仍按返回的单元和多目标归属继续补充事实。
 - 任务中心在队列启动前显示待处理任务数、覆盖的 Session 数和预计调用次数（按待处理 API 任务数估算，失败重试最多 ×3 不计入）；Session 数取 `inputRevision` 首段去重，`maintenance:` 前缀不计入。
@@ -65,8 +66,7 @@
 - Store 传给图谱服务的 Session 集合只包含未归档 Session；当调用方提供该集合时，残留的 `session_concepts` 不得为已归档 Session 生成共现边。独立调用 `buildGraph` 未提供 Session 集合时，仍按调用方显式传入的事实计算。
 - 折叠主题通过 hierarchy 投影到最近可见祖先。每个 KnowledgeUnit 先对可见代表节点去重，再对每个代表节点对贡献一次共现权重；因此隐藏叶节点仍能为根视图提供聚合关系，同时不会因多条叶子路径重复计数。hierarchy 只绘制当前两端都可见的事实边；related 的隐藏端点也可投影到可见祖先，但只形成无向弱关系。
 - 图谱中的 Concept 节点主体点击同时打开详情并改变层级投影；叶节点只打开详情，Enter/Space 与单击一致，图谱不提供独立 `+/-` 展开控件。全局 `showUnits` 才显示单元，`showMessages` 或保留会话筛选才显示消息；这些开关不会被 Concept 展开绕过，并按 Session 的 `orderInSession` 连接成链。
-- 对话结果允许返回最多两条有直接证据的 hierarchy 关系；应用以 `proposed` 写入并复用统一确认、拒绝与环检测流程。related 不由普通对话或 Concept 提取返回，而由共享 Session/Message 归属派生。
-- 普通 Concept 提取与对话只允许返回 hierarchy；related 由共享 Session/Message 归属派生。维护建议协议提供 `relation`、`remove_relation`、`update_relation`、`membership_relink`、兼容的 `unit_relink` 和 `unit_revision`，分别覆盖关系编辑、Message/Session/KnowledgeUnit 直接归属替换/追加及阅读片段元数据修订；每个动作校验 active 目标、幂等性和 DAG 环，并记录可撤销快照。
+- 对话结果只允许返回有直接证据的 `hierarchy` 关系；应用以 `proposed` 写入并复用统一确认、拒绝与环检测流程。`related` 不接受普通 LLM 断言，由软件从共享 Session/Message 事实派生；只有知识维护动作 API 能显式编辑持久化 `related`。
 - 图谱布局持久化：节点拖拽结束写入 `graph_layout`（固定坐标），视口平移/缩放防抖后写入单行 `graph_viewport` 表；刷新后恢复。“重置布局”清除这两类记录并重新计算。快照变化触发的重渲染以 d3 的实时变换恢复视口，持久化视口只在组件挂载时应用；store 保存/重置视口时会同步内存值，避免过期的 prop 把缩放拉回旧状态，“重置布局”通过递增组件 key 整体重建实现。
 - 图谱支持框选多选：空白画布上 Shift+左键拖出选框（该手势已从 d3.zoom 的默认事件过滤中排除，不与平移冲突），松开后把框内知识单元节点逐一加入跨会话上下文选择；选框坐标经当前缩放变换的逆变换映射回布局坐标再判定命中。
 - 手动图谱边保存在 `manual_graph_edges`，但当前界面只提供数据层 API，关系创建界面仍以 ConceptRelation 表单为主。
@@ -86,7 +86,8 @@
 - `Concept` 在用户界面中显示为“知识主题”。这是中文产品文案的显示层选择：它比“概念”更能表达跨会话复用的稳定知识主体；数据库字段、TypeScript 类型和 Prompt 契约仍使用 `Concept`，以保持设计文档的数据契约不变。
 - 界面文案不暴露开发术语：面向用户使用“会话 / 阅读片段 / 知识主题 / 任务”等词，`KnowledgeUnit` 作为可选证据包保留在数据层；`Session`、`Concept`、`schema` 等只出现在数据层与文档。
 - 从知识主题详情或上下文面板发起对话时，总是打开独立的 composer。快捷短语先渲染 `$(topic)` / `$(context)`，用户仍可编辑生成的问题；创建后落库新的 Session、导航根节点、用户首条消息和待处理 conversation 任务，不在界面中直接发送网络请求。预选主题同时写入 Session/Message 直接归属。
-- 导航树使用 `NavTreeNode` 的父子关系递归渲染；根调用传入完整 Session 节点集合，圆点为主要可点击区域，细线表达父子关系，标签通过悬停/聚焦提示显示；会话页按时间排列可选阅读片段，节点点击只定位已有片段或原始消息，不复制或重建事实数据。
+- 导航树使用 `NavTreeNode` 的父子关系递归渲染；根调用传入完整 Session 节点集合，圆点为主要可点击区域，细线表达父子关系，标签通过悬停/聚焦提示显示；会话导航隐藏每个节点的重复追问动作，只保留单击圆点切换分支。
+- 会话工作区按当前导航节点投影消息：切换主题只切换到另一条分支，不把新问题线性追加到旧分支尾部。中心渲染当前节点及其祖先路径上的实体问答卡片；只有最前面的当前卡片可交互，祖先卡片保留真实标题和消息 DOM 作为不可交互的叠放背景，层数与导航深度一致。卡片使用 `TransitionGroup`、稳定尺寸和 `transform` 做可中断的切换动画，在 `prefers-reduced-motion: reduce` 下关闭位移/旋转。Session 仍保留完整 Message 顺序供检索和导出，分支视图只是显示投影。
 - 上下文排序在界面状态中保持为用户拖拽顺序，创建 conversation 任务时按该顺序写入 `ContextReference.order_in_context`。输入 token 以字符数除以 4 估算；超过配置预算时只提示并禁止创建任务，不静默截断。
 - 长列表使用分段加载而非虚拟滚动：会话每页 40、知识主题每页 60、历史任务每页 30；主题的“包含消息”全屏查看器跨 Session 固定每页 20 条，并在每条消息头部标记来源会话，使用上一页/下一页翻页。该阈值是界面常量，后续接入虚拟滚动时可整体替换。
 - 知识主题详情的关联单元列表支持三种排序：最近更新、创建时间、名称（中文 `Intl.Collator('zh-Hans-CN')` 排序）；父/子/相关主题行按对方主题关联的单元数量降序排列，常用主体靠前。
@@ -112,7 +113,7 @@
 
 ## 验收覆盖说明（对应设计 15.1）
 
-- 单元测试（Vitest，123 项）覆盖 Markdown 渲染与注入防护、分块切分与合并校验、图谱关系/渐进披露、中文搜索回退与排序、扩展会话发现与导出 payload、主题证据分页、任务迁移和直接对话写入。数据库耦合路径依赖 sql.js WASM；当前测试已覆盖直接导入、旧 segmentation 归一化、对话结果应用和 API 任务并发护栏，仍不替代真实桌面环境的备份恢复验收。
+- 单元测试（Vitest，138 项）覆盖 Markdown 渲染与注入防护、分块切分与合并校验、图谱关系/渐进披露、中文搜索回退与排序、扩展会话发现与导出 payload、主题证据分页、任务迁移和直接对话写入。数据库耦合路径依赖 sql.js WASM；当前测试已覆盖直接导入、旧 segmentation 归一化、对话结果应用和 API 任务并发护栏，仍不替代真实桌面环境的备份恢复验收。
 - 数据库耦合路径通过 headless Chromium + CDP 冒烟脚本人工验收：空态加载、图谱渲染、帮助弹窗、Provider 保存、导入 JSON → 任务中心 → Prompt 粘贴应用 Session/Message Concept 归属（旧数据另验阅读片段兼容与废弃分段任务归档）→ 图谱出现主题与直接证据节点 → 主题目录右栏跨 Session 消息分页 → 会话列表核对，全程断言无运行时异常。该脚本为临时验收工具，不随应用分发。
 
 ## 直接 Concept 流程迁移约定
@@ -128,6 +129,6 @@
 - 事实层次：`Session` 是完整对话容器，`Message` 是不可丢失的原始消息，`Concept` 是跨 Session 复用的知识主题。`KnowledgeUnit` 保留为同一 Session 内可选的阅读片段/证据包，不是主题层级、不是分段前置条件，也不参与根主题判断。
 - 导入链：原始 `Session/Message` 先写入 → 创建 `session_triage` 与 `origin_concepts` 任务 → 任务经历 `pending → running → success`，异常进入 `needs_review/failed`，输入版本变化进入 `stale`；直接主题结果写入 `SessionConcept/MessageConcept`，不等待 KnowledgeUnit。
 - 对话链：本地草稿 → 创建 `conversation` 任务（API 为 `pending → running`，Prompt 粘贴保持 `pending` 等待人工回传）→ 校验结果 → `success` 写入 assistant Message、导航树节点和多主题归属；`units` 可以为空或包含多个本轮可选阅读片段。非法结果进入 `needs_review`，重试或版本变化分别回到 `pending` 或 `stale`。没有摘要的已应用片段仍为 `ready`，不再伪装成等待分段。
-- 关系链：LLM/维护任务产生 `proposed` → 用户确认变为 `confirmed` 或拒绝变为 `rejected`。只有 `confirmed` 默认参与图谱绘制；未拒绝的 hierarchy proposal 仍参与根节点结构判定，`showProposed` 打开时才显示建议关系。
+- 关系链：普通 Concept/对话任务只能产生 `hierarchy` `proposed`，由用户确认变为 `confirmed` 或拒绝变为 `rejected`；`related` 默认由软件从共享 Session/Message 事实派生，维护任务才可通过动作 API 显式添加、修改或删除持久化 related。只有 `confirmed` 默认参与图谱绘制；未拒绝的 hierarchy proposal 仍参与根节点结构判定，`showProposed` 打开时才显示建议关系。
 - 展示层：图谱从事实层实时派生；默认只显示 hierarchy 根主题，Concept 单击同时打开详情并逐层展开/递归收起，`related` 永不改变层级。Sigma.js 评估后暂不替换 D3：现有 SVG 图谱已覆盖缩放、拖拽、悬停高亮、键盘语义、框选和稳定布局，贸然换成 Sigma 会改写测试与交互层；后续若节点规模超过当前阈值，再以独立适配层引入 graphology/Sigma。
-- 知识主题页的左栏使用可折叠 hierarchy 树，主题行单击选中并打开右侧内容，树节点的独立折叠控件负责展开/收起；过滤时保留命中主题的祖先节点，父子跳转后详情列滚动回顶。会话探索树使用大圆点、细连接线和悬停/聚焦标签。图谱主题节点不提供独立 `+/-` 控件，主体单击同时打开详情并展开/收起。
+- 知识主题页的左栏使用可折叠 hierarchy 树，主题行单击选中并打开右侧内容，树节点的独立折叠控件负责展开/收起；过滤时保留命中主题的祖先节点，父子跳转后详情列滚动回顶。会话探索树使用大圆点、细连接线和悬停/聚焦标签，切换分支时只替换当前前景卡片。图谱主题节点不提供独立 `+/-` 控件，主体单击同时打开详情并展开/收起，新增或移除的节点通过透明度和稳定坐标过渡。
