@@ -95,4 +95,25 @@ describe('NavTree hierarchy', () => {
       expect(node.querySelector('.nav-tree-marker')).not.toBeNull()
     })
   })
+
+  it('cleans Markdown and Nexus delimiters from compact navigation labels', async () => {
+    const markedRoot = { ...root, label: '## [[nexus:existing:根节点]]根节点[[/nexus]]' }
+    const markedUnit: KnowledgeUnit = {
+      id: 'unit', sessionId: 'session', title: '**阅读片段**', orderInSession: 0,
+      status: 'ready', revision: 1, createdAt: now, updatedAt: now,
+    }
+    const target = document.createElement('div')
+    document.body.appendChild(target)
+    const app = createApp(NavTree, {
+      nodes: [markedRoot], allNodes: [markedRoot], units: [markedUnit],
+      nodeUnits: [{ nodeId: 'root', unitId: 'unit', orderInNode: 0 }],
+    })
+    mounted.push(app)
+    app.mount(target)
+    await nextTick()
+
+    expect(target.querySelector('.nav-tree-label')?.textContent).toBe('根节点')
+    expect(target.querySelector('.nav-tree-unit')?.textContent).toBe('阅读片段')
+    expect(target.textContent).not.toContain('nexus')
+  })
 })

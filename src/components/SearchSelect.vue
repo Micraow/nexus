@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { Check, ChevronDown, Search } from 'lucide-vue-next'
+import { cleanGraphText } from '@/services/graph'
 
 export interface SearchSelectOption {
   value: string | null
@@ -21,10 +22,11 @@ const open = ref(false)
 const query = ref('')
 
 const selected = computed(() => props.options.find((option) => option.value === props.modelValue) ?? null)
+const displayText = (value: unknown) => cleanGraphText(value)
 const filtered = computed(() => {
   const needle = query.value.trim().toLocaleLowerCase()
   if (!needle) return props.options
-  return props.options.filter((option) => `${option.label} ${option.hint ?? ''}`.toLocaleLowerCase().includes(needle))
+  return props.options.filter((option) => `${displayText(option.label)} ${displayText(option.hint)}`.toLocaleLowerCase().includes(needle))
 })
 
 function choose(value: string | null): void {
@@ -43,13 +45,13 @@ watch(() => props.modelValue, () => { if (!open.value) query.value = '' })
 <template>
   <div class="search-select" :class="{ open, disabled }" @focusout="closeOnBlur">
     <button type="button" class="search-select-trigger" :aria-label="props.ariaLabel" :aria-expanded="open" :disabled="props.disabled" @click="open = !open">
-      <span :class="{ placeholder: !selected }">{{ selected?.label || props.placeholder }}</span>
+      <span :class="{ placeholder: !selected }">{{ displayText(selected?.label) || props.placeholder }}</span>
       <ChevronDown :size="14" />
     </button>
     <div v-if="open" class="search-select-popover" role="listbox" :aria-label="props.ariaLabel">
       <label class="search-select-input"><Search :size="14" /><input v-model="query" autofocus :placeholder="props.placeholder" :aria-label="`${props.ariaLabel}搜索`" @keydown.esc.prevent="open = false" /></label>
       <button v-for="option in filtered" :key="option.value ?? 'none'" type="button" class="search-select-option" :class="{ selected: option.value === props.modelValue }" @mousedown.prevent="choose(option.value)">
-        <span><strong>{{ option.label }}</strong><small v-if="option.hint">{{ option.hint }}</small></span>
+        <span><strong>{{ displayText(option.label) }}</strong><small v-if="option.hint">{{ displayText(option.hint) }}</small></span>
         <Check v-if="option.value === props.modelValue" :size="14" />
       </button>
       <p v-if="!filtered.length" class="search-select-empty">没有匹配项</p>

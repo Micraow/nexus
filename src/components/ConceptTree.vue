@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { ChevronRight, Folder, FolderOpen } from 'lucide-vue-next'
 import type { Concept, ConceptRelation } from '@/types/domain'
+import { cleanGraphText } from '@/services/graph'
 
 const props = withDefaults(defineProps<{
   concepts: Concept[]
@@ -58,11 +59,11 @@ function hasProposedParent(conceptId: string): boolean {
   <div class="concept-tree" role="tree">
     <div v-for="concept in roots" :key="concept.id" class="concept-tree-branch" role="treeitem" :aria-selected="selectedId === concept.id" :aria-level="path.length + 1" :aria-expanded="childrenOf(concept.id).length ? expandedIds.has(concept.id) : undefined">
       <div class="concept-tree-row" :class="{ selected: selectedId === concept.id }">
-        <button v-if="childrenOf(concept.id).length" class="concept-tree-toggle" :aria-label="expandedIds.has(concept.id) ? `收起${concept.name}` : `展开${concept.name}`" :aria-expanded="expandedIds.has(concept.id)" @click.stop="emit('toggle', concept.id)">
+        <button v-if="childrenOf(concept.id).length" class="concept-tree-toggle" :aria-label="expandedIds.has(concept.id) ? `收起${cleanGraphText(concept.name) || concept.name}` : `展开${cleanGraphText(concept.name) || concept.name}`" :aria-expanded="expandedIds.has(concept.id)" @click.stop="emit('toggle', concept.id)">
           <ChevronRight class="concept-tree-chevron" :class="{ expanded: expandedIds.has(concept.id) }" :size="14" />
         </button>
         <span v-else class="concept-tree-spacer" />
-        <button class="concept-tree-select" :aria-label="`查看${concept.name}`" @click="emit('select', concept.id)"><FolderOpen v-if="childrenOf(concept.id).length && expandedIds.has(concept.id)" :size="15" /><Folder v-else-if="childrenOf(concept.id).length" :size="15" /><span v-else class="concept-tree-leaf" aria-hidden="true" /><span class="concept-tree-label">{{ concept.name }}</span></button>
+        <button class="concept-tree-select" :aria-label="`查看${cleanGraphText(concept.name) || concept.name}`" @click="emit('select', concept.id)"><FolderOpen v-if="childrenOf(concept.id).length && expandedIds.has(concept.id)" :size="15" /><Folder v-else-if="childrenOf(concept.id).length" :size="15" /><span v-else class="concept-tree-leaf" aria-hidden="true" /><span class="concept-tree-label">{{ cleanGraphText(concept.name) || concept.name }}</span></button>
         <span v-if="hasProposedParent(concept.id)" class="concept-tree-proposed" title="包含待确认的父主题关系">?</span>
       </div>
       <div v-if="childrenOf(concept.id).length && expandedIds.has(concept.id)" class="concept-tree-children">

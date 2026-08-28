@@ -801,6 +801,10 @@ body.fullscreen-active { overflow: hidden; }
 .conversation-tree-tooltip { position: absolute; z-index: 6; max-width: 220px; padding: 6px 9px; overflow-wrap: anywhere; color: var(--text); background: #fff; border: 1px solid var(--line-strong); border-radius: 6px; box-shadow: var(--shadow-md); font-size: calc(11px * var(--app-font-scale)); font-weight: 650; line-height: 1.4; pointer-events: none; transform: translateY(-50%); white-space: normal; }
 .add-inline .search-select { flex: 1; }
 
+.unit-page-tools { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+.unit-page-tools > label { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: calc(10px * var(--app-font-scale)); }
+.unit-page-tools select { min-height: 36px; padding: 0 28px 0 9px; }
+
 @media (max-width: 780px) {
   .new-chat-panel.conversation-mode { margin: -18px -14px -32px; padding: 24px 14px 34px; }
   .conversation-minimap { min-height: 120px; padding: 9px 12px 14px; overflow-x: auto; overflow-y: hidden; }
@@ -808,6 +812,8 @@ body.fullscreen-active { overflow: hidden; }
   .conversation-minimap .nav-tree { min-width: max-content; display: flex; flex-direction: row; align-items: flex-start; justify-content: flex-start; }
   .conversation-minimap .nav-tree > .nav-tree-branch > .nav-tree { width: 72px; margin: 0 0 0 5px; padding: 0 0 0 12px; border-top: 1px solid var(--line-strong); border-left: 0; }
   .conversation-minimap .nav-tree > .nav-tree-branch > .nav-tree > .nav-tree-branch::before { top: -1px; left: 36px; width: 1px; height: 12px; border-top: 0; border-left: 1px solid var(--line-strong); }
+  .unit-page-tools { width: 100%; justify-content: stretch; flex-wrap: wrap; }
+  .unit-page-tools .compact-search { flex: 1 1 220px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

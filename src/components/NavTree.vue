@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { MessageSquare } from 'lucide-vue-next'
 import type { KnowledgeUnit, NavTreeNode, NavTreeNodeUnit } from '@/types/domain'
+import { cleanGraphText } from '@/services/graph'
 
 const props = withDefaults(defineProps<{
   nodes: NavTreeNode[]
@@ -26,6 +27,7 @@ const emit = defineEmits<{
 }>()
 
 const completeNodes = computed(() => props.allNodes ?? props.fullNodes ?? props.nodes)
+const displayText = (value: unknown, fallback = '') => cleanGraphText(value) || fallback
 
 function childrenOf(nodeId: string): NavTreeNode[] {
   const visited = new Set(props.visitedNodeIds ?? [])
@@ -48,17 +50,17 @@ function unitsOf(nodeId: string): KnowledgeUnit[] {
   <div class="nav-tree" role="tree">
     <div v-for="node in nodes" :key="node.id" class="nav-tree-branch" role="treeitem" :aria-selected="selectedNodeId === node.id" :aria-expanded="childrenOf(node.id).length ? true : undefined">
       <div class="nav-tree-row" :class="{ selected: selectedNodeId === node.id }">
-        <button class="nav-tree-node" :class="{ selected: selectedNodeId === node.id }" :aria-label="node.label" :title="node.label" @click="emit('select-node', node)">
+        <button class="nav-tree-node" :class="{ selected: selectedNodeId === node.id }" :aria-label="displayText(node.label, '未命名探索节点')" :title="displayText(node.label, '未命名探索节点')" @click="emit('select-node', node)">
           <span class="nav-tree-marker" :class="{ root: !node.parentId }" />
-          <span class="nav-tree-label">{{ node.label }}</span>
+          <span class="nav-tree-label">{{ displayText(node.label, '未命名探索节点') }}</span>
           <span v-if="unitsOf(node.id).length" class="nav-tree-count">{{ unitsOf(node.id).length }}</span>
         </button>
-        <button v-if="props.showActions !== false" class="nav-tree-ask" :title="`从「${node.label}」继续追问`" :aria-label="`从「${node.label}」继续追问`" @click.stop="emit('ask', node)">
+        <button v-if="props.showActions !== false" class="nav-tree-ask" :title="`从「${displayText(node.label, '未命名探索节点')}」继续追问`" :aria-label="`从「${displayText(node.label, '未命名探索节点')}」继续追问`" @click.stop="emit('ask', node)">
           <MessageSquare :size="13" />
         </button>
       </div>
       <div v-if="unitsOf(node.id).length" class="nav-tree-units">
-        <span v-for="unit in unitsOf(node.id)" :key="unit.id" class="nav-tree-unit">{{ unit.title || '未命名阅读片段' }}</span>
+        <span v-for="unit in unitsOf(node.id)" :key="unit.id" class="nav-tree-unit">{{ displayText(unit.title, '未命名阅读片段') }}</span>
       </div>
       <NavTree v-if="childrenOf(node.id).length" :nodes="childrenOf(node.id)" :all-nodes="completeNodes" :node-units="nodeUnits" :units="units" :selected-node-id="selectedNodeId" :show-actions="props.showActions" :visited-node-ids="[...(visitedNodeIds ?? []), node.id]" @select-node="emit('select-node', $event)" @ask="emit('ask', $event)" />
     </div>
