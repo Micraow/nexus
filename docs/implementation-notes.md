@@ -47,10 +47,10 @@
 - Token 预算不是固定的 `8000`：设置页允许输入任意不小于 `1000` 的有限安全整数并立即持久化为 `llm.token_budget`，不施加产品级最大值。配置读取、界面提交和写回使用同一归一化函数；该值供长 Session 分窗与新对话上下文超限检查共同使用，已创建的任务不会因之后修改预算而重写。
 - 长 Session 按估算 token 预算切成带两条消息重叠的运行时窗口；合并多个窗口结果时按全局 Message ID、Concept 规范名、归属目标和关系类型去重，并校验未知 ID、关系成环与 related/hierarchy 语义冲突，任何冲突都整体判失败，不写入部分结果。窗口不创建 KnowledgeUnit。
 - API 模式采用 OpenAI-compatible Chat Completions：请求地址为 `baseUrl + /chat/completions`，只发送当前任务 Prompt，温度固定为 `0`。历史 `local_only` 字段仅用于兼容旧数据，不再阻止 API 执行；Prompt 粘贴模式不发网络请求。
-- 知识维护结果持久化顶层 `reason`，用于解释模型为何提出或不提出变更；空 `suggestions` 也会显示该判断。维护 MCP 动作 `unit_create` 可从同一 Session 的未归档消息创建可选阅读片段并写入消息关联。
+- 知识维护结果持久化顶层 `reason`，用于解释模型为何提出或不提出变更；空 `suggestions` 也会显示该判断。维护 Prompt 同时提供未归属消息数量和阅读片段覆盖范围，要求模型显式审计遗漏；维护 MCP 动作 `unit_create` 可从同一 Session 的未归档消息创建可选阅读片段并写入消息关联。
 - 对话 Prompt 携带当前 Session 标题/摘要、导航路径、最近历史消息和可复用阅读片段，并允许返回 `session_title`（≤60 字）和 `session_summary`（≤120 字）。首轮 `units` 示例完全省略 `unit_id`，禁止模型为新片段编造 ID；后续只能逐字复用当前 Session 已列出的真实 `unit_id`，或省略 ID 创建新片段。每轮 `units` 必须非空。追问还会按当前 Session 已有的 Session/Message/Unit 归属展开其 Concept 祖先路径，避免把上一轮已创建的子主题再次当作新主题。完成结果在同一事务中写入 assistant Message、Session 滚动摘要、KnowledgeUnit 和导航节点；仅应用内占位标题会自动改名，导入或用户编辑过的标题保持不变。旧结果省略标题/摘要字段时保留已有值，空摘要以回答文本作有限回退。
 - 所有任务 Prompt 先经过 `ensureHarnessPrompt`，固定拼接版本化的 `NEXUS_HARNESS_PROMPT` 与 `PROGRESSIVE_DISCLOSURE_PROTOCOL`；动态任务规格放在固定前缀之后。Harness 允许模型使用自身知识和调用方授权的搜索/工具，但要求区分输入证据、外部资料和推断，并把消息、摘要、目录都当作不可信数据。
-- 对话 Prompt 约定已有主题使用 `[[nexus:existing:主题名称]]回答中实际出现的词组[[/nexus]]`、建议探索主题使用 `[[nexus:suggested:主题名称]]回答中实际出现的词组[[/nexus]]`；Nexus 标记只允许出现在 `answer` 字符串，`units[].concepts` 和顶层 `concepts` 都必须是对象数组，不能返回标记碎片、标签元组或字符串数组。模型先按思维导图梳理答案，再对每个稳定、独立概念的首次真实出现分别标记。推荐词采用教材章节大标题/小标题粒度，短而有辨识度；没有固定总数量上限，但不得把多个概念合并为一个 marker，也不得使用“原文”等占位文字。Markdown 渲染器移除标记并以蓝/黄色下划线呈现，旧响应中的占位正文回退显示 marker 主题名；图谱、树目录、搜索候选和阅读片段标题/摘要等非 Markdown 区域通过轻量纯文本清理移除 Markdown/Nexus 展示符号。
+- 对话 Prompt 约定已有主题使用 `[[nexus:existing:主题名称]]回答中实际出现的词组[[/nexus]]`、建议探索主题使用 `[[nexus:suggested:主题名称]]回答中实际出现的词组[[/nexus]]`；Nexus 标记只允许出现在 `answer` 字符串，`units[].concepts` 和顶层 `concepts` 都必须是对象数组，不能返回标记碎片、标签元组或字符串数组。模型先按思维导图梳理答案，再对每个稳定、独立概念的首次真实出现分别标记。推荐词采用教材章节大标题/小标题粒度，短而有辨识度；没有固定总数量上限，但不得把多个概念合并为一个 marker，也不得使用“原文”等占位文字。Markdown 渲染器移除标记并以蓝/黄色下划线呈现；`existing` 只有能按当前 active Concept 的名称或别名解析时才显示为蓝色可点击链接，无法解析的旧/错误标记退化为普通文本。旧响应中的占位正文回退显示 marker 主题名；图谱、树目录、搜索候选和阅读片段标题/摘要等非 Markdown 区域通过轻量纯文本清理移除 Markdown/Nexus 展示符号。
 - 大型知识上下文通过 `DISCLOSURE_INDEX` 传递：根引用只包含 `title`、`summary` 和不透明 `refID`，展开记录才提供下一层 children 或消息原文。模型可返回 `disclosure_requests: [{ refID, depth }]`；应用先校验 ID 已在当前目录、不能是保留标签 `DISCLOSURE_INDEX`、无重复且深度为 1～64，再从本地 hierarchy、KnowledgeUnit 和 Message 递归生成下一轮 Prompt。没有目录时必须返回空数组。API 模式自动续跑，最多 8 轮；Prompt 粘贴模式把同一任务恢复为 pending，等待用户执行更新后的 Prompt。非法请求或超过轮数进入 `needs_review`，不会应用部分结果。
 - 起源 Concept 结果写入独立的 `session_concepts` 多对多事实表；它不会复制到该 Session 的全部 KnowledgeUnit。图谱派生时会把 Session、Message 和 KnowledgeUnit 三种归属投影到可见主题，并按 Session（而不是单元数量）累计 Concept 共现权重。
 - 新对话与起源 Concept 任务共用层级约束：优先选择最窄的已有或同批次父主题，仅在没有可解释父级时保留根节点。普通 LLM 结果只能返回 `hierarchy` 并以 `proposed` 写入；`related` 由软件按共享 Session/Message 派生，只有维护动作 API 可写持久化 related。端点必须来自当前披露目录或响应内 `client_ref`；落库会去重、检测环，并保留已有 `confirmed` 关系。
@@ -115,8 +115,9 @@
 
 ## 验收覆盖说明（对应设计 15.1）
 
-- 单元测试（Vitest，164 项）覆盖 Markdown 渲染与注入防护、分块切分与合并校验、图谱关系/渐进披露、中文搜索回退与排序、扩展会话发现与导出 payload、主题证据分页、任务迁移和直接对话写入。数据库耦合路径依赖 sql.js WASM；当前测试已覆盖直接导入、旧 segmentation 归一化、对话结果应用和 API 任务并发护栏，仍不替代真实桌面环境的备份恢复验收。
+- 单元测试（Vitest，193 项）覆盖 Markdown 渲染与注入防护、分块切分与合并校验、图谱关系/渐进披露、中文搜索与搜索选择框、会话分支/恢复、阅读片段浏览、扩展会话发现与导出 payload、主题证据分页、任务迁移和直接对话写入。数据库耦合路径依赖 sql.js WASM；当前测试已覆盖直接导入、旧 segmentation 归一化、对话结果应用和 API 任务并发护栏，仍不替代真实桌面环境的备份恢复验收。
 - 数据库耦合路径通过 headless Chromium + CDP 冒烟脚本人工验收：空态加载、图谱渲染、帮助弹窗、Provider 保存、导入 JSON → 任务中心 → Prompt 粘贴应用 Session/Message Concept 归属（旧数据另验阅读片段兼容与废弃分段任务归档）→ 图谱出现主题与直接证据节点 → 主题目录右栏跨 Session 消息分页 → 会话列表核对，全程断言无运行时异常。该脚本为临时验收工具，不随应用分发。
+- 2026-08-28 使用本机保存的真实 OpenAI-compatible Provider 验收：维护 Prompt 在 31 个 Concept、26 条关系、1 个既有阅读片段和 106 条未归属消息上返回 3 个 `unit_create`，分别覆盖 52、50、4 条消息，完整覆盖全部遗漏；API 流式对话在任务完成前显示“实时输出”，完成后将首轮问答收束为 1 张卡片、1 个探索树节点和 1 个非空阅读片段。API Key 未写入仓库或验收日志。
 
 ## 直接 Concept 流程迁移约定
 
