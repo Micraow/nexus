@@ -430,6 +430,56 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.relations).toContainEqual(expect.objectContaining({ parentConceptId: parentId, childConceptId: child.id, relationType: 'hierarchy', status: 'proposed' }))
   })
 
+  it('creates aliases and multiple proposed hierarchy parents atomically', () => {
+    const parentA = store.createConcept('原子父主题 A')
+    const parentB = store.createConcept('原子父主题 B')
+    const taskId = store.createMaintenanceTask()
+    const task = store.tasks.find((item) => item.id === taskId)!
+    const result = store.applyTaskResult(task.id, JSON.stringify({
+      suggestions: [{
+        type: 'create_concept',
+        name: '原子子主题',
+        aliases: ['原子别名一', '原子别名二'],
+        parent_concept_ids: [parentA, parentB],
+        reason: '同一主题同时属于两个上位领域',
+      }],
+      disclosure_requests: [],
+    }))
+    expect(result.ok, result.errors.join('; ')).toBe(true)
+    expect(store.applyMaintenanceSuggestion(taskId, 0)).toMatchObject({ ok: true })
+    const child = store.concepts.find((concept) => concept.name === '原子子主题')!
+    expect(store.aliases.filter((alias) => alias.conceptId === child.id).map((alias) => alias.alias)).toEqual(expect.arrayContaining(['原子别名一', '原子别名二']))
+    expect(store.relations.filter((relation) => relation.relationType === 'hierarchy' && relation.childConceptId === child.id).map((relation) => relation.parentConceptId)).toEqual(expect.arrayContaining([parentA, parentB]))
+  })
+
+  it('rejects duplicate aliases and conflicting create parent fields before any write', () => {
+    const parent = store.createConcept('冲突父主题')
+    const taskId = store.createMaintenanceTask()
+    const task = store.tasks.find((item) => item.id === taskId)!
+    const result = store.applyTaskResult(task.id, JSON.stringify({
+      suggestions: [
+        {
+          type: 'create_concept',
+          name: '冲突子主题',
+          aliases: ['重复别名', '重复别名'],
+          reason: '重复别名应被拒绝',
+        },
+        {
+          type: 'create_concept',
+          name: '冲突父字段主题',
+          parent_concept_id: parent,
+          parent_concept_ids: [parent],
+          reason: '字段冲突应被拒绝',
+        },
+      ],
+      disclosure_requests: [],
+    }))
+    expect(result.ok).toBe(false)
+    expect(result.errors.join('; ')).toContain('aliases 不能重复')
+    expect(result.errors.join('; ')).toContain('不能同时使用 parent_concept_id 和 parent_concept_ids')
+    expect(store.concepts.some((concept) => concept.name === '冲突子主题')).toBe(false)
+  })
+
   it('enforces the maintenance action contract and supports clearing unit links', () => {
     const conceptId = store.createConcept('维护主题')
     const taskId = store.createMaintenanceTask()

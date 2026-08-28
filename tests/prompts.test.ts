@@ -11,6 +11,7 @@ import {
   buildTitleSummaryPrompt,
   formatDisclosureContext,
   formatMaintenanceActionApi,
+  listMaintenanceMcpTools,
   NEXUS_HARNESS_PROMPT,
   MAINTENANCE_ACTION_API,
   parseDisclosureContext,
@@ -112,6 +113,11 @@ describe('maintenance prompt', () => {
     expect(actions.get('create_concept')?.inputSchema).toEqual(actions.get('create_concept')?.input_schema)
     expect(actions.get('remove_relation')).toMatchObject({ alias_for: 'delete_relation', deprecated: true })
     expect(actions.get('delete_relation')?.inputSchema.properties.reason).toMatchObject({ type: 'string', minLength: 1 })
+    expect(actions.get('create_concept')?.inputSchema.properties.aliases).toMatchObject({ type: 'array', uniqueItems: true })
+    expect(actions.get('create_concept')?.inputSchema.properties.parent_concept_ids).toMatchObject({ type: 'array', uniqueItems: true })
+    expect(actions.get('create_concept')?.properties).toHaveProperty('reason', 'string')
+    expect(listMaintenanceMcpTools().every((tool) => Object.keys(tool).sort().join(',') === 'description,inputSchema,name')).toBe(true)
+    expect(listMaintenanceMcpTools().map((tool) => tool.name)).toContain('nexus_maintenance_set_hierarchy_parents')
   })
 })
 

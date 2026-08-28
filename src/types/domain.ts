@@ -261,6 +261,8 @@ export interface MaintenanceSuggestion {
   notes?: string
   /** Optional proposed Concept name for create/update actions. */
   name?: string
+  /** Optional aliases created atomically with a new Concept. */
+  aliases?: string[]
 }
 
 export interface OperationLog {

@@ -5,7 +5,7 @@ import { httpRequest } from '@/services/http'
 import { DEFAULT_TOKEN_BUDGET, normalizeTokenBudget, parseConfigText, readConfigText, writeConfig } from '@/services/config'
 import { buildGraph, graphSnapshotIsProgressiveCompatible, graphStats, graphViewFallbackIsCompatible, toggleExpandedConceptIds } from '@/services/graph'
 import { buildSearchDocuments, searchKnowledge } from '@/services/search'
-import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildOriginConceptPrompt, buildRepairPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, ensureHarnessPrompt, formatMaintenanceActionApi, listedDisclosureRefIds, MAINTENANCE_ACTION_API, parseDisclosureContext, PROMPT_VERSION, renderQuickPhrase, replaceDisclosureContext } from '@/services/prompts'
+import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildOriginConceptPrompt, buildRepairPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, ensureHarnessPrompt, formatMaintenanceActionApi, listMaintenanceMcpTools, listedDisclosureRefIds, MAINTENANCE_ACTION_API, parseDisclosureContext, PROMPT_VERSION, renderQuickPhrase, replaceDisclosureContext } from '@/services/prompts'
 import { conversationMessageBranchNodeId } from '@/services/conversation'
 import { importPayloadSchema, parseImportPayload, validateConceptIdList, validateConceptMemberships, validateDisclosureRequests, validateOriginConceptResult, validateSegmentationResult, validateUnitText } from '@/services/validation'
 import type { DisclosureContext } from '@/services/prompts'
@@ -1668,6 +1668,24 @@ export const useWorkspaceStore = defineStore('workspace', () => {
                   : false
         if (!valid) errors.push(`suggestions.${index}.${field} 类型不符合动作 API`)
       })
+      const validateStringList = (field: string, maxLength = 120): void => {
+        if (!Object.prototype.hasOwnProperty.call(raw, field) || raw[field] === undefined) return
+        const values = raw[field]
+        if (!Array.isArray(values)) return
+        const seen = new Set<string>()
+        values.forEach((value, valueIndex) => {
+          if (typeof value !== 'string' || !value.trim()) {
+            errors.push(`suggestions.${index}.${field}.${valueIndex} 必须是非空字符串`)
+            return
+          }
+          const normalized = normalizeText(value)
+          if (value.trim().length > maxLength) errors.push(`suggestions.${index}.${field}.${valueIndex} 不能超过 ${maxLength} 个字符`)
+          if (seen.has(normalized)) errors.push(`suggestions.${index}.${field} 不能重复`)
+          seen.add(normalized)
+        })
+      }
+      validateStringList('aliases')
+      validateStringList('parent_concept_ids')
       if (raw.parent_concept_id !== undefined && raw.parent_concept_id !== null && typeof raw.parent_concept_id !== 'string') errors.push(`suggestions.${index}.parent_concept_id 类型不符合动作 API`)
       ;['new_source_concept_id', 'new_target_concept_id'].forEach((field) => {
         if (raw[field] !== undefined && typeof raw[field] !== 'string') errors.push(`suggestions.${index}.${field} 类型不符合动作 API`)
@@ -1763,17 +1781,34 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         if (!suggestion.name?.trim()) errors.push(`suggestions.${index}.name 不能为空`)
         else if (suggestion.name.trim().length > 120) errors.push(`suggestions.${index}.name 不能超过 120 个字符`)
         if (suggestion.summary != null && suggestion.summary.length > 120) errors.push(`suggestions.${index}.summary 不能超过 120 个字符`)
-        if (suggestion.parent_concept_id != null && !concepts.value.some((concept) => concept.id === suggestion.parent_concept_id && concept.status === 'active')) errors.push(`suggestions.${index} 的父知识主题不存在`)
+        if (suggestion.notes != null && suggestion.notes.length > 120) errors.push(`suggestions.${index}.notes 不能超过 120 个字符`)
+        if (suggestion.parent_concept_id !== undefined && suggestion.parent_concept_ids !== undefined) errors.push(`suggestions.${index} 不能同时使用 parent_concept_id 和 parent_concept_ids`)
+        const parentIds = suggestion.parent_concept_ids ?? (suggestion.parent_concept_id == null ? [] : [suggestion.parent_concept_id])
+        parentIds.forEach((parentId) => {
+          if (!concepts.value.some((concept) => concept.id === parentId && concept.status === 'active')) errors.push(`suggestions.${index} 的父知识主题不存在`)
+        })
         if (suggestion.name?.trim()) {
           const normalizedName = normalizeText(suggestion.name)
           if (concepts.value.some((concept) => concept.normalizedName === normalizedName)
             || aliases.value.some((alias) => alias.normalizedAlias === normalizedName)) errors.push(`suggestions.${index}.name 与现有知识主题或别名冲突；如需复用请使用 update_concept、restore_concept 或 alias`)
+        }
+        if (Array.isArray(suggestion.aliases)) {
+          const conceptName = normalizeText(suggestion.name ?? '')
+          suggestion.aliases.forEach((alias) => {
+            const normalizedAlias = normalizeText(alias)
+            if (!normalizedAlias) return
+            if (normalizedAlias === conceptName) errors.push(`suggestions.${index}.aliases 不能包含 Concept 自身名称`)
+            const nameOwner = concepts.value.find((concept) => concept.status === 'active' && concept.normalizedName === normalizedAlias)
+            const aliasOwner = aliases.value.find((item) => item.normalizedAlias === normalizedAlias)
+            if (nameOwner || aliasOwner) errors.push(`suggestions.${index}.aliases 包含已被其他知识主题占用的别名`)
+          })
         }
       }
       if (suggestion.type === 'update_concept') {
         if (!suggestion.concept_id || !concepts.value.some((concept) => concept.id === suggestion.concept_id && concept.status === 'active')) errors.push(`suggestions.${index} 的知识主题不存在`)
         if (suggestion.name != null && (!suggestion.name.trim() || suggestion.name.trim().length > 120)) errors.push(`suggestions.${index}.name 无效`)
         if (suggestion.summary != null && suggestion.summary.length > 120) errors.push(`suggestions.${index}.summary 不能超过 120 个字符`)
+        if (suggestion.notes != null && suggestion.notes.length > 120) errors.push(`suggestions.${index}.notes 不能超过 120 个字符`)
         if (suggestion.name === undefined && suggestion.summary === undefined && suggestion.notes === undefined) errors.push(`suggestions.${index} 至少需要一个要更新的字段`)
       }
       if (suggestion.type === 'move_concept') {
@@ -1923,10 +1958,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           if (suggestion.summary?.trim() || suggestion.notes?.trim()) {
             db.run('UPDATE concepts SET summary = ?, notes = ?, updated_at = ? WHERE id = ?', [suggestion.summary?.trim() ?? '', suggestion.notes ?? '', now, conceptId])
           }
-          if (suggestion.parent_concept_id) {
-            if (wouldCreateHierarchyCycle(suggestion.parent_concept_id, conceptId, relations.value)) throw new Error('这个父子关系会形成环，无法建立')
-            db.run('INSERT OR IGNORE INTO concept_relations(id, parent_concept_id, child_concept_id, relation_type, source, status, created_at, updated_at) VALUES (?, ?, ?, \'hierarchy\', ?, \'proposed\', ?, ?)', [createId('relation'), suggestion.parent_concept_id, conceptId, 'maintenance', now, now])
-          }
+          ;(suggestion.aliases ?? []).forEach((alias) => {
+            db.run('INSERT OR IGNORE INTO concept_aliases(id, concept_id, alias, normalized_alias, source, created_at) VALUES (?, ?, ?, ?, ?, ?)', [createId('alias'), conceptId, alias.trim(), normalizeText(alias), 'maintenance', now])
+          })
+          const parentIds = suggestion.parent_concept_ids ?? (suggestion.parent_concept_id == null ? [] : [suggestion.parent_concept_id])
+          parentIds.forEach((parentId) => {
+            if (wouldCreateHierarchyCycle(parentId, conceptId, relations.value)) throw new Error('这个父子关系会形成环，无法建立')
+            db.run('INSERT OR IGNORE INTO concept_relations(id, parent_concept_id, child_concept_id, relation_type, source, status, created_at, updated_at) VALUES (?, ?, ?, \'hierarchy\', ?, \'proposed\', ?, ?)', [createId('relation'), parentId, conceptId, 'maintenance', now, now])
+          })
         } else if (suggestion.type === 'update_concept') {
           const current = concepts.value.find((concept) => concept.id === suggestion.concept_id)
           if (!current) throw new Error('知识主题不存在')
@@ -3099,6 +3138,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     applyTaskResult,
     createMaintenanceTask,
     maintenanceActionApi: MAINTENANCE_ACTION_API,
+    maintenanceMcpTools: listMaintenanceMcpTools(),
     formatMaintenanceActionApi,
     maintenanceSuggestionErrors,
     applyMaintenanceSuggestion,
