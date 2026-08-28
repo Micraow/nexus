@@ -83,4 +83,16 @@ describe('NavTree hierarchy', () => {
     expect(target.querySelector<HTMLElement>('[role="treeitem"]')?.getAttribute('aria-expanded')).toBe('true')
     expect(target.querySelector<HTMLElement>('[role="treeitem"]')?.getAttribute('aria-selected')).toBe('false')
   })
+
+  it('keeps each navigation subject as an accessible circle target', async () => {
+    const target = mountTree([root], [root, child, grandchild], { showActions: false })
+    await nextTick()
+
+    const nodes = [...target.querySelectorAll<HTMLButtonElement>('.nav-tree-node')]
+    expect(nodes).toHaveLength(3)
+    nodes.forEach((node) => {
+      expect(node.title).toBeTruthy()
+      expect(node.querySelector('.nav-tree-marker')).not.toBeNull()
+    })
+  })
 })

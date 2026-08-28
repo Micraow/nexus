@@ -678,6 +678,21 @@ body.fullscreen-active { overflow: hidden; }
 .nav-tree-label { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); border: 0; white-space: nowrap; }
 .nav-tree-count { margin-left: 4px; }
 
+/* The session archive uses the same node-map language as the conversation
+   navigator: a large circle is the subject, while its label is discoverable
+   on hover/focus. The tree still keeps its thin parent/child connectors and
+   the separate ask action. */
+.session-tree-overview .nav-tree { gap: 8px; }
+.session-tree-overview .nav-tree-row { min-height: 72px; align-items: center; background: transparent; }
+.session-tree-overview .nav-tree-row:hover, .session-tree-overview .nav-tree-row.selected { background: transparent; }
+.session-tree-overview .nav-tree-node { width: 72px; min-width: 72px; min-height: 72px; flex: 0 0 72px; display: grid; place-items: center; padding: 0; border-left: 0; border-radius: 50%; background: transparent; }
+.session-tree-overview .nav-tree-node:hover, .session-tree-overview .nav-tree-node.selected { background: transparent; }
+.session-tree-overview .nav-tree-marker { width: 48px; height: 48px; border-width: 2px; box-shadow: 0 0 0 3px var(--surface); transition: transform var(--motion-fast), box-shadow var(--motion-fast), background var(--motion-fast); }
+.session-tree-overview .nav-tree-node:hover .nav-tree-marker, .session-tree-overview .nav-tree-node:focus-visible .nav-tree-marker { transform: scale(1.06); box-shadow: 0 0 0 3px var(--surface), 0 0 0 6px var(--primary-soft); }
+.session-tree-overview .nav-tree-node.selected .nav-tree-marker { box-shadow: 0 0 0 3px var(--surface), 0 0 0 6px color-mix(in srgb, var(--primary) 32%, transparent); }
+.session-tree-overview .nav-tree-label, .session-tree-overview .nav-tree-count { display: none; }
+.session-tree-overview .nav-tree-node::after { left: calc(100% + 8px); top: 50%; max-width: 280px; padding: 6px 9px; border-radius: 6px; box-shadow: var(--shadow-md); white-space: nowrap; }
+
 /* Conversation navigation follows the reference interaction: large dots are
    the primary controls, while labels appear only when the dot is inspected. */
 .new-chat-panel.conversation-mode { max-width: none; margin: -24px -26px -34px; padding: 30px clamp(22px, 4vw, 70px) 46px; background: #f4f7f8; color: var(--text); border-radius: 0; }
