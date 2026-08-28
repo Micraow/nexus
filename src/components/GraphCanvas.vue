@@ -505,7 +505,10 @@ function render(): void {
     .append('marker')
     .attr('id', 'graph-arrow')
     .attr('viewBox', '0 -5 10 10')
-    .attr('refX', 21)
+    // edgePoints() already clips the line to the target circle. Anchor the
+    // arrow tip at that clipped endpoint instead of applying the old
+    // center-line offset a second time.
+    .attr('refX', 10)
     .attr('refY', 0)
     .attr('markerWidth', 5)
     .attr('markerHeight', 5)
