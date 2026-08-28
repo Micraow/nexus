@@ -61,6 +61,8 @@ describe('conversation prompt', () => {
     expect(prompt).toContain('严禁使用“原文”“正文”“主题名称”等占位文字')
     expect(prompt).toContain('教材的章节大标题或小标题')
     expect(prompt).toContain('多个具有独立知识含义的概念词，可以分别标记多个推荐词')
+    expect(prompt).toContain('每个具有独立知识含义且尚未在目录确认存在的概念词都可以分别作为 suggested marker')
+    expect(prompt).toContain('不要把多个概念合并成一个 marker')
     expect(prompt).not.toContain(']]原文[[/nexus]]')
   })
 

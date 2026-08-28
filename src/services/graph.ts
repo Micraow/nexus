@@ -289,7 +289,7 @@ export function graphSnapshotIsProgressiveCompatible(snapshot: GraphSnapshot, op
       const current = pending[index]
       if (seen.has(current)) continue
       seen.add(current)
-      ;(parentIdsByConcept.get(current) ?? []).forEach((parentId) => {
+      ;(parentIdsByConcept.get(current) ?? new Set<string>()).forEach((parentId) => {
         expanded.add(parentId)
         pending.push(parentId)
       })

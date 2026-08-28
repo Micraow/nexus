@@ -167,6 +167,29 @@ describe('direct concept extraction import pipeline', () => {
     expect(initial.nodes.filter((node) => node.type === 'concept').map((node) => node.refId)).toEqual([rootId])
   })
 
+  it('rejects a Worker snapshot that mislabels a non-root as an isolated depth-zero node', () => {
+    const rootId = store.createConcept('规范根主题')
+    const childId = store.createConcept('错误深度子主题')
+    store.createRelation(rootId, childId, 'hierarchy')
+
+    class IsolatedChildWorker {
+      onmessage: ((event: MessageEvent<{ key: string; snapshot: GraphSnapshot }>) => void) | null = null
+
+      postMessage(request: { key: string; revision: number }): void {
+        const leaked: GraphSnapshot = {
+          nodes: [{ id: `concept:${childId}`, type: 'concept', refId: childId, label: '错误深度子主题', subtitle: 'Concept', degree: 0, unitCount: 0, depth: 0, parentIds: [], rootIds: [childId], hasChildren: false, expanded: false }],
+          edges: [],
+          revision: request.revision,
+        }
+        this.onmessage?.({ data: { key: request.key, snapshot: leaked } } as MessageEvent<{ key: string; snapshot: GraphSnapshot }>)
+      }
+    }
+    vi.stubGlobal('Worker', IsolatedChildWorker)
+
+    const initial = store.viewGraph()
+    expect(initial.nodes.filter((node) => node.type === 'concept').map((node) => node.refId)).toEqual([rootId])
+  })
+
   it('accepts a conversation answer without creating a KnowledgeUnit', () => {
     const sessionId = store.createConversationTask({ question: '只回答一个即时问题，不沉淀知识片段' })
     const task = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!

@@ -3,7 +3,7 @@ import { defineStore } from 'pinia'
 import { db } from '@/services/db'
 import { httpRequest } from '@/services/http'
 import { DEFAULT_TOKEN_BUDGET, normalizeTokenBudget, parseConfigText, readConfigText, writeConfig } from '@/services/config'
-import { buildGraph, graphSnapshotIsProgressiveCompatible, graphStats, graphViewFallbackIsCompatible, toggleExpandedConceptIds } from '@/services/graph'
+import { buildGraph, graphSnapshotIsProgressiveCompatible, graphStats, graphViewFallbackIsCompatible, resolveVisibleConceptIds, toggleExpandedConceptIds } from '@/services/graph'
 import { buildSearchDocuments, searchKnowledge } from '@/services/search'
 import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildOriginConceptPrompt, buildRepairPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, ensureHarnessPrompt, formatMaintenanceActionApi, listMaintenanceMcpTools, listedDisclosureRefIds, MAINTENANCE_ACTION_API, parseDisclosureContext, PROMPT_VERSION, renderQuickPhrase, replaceDisclosureContext } from '@/services/prompts'
 import { conversationMessageBranchNodeId } from '@/services/conversation'
@@ -420,9 +420,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     // Never cache a snapshot that exposes descendants beyond the requested
     // disclosure state; rebuild it synchronously from the current store data
     // so the next render remains a valid roots/expanded projection.
-    const safeSnapshot = graphSnapshotIsProgressiveCompatible(snapshot, options)
+    const input = graphInputFor(options)
+    const visibleConceptIds = resolveVisibleConceptIds(input.concepts, input.relations, input).visibleIds
+    const respectsCurrentProjection = snapshot.nodes
+      .filter((node) => node.type === 'concept')
+      .every((node) => visibleConceptIds.has(node.refId))
+    const safeSnapshot = respectsCurrentProjection && graphSnapshotIsProgressiveCompatible(snapshot, options)
       ? snapshot
-      : buildGraph(graphInputFor(options))
+      : buildGraph(input)
     const prepared = applyGraphLayout(safeSnapshot)
     graphSnapshots.set(key, prepared)
     graphSnapshotOptions.set(key, toPlainJson(options))
@@ -432,10 +437,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function compatibleGraphFallback(options: GraphViewOptions): GraphSnapshot | null {
     let bestSnapshot: GraphSnapshot | null = null
     let bestExpansionCount = -1
+    const input = graphInputFor(options)
+    const visibleConceptIds = resolveVisibleConceptIds(input.concepts, input.relations, input).visibleIds
     graphSnapshots.forEach((snapshot: GraphSnapshot, key: string) => {
       if (snapshot.revision !== graphRevision.value) return
       const candidateOptions = graphSnapshotOptions.get(key)
       if (!candidateOptions || !graphViewFallbackIsCompatible(candidateOptions, options)) return
+      if (!snapshot.nodes.filter((node) => node.type === 'concept').every((node) => visibleConceptIds.has(node.refId))) return
       if (!graphSnapshotIsProgressiveCompatible(snapshot, options)) return
       const expansionCount = candidateOptions.expandedConceptIds?.length ?? 0
       if (expansionCount > bestExpansionCount) {
