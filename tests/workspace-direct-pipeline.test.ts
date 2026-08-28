@@ -819,6 +819,49 @@ describe('direct concept extraction import pipeline', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
+  it('marks pending tasks with an outdated Prompt version stale before direct or queued API execution', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    store.updateConfig({
+      llm: {
+        ...store.config.llm,
+        mode: 'api',
+        defaultProvider: 'version-provider',
+        providers: [{ id: 'version-provider', name: 'Version guard', baseUrl: 'https://example.test/v1', model: 'test-model', apiKey: 'test-key' }],
+      },
+    })
+    const taskInput = {
+      type: 'session_triage' as const,
+      mode: 'api' as const,
+      providerId: 'version-provider',
+      model: 'test-model',
+      promptVersion: 'obsolete-prompt-version',
+      inputRevision: 'version-session:1',
+      prompt: '旧版 Prompt',
+      scopeLabel: '旧版任务',
+    }
+    const directTaskId = store.createTask({ ...taskInput, status: 'pending' })
+    store.refreshFromDb()
+
+    await expect(store.executeTask(directTaskId)).resolves.toEqual({ ok: false, error: 'Prompt 版本已更新，请重新生成任务' })
+    expect(store.tasks.find((task) => task.id === directTaskId)).toEqual(expect.objectContaining({
+      status: 'stale',
+      errorMessage: 'Prompt 版本已更新，请重新生成任务',
+    }))
+
+    const queuedTaskId = store.createTask({ ...taskInput, status: 'pending', scopeLabel: '队列旧版任务' })
+    const successTaskId = store.createTask({ ...taskInput, status: 'success', scopeLabel: '历史成功任务' })
+    const reviewTaskId = store.createTask({ ...taskInput, status: 'needs_review', scopeLabel: '历史待检查任务' })
+    store.refreshFromDb()
+    store.startQueue()
+    await vi.waitFor(() => expect(store.queueRunning).toBe(false))
+
+    expect(store.tasks.find((task) => task.id === queuedTaskId)).toEqual(expect.objectContaining({ status: 'stale' }))
+    expect(store.tasks.find((task) => task.id === successTaskId)).toEqual(expect.objectContaining({ status: 'success' }))
+    expect(store.tasks.find((task) => task.id === reviewTaskId)).toEqual(expect.objectContaining({ status: 'needs_review' }))
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('exposes incremental conversation text while parsing an SSE response', async () => {
     let releaseTail: (() => void) | undefined
     const firstFrame = 'data: {"choices":[{"delta":{"content":"{\\"answer\\":\\"实时"}}]}\n\n'

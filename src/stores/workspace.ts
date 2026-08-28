@@ -2756,10 +2756,19 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     abortControllers.get(taskId)?.abort()
   }
 
+  const outdatedPromptError = 'Prompt 版本已更新，请重新生成任务'
+
+  function rejectOutdatedPendingTask(task: LLMTask): boolean {
+    if (task.status !== 'pending' || task.promptVersion === PROMPT_VERSION) return false
+    markTask(task.id, 'stale', undefined, [outdatedPromptError])
+    return true
+  }
+
   async function executeTask(taskId: string): Promise<{ ok: boolean; error?: string }> {
     const task = tasks.value.find((item) => item.id === taskId)
     if (!task) return { ok: false, error: '找不到任务' }
     if (executingTaskIds.has(taskId)) return { ok: false, error: '任务正在处理中' }
+    if (rejectOutdatedPendingTask(task)) return { ok: false, error: outdatedPromptError }
     if (task.type === 'segmentation') return { ok: false, error: LEGACY_SEGMENTATION_RETIRED_REASON }
     if (task.mode !== 'api') return { ok: false, error: 'Prompt 粘贴模式需要手动执行 Prompt' }
     const provider = config.value.llm.providers.find((item) => item.id === task.providerId) ?? config.value.llm.providers.find((item) => item.id === config.value.llm.defaultProvider)
@@ -2929,6 +2938,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     queueRunning.value = true
     try {
       while (!queuePaused.value) {
+        tasks.value
+          .filter((task) => task.status === 'pending' && task.mode === 'api' && task.promptVersion !== PROMPT_VERSION)
+          .forEach(rejectOutdatedPendingTask)
         const pending = tasks.value.filter((task) => task.status === 'pending' && task.mode === 'api')
         if (!pending.length) break
         const triagePending = pending.filter((task) => task.type === 'session_triage')
