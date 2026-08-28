@@ -269,7 +269,7 @@ textarea { resize: vertical; }
 .graph-link[data-edge-type="hierarchy"] { opacity: .9; }
 .graph-link[data-edge-type="co_occurrence"] { opacity: .48; }
 .graph-link[data-edge-type="related"], .graph-link[data-edge-type="association"], .graph-link[data-edge-type="conversation"] { opacity: .3; }
-.graph-link-unit { opacity: 0 !important; pointer-events: stroke; }
+.graph-link-unit { opacity: 0 !important; pointer-events: none; }
 .graph-link-unit.is-hovered { opacity: 1 !important; }
 .graph-link.is-dimmed { opacity: .08; }
 .graph-link.is-hovered { stroke: #7c3aed !important; opacity: 1; stroke-width: 3px; }

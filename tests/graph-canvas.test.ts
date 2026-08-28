@@ -207,7 +207,7 @@ describe('GraphCanvas progressive disclosure', () => {
     expect([...target.querySelectorAll<SVGGElement>('.graph-node')].map((node) => node.dataset.refId)).toEqual(['root'])
   })
 
-  it('hides Reading Unit association links until the link itself is hovered', async () => {
+  it('shows Reading Unit association links only while an endpoint node is hovered', async () => {
     const target = mountSnapshot({
       revision: 7,
       nodes: [
@@ -218,11 +218,23 @@ describe('GraphCanvas progressive disclosure', () => {
     })
     await nextTick()
     const link = target.querySelector<SVGLineElement>('.graph-link-unit')!
+    const concept = target.querySelector<SVGGElement>('[data-ref-id="root"]')!
+    const unit = target.querySelector<SVGGElement>('[data-ref-id="u1"]')!
     expect(link).toBeTruthy()
     expect(link.getAttribute('class')).not.toContain('is-hovered')
+
+    // The transparent edge itself is not an interaction target.
     link.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }))
+    expect(link.getAttribute('class')).not.toContain('is-hovered')
+
+    concept.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }))
     expect(link.getAttribute('class')).toContain('is-hovered')
-    link.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }))
+    concept.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }))
+    expect(link.getAttribute('class')).not.toContain('is-hovered')
+
+    unit.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }))
+    expect(link.getAttribute('class')).toContain('is-hovered')
+    unit.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }))
     expect(link.getAttribute('class')).not.toContain('is-hovered')
   })
 
