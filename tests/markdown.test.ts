@@ -137,6 +137,23 @@ describe('renderMarkdown', () => {
     expect(nested).not.toContain('data-concept-id="roce"')
   })
 
+  it('accepts whitespace or case variations in closing markers without swallowing later text', () => {
+    const html = renderMarkdown('推荐 [[nexus:suggested:HPCC]]\nHPCC[[/NEXUS ]]，随后是 [[nexus:existing:RoCE]]RoCE[[/nexus]]。', {
+      concepts: [{ id: 'roce', name: 'RoCE' }],
+    })
+    expect(html).toContain('data-suggested-concept="HPCC"')
+    expect(html).toContain('>HPCC</span>')
+    expect(html).toContain('data-concept-id="roce"')
+    expect(html).not.toContain('[[nexus:')
+  })
+
+  it('uses the suggested topic name when an AI marker has an empty body', () => {
+    const html = renderMarkdown('继续了解 [[nexus:suggested:Clos 与 RoCE 无损网络]][[/nexus]]。')
+    expect(html).toContain('data-suggested-concept="Clos 与 RoCE 无损网络"')
+    expect(html).toContain('>Clos 与 RoCE 无损网络</span>')
+    expect(html).not.toContain('data-concept-id')
+  })
+
   it('does not linkify concept names inside inline code', () => {
     const html = renderMarkdown('保持 `RDMA` 原样', { concepts: [{ id: 'c1', name: 'RDMA' }] })
     expect(html).toContain('<code>RDMA</code>')

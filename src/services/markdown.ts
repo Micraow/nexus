@@ -134,6 +134,13 @@ function cleanMarkerName(value: string): string {
     .trim()
 }
 
+function markerCloseIndex(raw: string, from: number): { index: number; length: number } | null {
+  const close = /\[\[\/nexus\s*\]\]/gi
+  close.lastIndex = from
+  const match = close.exec(raw)
+  return match ? { index: match.index, length: match[0].length } : null
+}
+
 /** Find the closing `]]` for a marker header, skipping nested marker headers. */
 function markerHeaderEnd(raw: string, start: number): number {
   for (let index = start; index < raw.length - 1; index += 1) {
@@ -184,18 +191,18 @@ function linkifyMarkedConcepts(raw: string, matcher: ConceptMatcher | null): Inl
     const headerEnd = match.headerEnd
     const name = match.name
     const bodyStart = headerEnd + 2
-    const closeIndex = raw.indexOf('[[/nexus]]', bodyStart)
+    const close = markerCloseIndex(raw, bodyStart)
     const nextOpening = findOpening(bodyStart)
     // A missing close must not swallow a later marker. Treat the malformed
     // opening as an empty marker and resume scanning at its body text.
-    const hasValidClose = closeIndex >= bodyStart && (!nextOpening || closeIndex < nextOpening.index)
-    const body = hasValidClose ? raw.slice(bodyStart, closeIndex) : ''
+    const hasValidClose = Boolean(close && close.index >= bodyStart && (!nextOpening || close.index < nextOpening.index))
+    const body = hasValidClose && close ? raw.slice(bodyStart, close.index) : ''
     // Older prompts used literal placeholders such as “原文” for the body.
     // Keep those responses readable by displaying the marker's topic name.
     const label = markerLabel(name, cleanMarkerName(body))
     const id = matcher?.ids.get(name) ?? matcher?.ids.get(label.trim()) ?? ''
     tokens.push({ type: 'mention', value: conceptMentionHtml(label, id, kind, name) })
-    cursor = hasValidClose ? closeIndex + '[[/nexus]]'.length : bodyStart
+    cursor = hasValidClose && close ? close.index + close.length : bodyStart
   }
   return tokens
 }
