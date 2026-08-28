@@ -50,7 +50,7 @@ import nexusLogo from '../src-tauri/icons/icon.svg'
 import { MIN_TOKEN_BUDGET, normalizeTokenBudget, serializeConfig } from '@/services/config'
 import { saveTextFile } from '@/services/files'
 import type { SaveFileRequest } from '@/services/files'
-import { conversationTaskForNode, suggestedExplorationQuestion, unfinishedConversationTask } from '@/services/conversation'
+import { conversationMessageBranchNodeId, conversationTaskForNode, suggestedExplorationQuestion, unfinishedConversationTask } from '@/services/conversation'
 import { resolveConceptEvidence } from '@/services/concept-evidence'
 import { paginateMessages } from '@/services/message-pagination'
 import { renderMarkdown } from '@/services/markdown'
@@ -278,31 +278,14 @@ const activeConversationBranchCards = computed(() => {
   const pathIds = activeConversationPathNodeIds.value
   const byId = new Map(activeConversationNodes.value.map((node) => [node.id, node]))
   const messages = activeConversationMessages.value
-  const assistantNodeByTaskId = new Map<string, string>()
-  messages.forEach((message) => {
-    const metadata = parseMetadata(message.metadata)
-    if (message.role === 'assistant' && typeof metadata.taskId === 'string' && typeof metadata.navNodeId === 'string') {
-      assistantNodeByTaskId.set(metadata.taskId, metadata.navNodeId)
-    }
-  })
   return pathIds.map((nodeId) => {
     const node = byId.get(nodeId)
     if (!node) return null
-    // User input is recorded on the node it branches from; once answered, the
-    // matching question travels with its assistant response onto the child
-    // card. The opening question is the exception: it anchors the root card.
-    // Pending questions remain on their parent until a child answer exists.
-    const cardMessages = messages.filter((message) => {
-      const metadata = parseMetadata(message.metadata)
-      if (message.role === 'assistant') return metadata.navNodeId === nodeId
-      if (message.role !== 'user') return false
-      if (metadata.mode === 'new') return metadata.parentNodeId === nodeId
-      if (typeof metadata.taskId === 'string') {
-        const answerNodeId = assistantNodeByTaskId.get(metadata.taskId)
-        return answerNodeId ? answerNodeId === nodeId : metadata.parentNodeId === nodeId
-      }
-      return metadata.parentNodeId === nodeId
-    }).sort((left, right) => left.orderInSession - right.orderInSession)
+    // Completed user questions follow their answer's branch. Only questions
+    // without a persisted answer remain on the parent while pending/failed.
+    const cardMessages = messages
+      .filter((message) => conversationMessageBranchNodeId(message, messages) === nodeId)
+      .sort((left, right) => left.orderInSession - right.orderInSession)
     return cardMessages.length ? { node, messages: cardMessages } : null
   }).filter((card): card is { node: NavTreeNode; messages: Message[] } => Boolean(card))
 })
