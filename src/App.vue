@@ -45,7 +45,6 @@ import {
 } from 'lucide-vue-next'
 import GraphCanvas from '@/components/GraphCanvas.vue'
 import ConceptTree from '@/components/ConceptTree.vue'
-import NavTree from '@/components/NavTree.vue'
 import ConversationTree from '@/components/ConversationTree.vue'
 import SearchSelect from '@/components/SearchSelect.vue'
 import ReadingUnitsView from '@/components/ReadingUnitsView.vue'
@@ -600,9 +599,6 @@ const conceptParentCandidates = computed(() => {
   const excluded = new Set([selectedId, ...selectedConceptParents.value.map((relation) => otherConceptOf(relation, selectedId))])
   return conceptSearchCandidates(conceptParentQuery.value, excluded)
 })
-const sessionUnits = computed(() => selectedSession.value ? store.units.filter((unit) => unit.sessionId === selectedSession.value?.id).sort((a, b) => a.orderInSession - b.orderInSession) : [])
-const rootNavNode = computed(() => selectedSession.value ? store.navNodes.find((node) => node.sessionId === selectedSession.value?.id && !node.parentId) ?? null : null)
-const sessionMessages = computed(() => selectedSession.value ? store.messages.filter((message) => message.sessionId === selectedSession.value?.id).sort((a, b) => a.orderInSession - b.orderInSession) : [])
 const taskTypeOptions: Array<{ value: TaskType; label: string }> = [
   { value: 'session_triage', label: '会话分类' },
   { value: 'segmentation', label: '旧版对话分组' },
@@ -1364,11 +1360,6 @@ function openTaskConversation(task: LLMTask): void {
   openConversationSession(sessionId)
 }
 
-function openNodeComposer(node: NavTreeNode): void {
-  const unitIds = store.navNodeUnits.filter((link) => link.nodeId === node.id).sort((a, b) => a.orderInNode - b.orderInNode).map((link) => link.unitId)
-  openComposer({ followUp: { sessionId: node.sessionId, nodeId: node.id, label: node.label }, topicId: node.triggerConceptId, sourceUnitIds: unitIds })
-}
-
 function selectConversationNode(node: NavTreeNode): void {
   if (selectedNavNodeId.value !== node.id) {
     composerQuestion.value = ''
@@ -1385,13 +1376,6 @@ function selectConversationNode(node: NavTreeNode): void {
   void nextTick(() => {
     document.querySelector<HTMLElement>(`[data-conversation-message="${targetMessage.id}"]`)?.scrollIntoView({ behavior: store.config.ui.reducedMotion ? 'auto' : 'smooth', block: 'start' })
   })
-}
-
-function openNavNode(node: { id: string; sessionId: string }): void {
-  selectedNavNodeId.value = node.id
-  const links = store.navNodeUnits.filter((link) => link.nodeId === node.id).sort((a, b) => a.orderInNode - b.orderInNode)
-  if (links[0]) openUnit(links[0].unitId)
-  store.setSelectedSession(node.sessionId)
 }
 
 function startContextDrag(unitId: string): void {
@@ -2310,7 +2294,6 @@ onBeforeUnmount(() => {
         <section v-if="activeView === 'settings'" class="surface-section token-budget-section"><div class="section-heading"><div><span class="eyebrow">CONTEXT WINDOW</span><h3>Token 预算</h3></div><SlidersHorizontal :size="18" /></div><p class="section-description">手动设置长会话分窗和新对话上下文校验使用的估算上限。修改后立即写回配置，新导入和新对话会使用新值。</p><div class="token-budget-control"><label for="token-budget">每个任务的 Token 预算<small>最小 {{ MIN_TOKEN_BUDGET.toLocaleString() }}；默认值仅用于首次启动或无效配置。</small></label><div class="token-budget-input"><input id="token-budget" v-model="tokenBudgetDraft" type="number" :min="MIN_TOKEN_BUDGET" step="1000" inputmode="numeric" @change="setTokenBudget" @keydown.enter.prevent="setTokenBudget" /><span>tokens</span></div></div><div class="token-budget-control"><label for="concept-limit">每次 Concept 上限<small>每个整理任务最多提取 {{ MIN_CONCEPT_LIMIT }}～{{ MAX_CONCEPT_LIMIT }} 个 Concept。</small></label><div class="token-budget-input"><input id="concept-limit" v-model="conceptLimitDraft" type="number" :min="MIN_CONCEPT_LIMIT" :max="MAX_CONCEPT_LIMIT" step="1" inputmode="numeric" @change="setConceptLimit" @keydown.enter.prevent="setConceptLimit" /><span>Concept</span></div></div></section>
         <section v-if="activeView === 'settings'" class="surface-section phrase-section"><div class="section-heading"><div><span class="eyebrow">QUICK PHRASES</span><h3>快捷短语</h3></div><MessageSquare :size="18" /></div><p class="section-description">使用 <code>$(topic)</code> 和 <code>$(context)</code> 插入当前主题与上下文。</p><div class="phrase-list"><div v-for="phrase in store.quickPhrases" :key="phrase.id" class="phrase-row"><span>{{ phrase.template }}</span><div v-if="!phrase.isBuiltin" class="phrase-actions"><button class="icon-button" title="编辑快捷短语" :aria-label="`编辑 ${phrase.template}`" @click="beginEditPhrase(phrase.id, phrase.template)"><Settings2 :size="14" /></button><button class="icon-button" title="删除快捷短语" :aria-label="`删除 ${phrase.template}`" @click="removePhrase(phrase.id)"><Trash2 :size="14" /></button></div><span v-else class="soft-tag">内置</span></div></div><div class="phrase-editor"><input v-model="customPhraseDraft" placeholder="例如：请比较 $(topic) 与 $(context)" @keyup.enter="editingPhraseId ? savePhraseEdit() : addCustomPhrase()" /><button class="button secondary-button" @click="editingPhraseId ? savePhraseEdit() : addCustomPhrase()"><Check :size="14" />{{ editingPhraseId ? '保存' : '添加' }}</button><button v-if="editingPhraseId" class="text-button" @click="editingPhraseId = null; customPhraseDraft = ''">取消</button></div></section>
       </section>
-      <section v-if="activeView === 'sessions' && selectedSession" class="surface-section session-tree-overview"><div class="section-heading"><div><span class="eyebrow">EXPLORATION TREE</span><h3>{{ displayText(selectedSession.title, '未命名会话') }} 的探索树</h3></div><div class="tree-heading-actions"><button v-if="rootNavNode" class="button secondary-button" @click="openNodeComposer(rootNavNode)"><MessageSquare :size="14" />从起点继续追问</button><History :size="18" /></div></div><NavTree :nodes="store.navNodes.filter((node) => node.sessionId === selectedSession?.id && !node.parentId)" :all-nodes="store.navNodes.filter((node) => node.sessionId === selectedSession?.id)" :node-units="store.navNodeUnits" :units="store.units" :selected-node-id="selectedNavNodeId" @select-node="openNavNode" @ask="openNodeComposer" /></section>
       <section v-if="activeView === 'settings'" class="surface-section stream-settings-section"><div class="section-heading"><div><span class="eyebrow">CONVERSATION OUTPUT</span><h3>对话输出</h3></div><Send :size="18" /></div><label class="toggle-row"><span><strong>流式传输对话</strong><small>API 模式下逐步显示回答；关闭时等待完整响应</small></span><input :checked="Boolean(store.config.llm.stream)" type="checkbox" @change="store.updateConfig({ llm: { ...store.config.llm, stream: ($event.target as HTMLInputElement).checked } })" /></label></section>
     </main>
 
