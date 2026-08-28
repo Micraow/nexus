@@ -2143,8 +2143,20 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         markTask(taskId, 'needs_review', responseText, validation.errors)
         return { ok: false, errors: validation.errors }
       }
+      // Persist a concise model-level explanation even when the provider only
+      // returned an empty suggestions array (or an older response omitted the
+      // field). This keeps the task center informative without weakening the
+      // per-action reason contract.
+      const normalizedMaintenance = {
+        ...data,
+        reason: typeof data.reason === 'string' && data.reason.trim()
+          ? data.reason.trim()
+          : validation.suggestions.length
+            ? `模型提出 ${validation.suggestions.length} 条维护建议。`
+            : '模型检查后未发现需要修改的地方。',
+      }
       mutate(() => {
-        db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = ?, validation_errors = NULL, error_message = NULL, updated_at = ? WHERE id = ?', ['success', responseText, JSON.stringify(data), isoNow(), taskId])
+        db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = ?, validation_errors = NULL, error_message = NULL, updated_at = ? WHERE id = ?', ['success', responseText, JSON.stringify(normalizedMaintenance), isoNow(), taskId])
       })
       return { ok: true, errors: [] }
     }
