@@ -114,4 +114,15 @@ describe('ConceptTree hierarchy', () => {
     expect(target.querySelectorAll('.concept-tree-proposed')).toHaveLength(0)
     expect(target.querySelectorAll('.concept-tree-label')).toHaveLength(2)
   })
+
+  it('does not promote a cyclic hierarchy into top-level folders', async () => {
+    const target = mountTree([
+      { id: 'a-b', parentConceptId: 'root', childConceptId: 'child', relationType: 'hierarchy', source: 'manual', status: 'confirmed', createdAt: now, updatedAt: now },
+      { id: 'b-a', parentConceptId: 'child', childConceptId: 'root', relationType: 'hierarchy', source: 'manual', status: 'confirmed', createdAt: now, updatedAt: now },
+    ])
+    await nextTick()
+
+    expect(target.querySelectorAll('.concept-tree-label')).toHaveLength(0)
+    expect(target.querySelector('.empty-inline')?.textContent).toContain('没有匹配')
+  })
 })

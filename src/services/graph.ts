@@ -172,11 +172,10 @@ function indexHierarchy(concepts: Concept[], relations: ConceptRelation[], showP
     childrenByParent.set(relation.parentConceptId, children)
   })
 
-  // A valid hierarchy is a DAG.  Imported/legacy data can still contain a
-  // cycle, so use the no-parent set when possible and fall back to all
-  // concepts if a malformed cycle would otherwise produce an empty graph.
+  // A valid hierarchy is a DAG. Imported/legacy cycles have no legitimate
+  // root; keep the strict roots-only projection empty until maintenance fixes
+  // the data instead of promoting every descendant to a root.
   const roots = new Set(concepts.filter((concept) => !parentsByChild.has(concept.id)).map((concept) => concept.id))
-  if (!roots.size && concepts.length) concepts.forEach((concept) => roots.add(concept.id))
 
   const depthByConcept = new Map<string, number>()
   const rootIdsByConcept = new Map<string, Set<string>>()
@@ -197,16 +196,6 @@ function indexHierarchy(concepts: Concept[], relations: ConceptRelation[], showP
       queue.push({ id: childId, depth: current.depth + 1, rootId: current.rootId })
     })
   }
-
-  // Concepts in an isolated cycle were not reached from a root fallback path;
-  // expose them as roots so a damaged import remains inspectable.
-  concepts.forEach((concept) => {
-    if (!depthByConcept.has(concept.id) && !parentsByChild.has(concept.id)) {
-      roots.add(concept.id)
-      depthByConcept.set(concept.id, 0)
-      rootIdsByConcept.set(concept.id, new Set([concept.id]))
-    }
-  })
 
   return {
     parentsByChild,

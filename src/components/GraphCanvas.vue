@@ -195,9 +195,9 @@ function visibleSnapshot(): { nodes: GraphNode[]; edges: GraphEdge[] } {
     const roots = conceptNodes
       .filter((node) => !(parentsByConcept.get(node.refId)?.size))
       .map((node) => node.refId)
-    // Keep malformed/cyclic snapshots inspectable, matching the service
-    // resolver's cycle fallback instead of rendering an empty graph.
-    const rootIds = roots.length ? roots : conceptNodes.map((node) => node.refId)
+    // A cyclic snapshot has no valid root. Keep the strict roots-only view
+    // empty until the hierarchy is repaired instead of leaking every node.
+    const rootIds = roots
     const expanded = new Set((props.expandedConceptIds ?? []).map((id) => id.startsWith('concept:') ? id.slice('concept:'.length) : id))
     // An explicitly expanded descendant requires its ancestor path to be
     // visible before its own children can be considered.

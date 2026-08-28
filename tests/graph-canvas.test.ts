@@ -129,4 +129,21 @@ describe('GraphCanvas progressive disclosure', () => {
     await nextTick()
     expect([...target.querySelectorAll<SVGGElement>('.graph-node')].map((node) => node.dataset.refId)).toEqual(['root'])
   })
+
+  it('renders no concept nodes when hierarchy has no valid root', async () => {
+    const target = mountSnapshot({
+      revision: 4,
+      nodes: [
+        { id: 'concept:a', type: 'concept', refId: 'a', label: '甲', degree: 1, unitCount: 0, parentIds: ['b'], hasChildren: true },
+        { id: 'concept:b', type: 'concept', refId: 'b', label: '乙', degree: 1, unitCount: 0, parentIds: ['a'], hasChildren: true },
+      ],
+      edges: [
+        { id: 'edge:ab', source: 'concept:a', target: 'concept:b', type: 'hierarchy', weight: 1, status: 'confirmed' },
+        { id: 'edge:ba', source: 'concept:b', target: 'concept:a', type: 'hierarchy', weight: 1, status: 'confirmed' },
+      ],
+    })
+    await nextTick()
+
+    expect(target.querySelectorAll('.graph-node')).toHaveLength(0)
+  })
 })

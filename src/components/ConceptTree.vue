@@ -40,9 +40,9 @@ const roots = computed(() => {
       ? rootIds.has(concept.id)
       : !props.relations.some((relation) => isActiveHierarchy(relation) && relation.childConceptId === concept.id && conceptIds.value.has(relation.parentConceptId)))
     .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
-  // Keep malformed cyclic imports inspectable without recursively rendering a
-  // cycle forever. The path guard below prevents a cycle from expanding.
-  return result.length || !props.concepts.length || rootIds ? result : [...props.concepts].sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
+  // A cyclic hierarchy has no valid root. Keep the tree empty until the data
+  // is repaired instead of presenting descendants as top-level folders.
+  return result
 })
 
 function childrenOf(conceptId: string): Concept[] {

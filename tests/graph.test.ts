@@ -360,6 +360,19 @@ describe('derived graph', () => {
     expect(visible.edges.filter((edge) => edge.type === 'related')).toHaveLength(1)
   })
 
+  it('keeps a malformed hierarchy cycle out of the roots-only projection', () => {
+    const concepts = [
+      { id: 'a', name: '甲', normalizedName: '甲', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+      { id: 'b', name: '乙', normalizedName: '乙', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
+    ]
+    const relations = [
+      { id: 'ab', parentConceptId: 'a', childConceptId: 'b', relationType: 'hierarchy' as const, source: 'manual' as const, status: 'confirmed' as const, createdAt: now, updatedAt: now },
+      { id: 'ba', parentConceptId: 'b', childConceptId: 'a', relationType: 'hierarchy' as const, source: 'manual' as const, status: 'confirmed' as const, createdAt: now, updatedAt: now },
+    ]
+    const snapshot = buildGraph({ concepts, units: [], messages: [], unitConcepts: [], relations, revision: 1 })
+    expect(snapshot.nodes.filter((node) => node.type === 'concept')).toHaveLength(0)
+  })
+
   it('ignores LLM-authored related edges and derives shared-evidence pairs', () => {
     const concepts = [
       { id: 'a', name: '甲', normalizedName: '甲', notes: '', status: 'active' as const, createdAt: now, updatedAt: now },
