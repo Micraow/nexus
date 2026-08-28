@@ -115,7 +115,6 @@ describe('GraphCanvas progressive disclosure', () => {
     await nextTick()
     expect([...expanded.querySelectorAll<SVGGElement>('.graph-node')].map((node) => node.dataset.refId).sort()).toEqual(['child', 'root'])
   })
-
   it('does not promote a child with a stale depth zero value to a root', async () => {
     const snapshot: GraphSnapshot = {
       revision: 3,
