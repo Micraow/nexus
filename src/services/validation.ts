@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { DEFAULT_CONCEPT_LIMIT, normalizeConceptLimit } from '@/services/config'
 import type { ImportPayload } from '@/types/domain'
 
 const messageSchema = z.object({
@@ -111,6 +112,7 @@ export const validateConceptAssignments = validateConceptMemberships
 export interface OriginConceptValidationOptions {
   targetIds?: Iterable<string>
   conceptIds?: Iterable<string>
+  maxConcepts?: number
 }
 
 /**
@@ -134,12 +136,13 @@ export function validateOriginConceptResult(
   const issues: ValidationIssue[] = []
   const candidateRefs = new Set<string>()
   const candidateNames = new Set<string>()
+  const maxConcepts = normalizeConceptLimit(options.maxConcepts, DEFAULT_CONCEPT_LIMIT)
 
   if (!Array.isArray(rawConcepts)) {
     issues.push({ path: 'concepts', message: 'concepts 必须是数组' })
   } else {
-    if (rawConcepts.length > 8) {
-      issues.push({ path: 'concepts', message: '一次最多提取 8 个 Concept' })
+    if (rawConcepts.length > maxConcepts) {
+      issues.push({ path: 'concepts', message: `一次最多提取 ${maxConcepts} 个 Concept` })
     }
     rawConcepts.forEach((raw, index) => {
       const path = `concepts.${index}`
@@ -151,8 +154,10 @@ export function validateOriginConceptResult(
       const clientRef = typeof candidate.client_ref === 'string' ? candidate.client_ref.trim() : ''
       const name = typeof candidate.name === 'string' ? candidate.name.trim() : ''
       const summary = typeof candidate.summary === 'string' ? candidate.summary.trim() : ''
-      if (!/^new:[1-8]$/.test(clientRef)) {
-        issues.push({ path: `${path}.client_ref`, message: 'client_ref 必须是 new:1 到 new:8' })
+      const clientRefNumber = /^new:(\d+)$/.exec(clientRef)?.[1]
+      const validClientRef = clientRefNumber != null && Number(clientRefNumber) >= 1 && Number(clientRefNumber) <= maxConcepts
+      if (!validClientRef) {
+        issues.push({ path: `${path}.client_ref`, message: `client_ref 必须是 new:1 到 new:${maxConcepts}` })
       } else if (candidateRefs.has(clientRef)) {
         issues.push({ path: `${path}.client_ref`, message: 'client_ref 不能重复' })
       } else {
@@ -263,6 +268,7 @@ export function validateDisclosureRequests(value: unknown, availableRefIds?: Ite
     const refID = typeof item.refID === 'string' ? item.refID.trim() : ''
     const depth = item.depth
     if (!refID) issues.push({ path: 'disclosure_requests.' + index + '.refID', message: 'refID 必须是非空字符串' })
+    if (refID === 'DISCLOSURE_INDEX') issues.push({ path: 'disclosure_requests.' + index + '.refID', message: 'DISCLOSURE_INDEX 是目录标签，不是可请求的 refID' })
     if (!Number.isInteger(depth) || Number(depth) < 1 || Number(depth) > 64) issues.push({ path: 'disclosure_requests.' + index + '.depth', message: 'depth 必须是 1 到 64 的整数' })
     if (refID && seen.has(refID)) issues.push({ path: 'disclosure_requests.' + index + '.refID', message: '不能重复请求同一 refID' })
     if (refID) seen.add(refID)

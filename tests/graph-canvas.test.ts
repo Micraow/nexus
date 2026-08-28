@@ -145,4 +145,33 @@ describe('GraphCanvas progressive disclosure', () => {
 
     expect(target.querySelectorAll('.graph-node')).toHaveLength(0)
   })
+
+  it('uses full external hierarchy relations when a stale snapshot only contains a child', async () => {
+    const target = mountSnapshot({
+      revision: 5,
+      nodes: [{ id: 'concept:child', type: 'concept', refId: 'child', label: '子主题', degree: 1, unitCount: 0 }],
+      edges: [],
+    }, {}, {
+      hierarchyRelations: [{ parentConceptId: 'root', childConceptId: 'child', relationType: 'hierarchy', status: 'confirmed' }],
+    })
+    await nextTick()
+    expect(target.querySelectorAll('.graph-node')).toHaveLength(0)
+  })
+
+  it('does not disclose a proposed child while proposed edges are hidden', async () => {
+    const target = mountSnapshot({
+      revision: 6,
+      nodes: [
+        { id: 'concept:root', type: 'concept', refId: 'root', label: '根主题', degree: 1, unitCount: 0, hasChildren: true },
+        { id: 'concept:child', type: 'concept', refId: 'child', label: '子主题', degree: 1, unitCount: 0 },
+      ],
+      edges: [{ id: 'edge:h', source: 'concept:root', target: 'concept:child', type: 'hierarchy', weight: 1, status: 'proposed' }],
+    }, {}, {
+      hierarchyRelations: [{ parentConceptId: 'root', childConceptId: 'child', relationType: 'hierarchy', status: 'proposed' }],
+      expandedConceptIds: ['root'],
+      showProposed: false,
+    })
+    await nextTick()
+    expect([...target.querySelectorAll<SVGGElement>('.graph-node')].map((node) => node.dataset.refId)).toEqual(['root'])
+  })
 })

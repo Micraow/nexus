@@ -1,8 +1,16 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  DEFAULT_API_CONCURRENCY,
+  DEFAULT_CONCEPT_LIMIT,
   DEFAULT_TOKEN_BUDGET,
+  MAX_API_CONCURRENCY,
+  MAX_CONCEPT_LIMIT,
+  MIN_API_CONCURRENCY,
+  MIN_CONCEPT_LIMIT,
   MIN_TOKEN_BUDGET,
+  normalizeApiConcurrency,
+  normalizeConceptLimit,
   normalizeTokenBudget,
   parseConfig,
   parseConfigText,
@@ -17,6 +25,7 @@ const config: AppConfig = {
     mode: 'prompt_paste',
     defaultProvider: null,
     concurrency: 2,
+    conceptLimit: 12,
     tokenBudget: 32_000,
     providers: [],
     taskOverrides: {},
@@ -71,5 +80,26 @@ describe('token budget config', () => {
     const stored = await readConfigText()
     expect(stored).not.toBeNull()
     expect(parseConfigText(stored!).llm?.tokenBudget).toBe(32_000)
+  })
+})
+
+describe('Concept limit and API concurrency config', () => {
+  it('normalizes manual values to their configured bounds', () => {
+    expect(normalizeConceptLimit(12)).toBe(12)
+    expect(normalizeConceptLimit(0)).toBe(MIN_CONCEPT_LIMIT)
+    expect(normalizeConceptLimit(999)).toBe(MAX_CONCEPT_LIMIT)
+    expect(normalizeConceptLimit('invalid')).toBe(DEFAULT_CONCEPT_LIMIT)
+    expect(normalizeApiConcurrency(7)).toBe(7)
+    expect(normalizeApiConcurrency(0)).toBe(MIN_API_CONCURRENCY)
+    expect(normalizeApiConcurrency(999)).toBe(MAX_API_CONCURRENCY)
+    expect(normalizeApiConcurrency('invalid')).toBe(DEFAULT_API_CONCURRENCY)
+  })
+
+  it('accepts and serializes both config key styles', () => {
+    expect(parseConfig({ llm: { concept_limit: 11, concurrency: 9 } }).llm?.conceptLimit).toBe(11)
+    expect(parseConfig({ llm: { conceptLimit: 13 } }).llm?.conceptLimit).toBe(13)
+    const yaml = serializeConfig(config)
+    expect(yaml).toContain('concept_limit: 12')
+    expect(parseConfigText(yaml).llm?.conceptLimit).toBe(12)
   })
 })

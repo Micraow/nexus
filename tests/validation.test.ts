@@ -47,6 +47,8 @@ describe('import validation', () => {
     expect(invalid.some((issue) => issue.message.includes('不在当前目录'))).toBe(true)
     expect(invalid.some((issue) => issue.message.includes('1 到 64'))).toBe(true)
     expect(invalid.some((issue) => issue.message.includes('不能重复'))).toBe(true)
+    const reserved = validateDisclosureRequests([{ refID: 'DISCLOSURE_INDEX', depth: 1 }])
+    expect(reserved.some((issue) => issue.message.includes('目录标签'))).toBe(true)
   })
 
   it('validates multi-Concept membership lists and keeps duplicate/unknown IDs visible', () => {
@@ -99,5 +101,14 @@ describe('direct origin Concept response validation', () => {
     }, { targetIds: ['m1'], conceptIds: ['existing-network'] })
 
     expect(invalid.some((issue) => issue.message.includes('只能省略或为 proposed'))).toBe(true)
+  })
+
+  it('enforces the configured Concept limit and client refs', () => {
+    const invalid = validateOriginConceptResult({
+      concepts: [1, 2, 3].map((index) => ({ client_ref: `new:${index}`, name: `主题${index}`, summary: '', aliases: [] })),
+      memberships: [{ target_type: 'message', target_id: 'm1', concept_ids: ['new:1', 'new:2', 'new:3'] }],
+    }, { targetIds: ['m1'], maxConcepts: 2 })
+    expect(invalid.some((issue) => issue.message.includes('一次最多提取 2 个 Concept'))).toBe(true)
+    expect(invalid.some((issue) => issue.message.includes('new:1 到 new:2'))).toBe(true)
   })
 })

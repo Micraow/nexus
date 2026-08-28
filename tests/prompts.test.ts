@@ -78,6 +78,15 @@ describe('conversation prompt', () => {
     expect(prompt).toContain('最窄且有直接证据的父主题')
     expect(prompt).toContain('relations')
   })
+
+  it('passes the configured Concept limit and disclosure availability into prompts', () => {
+    const prompt = buildConversationPrompt({ question: '继续', context: '', conceptLimit: 3 })
+    expect(prompt).toContain('最多 3 项')
+    expect(prompt).toContain('new:1 到 new:3')
+    expect(prompt).toContain('本 Prompt 没有提供 DISCLOSURE_INDEX 目录')
+    expect(prompt).toContain('disclosure_requests 必须返回空数组 []')
+    expect(prompt).not.toContain('DISCLOSURE_INDEX（首层目录与已展开记录）:')
+  })
 })
 
 describe('maintenance prompt', () => {
@@ -215,6 +224,12 @@ describe('prompt harness and progressive disclosure', () => {
     expect(prompt).toContain('语义范围最窄且直接包含它的父主题')
     expect(prompt).toContain('只有确无合适上位主题才允许暂作根')
     expect(prompt).toContain('"status":"proposed"')
+  })
+
+  it('passes the configured Concept limit to direct Session extraction', () => {
+    const prompt = buildOriginConceptPrompt(session, [{ id: 'm', sessionId: 's', role: 'user' as const, content: '问题', orderInSession: 0 }], undefined, undefined, 3)
+    expect(prompt).toContain('最多只能返回 3 个 Concept')
+    expect(prompt).toContain('client_ref 只能使用 new:1 到 new:3')
   })
 })
 

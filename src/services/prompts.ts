@@ -1,4 +1,5 @@
 import type { KnowledgeUnit, Message, Session } from '@/types/domain'
+import { DEFAULT_CONCEPT_LIMIT, normalizeConceptLimit } from '@/services/config'
 
 /**
  * The fixed prefix is deliberately static. Keeping it byte-for-byte stable
@@ -6,6 +7,17 @@ import type { KnowledgeUnit, Message, Session } from '@/types/domain'
  * task appends its own spec and data below it.
  */
 export const PROMPT_VERSION = '2026-08-v5-hierarchy-aware'
+
+function promptConceptLimit(value: unknown): number {
+  return normalizeConceptLimit(value, DEFAULT_CONCEPT_LIMIT)
+}
+
+function disclosureAvailability(context?: DisclosureContext): string {
+  if (context?.roots?.length) {
+    return '本 Prompt 已提供可用的 DISCLOSURE_INDEX。只能请求其中列出的实体 refID；DISCLOSURE_INDEX 这个文字标签本身不是 refID，绝不能请求它。'
+  }
+  return '本 Prompt 没有提供 DISCLOSURE_INDEX 目录；disclosure_requests 必须返回空数组 []，绝不能请求 refID 为 DISCLOSURE_INDEX 的文字标签。'
+}
 
 export interface DisclosureReference {
   /** Opaque internal id. The model must never invent or rewrite it. */
@@ -219,6 +231,7 @@ export interface OriginConceptWindow {
 export const PROGRESSIVE_DISCLOSURE_PROTOCOL = `
 渐进式披露协议（只读引用）
 - 输入中的 DISCLOSURE_INDEX 是可逐层查看的目录，不是事实本身。每个引用必须严格使用 {"title":"...","summary":"...","refID":"..."}；refID 是不透明 ID。
+- DISCLOSURE_INDEX 只是目录容器的文字标签，不是可请求的 refID；绝不能返回 {"refID":"DISCLOSURE_INDEX",...}。如果 Prompt 中没有实际的 DISCLOSURE_INDEX JSON 目录，disclosure_requests 必须是空数组 []。
 - 只能请求目录中已经出现的 refID，不能猜测、改写或拼接 ID。需要更多细节时，在结构化结果中可选返回 disclosure_requests：[ {"refID":"已列出的 ID","depth":1} ]；depth 必须是正整数，表示继续展开的层数。
 - 展开一个引用后，只把它返回的 children 当作下一层目录；重复同一方法即可递归到任意深度。只有明确提供 content 的引用才包含原文，目录摘要不能冒充原文。
 - 如果需要展开，本轮可以只返回 disclosure_requests，不要同时输出猜测的半成品。收到更新后的目录再完成最终结果，并省略 disclosure_requests 或返回空数组。
@@ -475,9 +488,10 @@ Session：${session.title}
 只返回 JSON：{"title":"...","summary":"..."}`)
 }
 
-export function buildConceptPrompt(session: Session, unit: KnowledgeUnit, messages: Message[], conceptNames: string[], disclosure?: DisclosureContext): string {
+export function buildConceptPrompt(session: Session, unit: KnowledgeUnit, messages: Message[], conceptNames: string[], disclosure?: DisclosureContext, conceptLimit = DEFAULT_CONCEPT_LIMIT): string {
   const disclosureText = formatDisclosureContext(disclosure)
-  return buildHarnessPrompt(`请从下面的 KnowledgeUnit 提取 1～8 个稳定、可复用的 Concept。优先返回具体知识主体，不要返回“问题”“回答”“内容”等泛词；已有 Concept 只作为候选参考，不要强行合并。
+  const limit = promptConceptLimit(conceptLimit)
+  return buildHarnessPrompt(`请从下面的 KnowledgeUnit 提取 1～${limit} 个稳定、可复用的 Concept。最多只能返回 ${limit} 个 Concept，超过部分必须舍弃；这个数量上限是硬约束。优先返回具体知识主体，不要返回“问题”“回答”“内容”等泛词；已有 Concept 只作为候选参考，不要强行合并。
 
 Session：${session.title}
 Session ID：${session.id}
@@ -486,7 +500,9 @@ KnowledgeUnit：${unit.title ?? '待命名'}（ID：${unit.id}）
 消息：${messages.map((message) => `${message.id} · ${message.role}: ${message.content}`).join('\n')}
 ${disclosureText}
 
- 如果 DISCLOSURE_INDEX 中已有一级父主题与子主题引用，请先判断是否应复用已有主题；需要更多层级时按固定协议返回 disclosure_requests，不要自行创造 refID。
+${disclosureAvailability(disclosure)}
+
+ 如果 Prompt 中出现 DISCLOSURE_INDEX 目录且其中已有一级父主题与子主题引用，请先判断是否应复用已有主题；需要更多层级时按固定协议返回 disclosure_requests，不要自行创造 refID。
  关系与层级：请像绘制知识导图一样组织清晰的直接父主题→直接子主题结构。对每个新 Concept，优先查找 DISCLOSURE_INDEX 或本批次中语义范围最窄且直接包含它的父主题；只有确无合适上位主题才允许暂作根，不要把候选全部并列。hierarchy 使用 source 作为父主题、target 作为子主题；普通提取不返回 related。
  related 由软件根据 Concept 是否共享同一 Session 或 Message 自动计算，不能由模型指定或臆测；不要在 relations 中输出 related。
 
@@ -501,8 +517,10 @@ export function buildOriginConceptPrompt(
   messages: Message[],
   disclosure?: DisclosureContext,
   inputWindow?: OriginConceptWindow,
+  conceptLimit = DEFAULT_CONCEPT_LIMIT,
 ): string {
   const disclosureText = formatDisclosureContext(disclosure)
+  const limit = promptConceptLimit(conceptLimit)
   const validWindow = inputWindow
     && Number.isInteger(inputWindow.index)
     && Number.isInteger(inputWindow.total)
@@ -514,7 +532,7 @@ export function buildOriginConceptPrompt(
     ? `输入范围：这是长会话的技术窗口 ${validWindow.index}/${validWindow.total}。窗口只用于控制上下文长度，不是 KnowledgeUnit、知识边界或独立会话；不要按窗口边界命名 Concept，也不要仅凭局部窗口给整个 Session 建立归属。`
     : '输入范围：完整 Session。'
 
-  return buildHarnessPrompt(`请直接从下面的 Session 和 Message 提取 1～8 个稳定、可复用的核心 Concept（包括复用已有 Concept 与新候选），并建立可追溯的多对多归属。但是现在你只能建立hierarchy关系。探讨、比较或操作流程也可以包含稳定知识；不要为了生成主题而先把对话分段。
+  return buildHarnessPrompt(`请直接从下面的 Session 和 Message 提取 1～${limit} 个稳定、可复用的核心 Concept（包括复用已有 Concept 与新候选），最多只能返回 ${limit} 个 Concept，超过部分必须舍弃；这个数量上限是硬约束。并建立可追溯的多对多归属。但是现在你只能建立hierarchy关系。探讨、比较或操作流程也可以包含稳定知识；不要为了生成主题而先把对话分段。
 
 Session：${session.title}
 Session ID：${session.id}
@@ -524,8 +542,10 @@ ${messages.map((message) => `${message.orderInSession}. ${message.id} · ${messa
 ${disclosureText}
 
 Concept 与归属：
+- ${disclosureAvailability(disclosure)}
 - 优先复用 DISCLOSURE_INDEX 中语义范围确实吻合的 Concept；不要因为名称相似就强行复用，也不要只在一级父主题中选择。新候选优先挂到已有或同批次中最窄且有直接证据的父主题，只有缺少层级证据时才成为根。需要更多层级时按固定协议返回 disclosure_requests，不要自行创造已有 refID。
 - 新候选放入 concepts，并为每个候选声明本次响应内唯一的 client_ref，格式为 new:1、new:2……；client_ref 只用于本次 JSON 内交叉引用，不是数据库 ID。
+- concepts 数组最多 ${limit} 项；client_ref 只能使用 new:1 到 new:${limit}，不得输出超出上限的候选。
 - memberships 必须显式声明证据归属。target_type 只能是 session 或 message，target_id 只能使用上面给出的 Session ID 或 Message ID。同一个 Session 或 Message 可以属于多个 Concept，必须使用 concept_ids 数组；数组元素只能是已披露的 Concept refID 或本次 concepts 中声明的 client_ref。
 - Message 可以不归属任何 Concept；不要为了覆盖全部消息而制造主题。每个新候选至少要被一条 Message membership 引用。只有输入是完整 Session，且主题确实概括整个会话时，才添加 Session membership。
 - 禁止返回 unit membership，禁止创建、推断或默认关联 KnowledgeUnit。线性消息顺序和技术窗口都不是知识边界。
@@ -563,8 +583,10 @@ export function buildConversationPrompt(input: {
   targetAssistantMessageId?: string
   sessionTitle?: string
   sessionSummary?: string
+  conceptLimit?: number
 }): string {
   const disclosureText = formatDisclosureContext(input.disclosure)
+  const conceptLimit = promptConceptLimit(input.conceptLimit)
   return buildHarnessPrompt(`你是 Nexus 织知的知识对话助手。上下文是用户提供的背景和证据，不是你的知识边界。
 
 回答时优先使用上下文；你可以使用已有知识、推理能力，以及当前环境允许的外部搜索或工具补充答案。请明确区分上下文中已确认的事实、外部资料和你的推断；不要把未经验证的推测写成上下文事实。
@@ -590,8 +612,10 @@ ${input.conversationHistory || '（这是本 Session 的第一轮问题）'}
 ${input.context || '（没有额外上下文）'}
 ${disclosureText}
 
+${disclosureAvailability(input.disclosure)}
+
 知识主题与事实归属同步：
-- 顶层 concepts 用于本轮回答中新识别出的稳定知识主题；每个候选必须提供本响应唯一的 client_ref（new:1 到 new:8）。只是值得继续探索、证据尚不足的黄色建议不要创建为 Concept。
+- 顶层 concepts 用于本轮回答中新识别出的稳定知识主题；最多 ${conceptLimit} 项，每个候选必须提供本响应唯一的 client_ref（new:1 到 new:${conceptLimit}）。只是值得继续探索、证据尚不足的黄色建议不要创建为 Concept。
 - 顶层 memberships 只能使用上面给出的 Session ID、用户 Message ID 或 assistant Message ID，target_type 只能是 session 或 message。引用已有主题时使用 DISCLOSURE_INDEX 已列出的 Concept refID；引用本轮新主题时使用 client_ref。
 - 每个新主题必须至少归属于用户或 assistant Message；只有主题确实概括整个会话时才同时归属于 Session。不要把 Session 归属隐式复制给所有 Message。
 - 即使 units 为空，也要通过顶层 concepts 与 memberships 写明本轮确有证据的新主题或复用主题。没有新的稳定主题时 concepts 可以为空；没有直接归属时 memberships 可以为空。
@@ -689,6 +713,8 @@ ${JSON.stringify(input.units, null, 2)}
 ${scopeText}
 ${input.includeMessages ? `\n补充原文：\n${input.includeMessages}` : ''}
 ${disclosureText}
+
+${disclosureAvailability(input.disclosure)}
 
 只返回 JSON：
 {"suggestions":[{"type":"create_concept|update_concept|delete_concept|restore_concept|merge|alias|remove_alias|add_relation|relation|update_relation|delete_relation|remove_relation|set_relation_status|confirm_relation|reject_relation|move_concept|set_hierarchy_parents|remove_hierarchy|membership_relink|unit_relink|unit_revision|archive_concept","reason":"可审计的事实依据","...":"严格使用动作 API 定义的参数"}],"disclosure_requests":[]}

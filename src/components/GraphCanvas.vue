@@ -15,6 +15,12 @@ export interface GraphConceptHierarchyMeta {
 type LevelMap = Record<string, number> | Map<string, number>
 type HierarchyMap = Record<string, GraphConceptHierarchyMeta> | Map<string, GraphConceptHierarchyMeta>
 type ChildrenMap = Record<string, string[]> | Map<string, string[]>
+type HierarchyRelationInput = {
+  parentConceptId: string
+  childConceptId: string
+  relationType: string
+  status?: string
+}
 
 const props = withDefaults(
   defineProps<{
@@ -36,6 +42,10 @@ const props = withDefaults(
     conceptHierarchy?: HierarchyMap
     /** Optional child ids/counts for collapsed concepts. */
     conceptChildren?: ChildrenMap
+    /** Full relation set used as the authoritative hierarchy source. */
+    hierarchyRelations?: HierarchyRelationInput[]
+    /** Whether proposed hierarchy edges may disclose their children. */
+    showProposed?: boolean
     expandableConceptIds?: string[]
     /** Opt in to fitting after a topology update; disabled by default. */
     fitOnTopologyChange?: boolean
@@ -51,6 +61,8 @@ const props = withDefaults(
     visibleNodeDepth: undefined,
     conceptHierarchy: undefined,
     conceptChildren: undefined,
+    hierarchyRelations: () => [],
+    showProposed: false,
     expandableConceptIds: () => [],
     fitOnTopologyChange: false,
   },
@@ -171,6 +183,19 @@ function visibleSnapshot(): { nodes: GraphNode[]; edges: GraphEdge[] } {
   const conceptNodes = nodes.filter((node) => node.type === 'concept')
   const conceptIds = new Set(conceptNodes.map((node) => node.refId))
   const parentsByConcept = new Map<string, Set<string>>()
+  const visibleChildrenByParent = new Map<string, Set<string>>()
+  const externalHierarchy = props.hierarchyRelations.filter((relation) => relation.relationType === 'hierarchy' && relation.status !== 'rejected')
+  externalHierarchy.forEach((relation) => {
+    if (relation.parentConceptId === relation.childConceptId) return
+    const parents = parentsByConcept.get(relation.childConceptId) ?? new Set<string>()
+    parents.add(relation.parentConceptId)
+    parentsByConcept.set(relation.childConceptId, parents)
+    if (relation.status === 'confirmed' || (props.showProposed && relation.status === 'proposed') || relation.status == null) {
+      const children = visibleChildrenByParent.get(relation.parentConceptId) ?? new Set<string>()
+      children.add(relation.childConceptId)
+      visibleChildrenByParent.set(relation.parentConceptId, children)
+    }
+  })
   conceptNodes.forEach((node) => {
     const parentIds = (node.parentIds ?? (node.parentId ? [node.parentId] : []))
       .map((id) => id.startsWith('concept:') ? id.slice('concept:'.length) : id)
@@ -179,14 +204,21 @@ function visibleSnapshot(): { nodes: GraphNode[]; edges: GraphEdge[] } {
   })
   edges.forEach((edge) => {
     if (edge.type !== 'hierarchy') return
+    // When the caller supplied the complete relation set, stale snapshot
+    // edges must not override status or disclose a proposed child.
+    if (externalHierarchy.length) return
     const source = edge.source.startsWith('concept:') ? edge.source.slice('concept:'.length) : edge.source
     const target = edge.target.startsWith('concept:') ? edge.target.slice('concept:'.length) : edge.target
     if (!conceptIds.has(source) || !conceptIds.has(target) || source === target) return
     const parents = parentsByConcept.get(target) ?? new Set<string>()
     parents.add(source)
     parentsByConcept.set(target, parents)
+    const children = visibleChildrenByParent.get(source) ?? new Set<string>()
+    children.add(target)
+    visibleChildrenByParent.set(source, children)
   })
-  const hasHierarchyMetadata = conceptNodes.some((node) => node.depth != null || node.parentId != null || (node.parentIds?.length ?? 0) > 0)
+  const hasHierarchyMetadata = externalHierarchy.length > 0
+    || conceptNodes.some((node) => node.depth != null || node.parentId != null || (node.parentIds?.length ?? 0) > 0)
     || edges.some((edge) => edge.type === 'hierarchy')
   if (hasHierarchyMetadata && conceptNodes.length) {
     // Parent references are the source of truth. A stale depth value (for
@@ -221,8 +253,8 @@ function visibleSnapshot(): { nodes: GraphNode[]; edges: GraphEdge[] } {
       if (visibleConceptIds.has(parentId)) continue
       visibleConceptIds.add(parentId)
       if (!expanded.has(parentId)) continue
-      parentsByConcept.forEach((parentIds, childId) => {
-        if (parentIds.has(parentId) && !visibleConceptIds.has(childId)) queue.push(childId)
+      ;(visibleChildrenByParent.get(parentId) ?? new Set<string>()).forEach((childId) => {
+        if (conceptIds.has(childId) && !visibleConceptIds.has(childId)) queue.push(childId)
       })
     }
     const visibleNodeIds = new Set(nodes.filter((node) => node.type !== 'concept' || visibleConceptIds.has(node.refId)).map((node) => node.id))

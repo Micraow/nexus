@@ -375,6 +375,7 @@ export interface AppConfig {
     mode: TaskMode | null
     defaultProvider: string | null
     concurrency: number
+    conceptLimit: number
     tokenBudget: number
     providers: ProviderConfig[]
     taskOverrides: Record<string, string>

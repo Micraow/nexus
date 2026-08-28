@@ -11,11 +11,29 @@ const CONFIG_STORAGE_KEY = 'nexus:config:v1'
  */
 export const DEFAULT_TOKEN_BUDGET = 8_000
 export const MIN_TOKEN_BUDGET = 1_000
+export const DEFAULT_CONCEPT_LIMIT = 8
+export const MIN_CONCEPT_LIMIT = 1
+export const MAX_CONCEPT_LIMIT = 32
+export const DEFAULT_API_CONCURRENCY = 2
+export const MIN_API_CONCURRENCY = 1
+export const MAX_API_CONCURRENCY = 16
 
 export function normalizeTokenBudget(value: unknown, fallback = DEFAULT_TOKEN_BUDGET): number {
   const candidate = typeof value === 'string' && value.trim().length === 0 ? Number.NaN : Number(value)
   if (!Number.isFinite(candidate)) return fallback
   return Math.min(Number.MAX_SAFE_INTEGER, Math.max(MIN_TOKEN_BUDGET, Math.round(candidate)))
+}
+
+export function normalizeConceptLimit(value: unknown, fallback = DEFAULT_CONCEPT_LIMIT): number {
+  const candidate = typeof value === 'string' && value.trim().length === 0 ? Number.NaN : Number(value)
+  if (!Number.isFinite(candidate)) return fallback
+  return Math.min(MAX_CONCEPT_LIMIT, Math.max(MIN_CONCEPT_LIMIT, Math.round(candidate)))
+}
+
+export function normalizeApiConcurrency(value: unknown, fallback = DEFAULT_API_CONCURRENCY): number {
+  const candidate = typeof value === 'string' && value.trim().length === 0 ? Number.NaN : Number(value)
+  if (!Number.isFinite(candidate)) return fallback
+  return Math.min(MAX_API_CONCURRENCY, Math.max(MIN_API_CONCURRENCY, Math.round(candidate)))
 }
 
 type YamlConfig = {
@@ -24,6 +42,8 @@ type YamlConfig = {
     default_provider?: string | null
     defaultProvider?: string | null
     concurrency?: number
+    concept_limit?: number
+    conceptLimit?: number
     token_budget?: number
     tokenBudget?: number
     providers?: Array<Partial<ProviderConfig> & { base_url?: string; api_key?: string }>
@@ -59,6 +79,7 @@ export function serializeConfig(config: AppConfig): string {
       mode: config.llm.mode,
       default_provider: config.llm.defaultProvider,
       concurrency: config.llm.concurrency,
+      concept_limit: normalizeConceptLimit(config.llm.conceptLimit),
       token_budget: normalizeTokenBudget(config.llm.tokenBudget),
       providers: config.llm.providers.map((provider) => ({
         id: provider.id,
@@ -100,7 +121,8 @@ export function parseConfig(value: unknown): Partial<AppConfig> {
     llm: {
       mode: raw.llm?.mode ?? null,
       defaultProvider: raw.llm?.default_provider ?? raw.llm?.defaultProvider ?? null,
-      concurrency: Number.isInteger(raw.llm?.concurrency) ? Math.min(4, Math.max(1, raw.llm?.concurrency as number)) : 2,
+      concurrency: normalizeApiConcurrency(raw.llm?.concurrency),
+      conceptLimit: normalizeConceptLimit(raw.llm?.concept_limit ?? raw.llm?.conceptLimit),
       tokenBudget: normalizeTokenBudget(raw.llm?.token_budget ?? raw.llm?.tokenBudget),
       providers,
       taskOverrides: raw.llm?.task_overrides ?? raw.llm?.taskOverrides ?? {},
