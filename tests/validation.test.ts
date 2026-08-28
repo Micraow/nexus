@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseImportPayload, validateConceptIdList, validateConceptMemberships, validateDisclosureRequests, validateOriginConceptResult, validateSegmentationResult, validateUnitText } from '@/services/validation'
+import { parseImportPayload, validateConceptIdList, validateConceptMemberships, validateConceptName, validateDisclosureRequests, validateOriginConceptResult, validateSegmentationResult, validateUnitText } from '@/services/validation'
 
 describe('import validation', () => {
   it('accepts the documented DeepSeek payload and rejects unsupported roles', () => {
@@ -70,6 +70,34 @@ describe('import validation', () => {
 })
 
 describe('direct origin Concept response validation', () => {
+  it('rejects long or compound Concept titles', () => {
+    expect(validateConceptName('DRE 拥塞测量')).toHaveLength(0)
+    expect(validateConceptName('CAVER 与 CONGA、MP-RDMA 等负载均衡方案对比').some((issue) => issue.message.includes('单一主题'))).toBe(true)
+    expect(validateConceptName('超长知识主题'.repeat(5)).some((issue) => issue.message.includes('24'))).toBe(true)
+  })
+
+  it('requires disclosed prefix parents instead of creating another root', () => {
+    const base = {
+      concepts: [{ client_ref: 'new:1', name: 'CAVER 路径信息交换', summary: '交换路径状态。', aliases: [] }],
+      memberships: [{ target_type: 'message', target_id: 'm1', concept_ids: ['new:1'] }],
+    }
+    const options = { targetIds: ['m1'], conceptIds: ['caver'], conceptCatalog: [{ id: 'caver', name: 'CAVER' }] }
+    const missingParent = validateOriginConceptResult({ ...base, relations: [] }, options)
+    expect(missingParent.some((issue) => issue.message.includes('不能另建一级根'))).toBe(true)
+
+    const valid = validateOriginConceptResult({ ...base, relations: [{ source: 'caver', target: 'new:1', type: 'hierarchy' }] }, options)
+    expect(valid).toHaveLength(0)
+  })
+
+  it('requires exact disclosed matches to reuse their existing IDs', () => {
+    const issues = validateOriginConceptResult({
+      concepts: [{ client_ref: 'new:1', name: 'CAVER', summary: '重复主题。', aliases: [] }],
+      memberships: [{ target_type: 'message', target_id: 'm1', concept_ids: ['new:1'] }],
+      relations: [],
+    }, { targetIds: ['m1'], conceptIds: ['caver'], conceptCatalog: [{ id: 'caver', name: 'CAVER' }] })
+    expect(issues.some((issue) => issue.message.includes('必须复用 Concept ID caver'))).toBe(true)
+  })
+
   it('validates response-local refs and Session/Message-only memberships', () => {
     const valid = validateOriginConceptResult({
       concepts: [{ client_ref: 'new:1', name: 'Clos 网络', summary: '多级、可扩展的互连拓扑', aliases: [] }],

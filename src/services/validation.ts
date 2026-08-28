@@ -2,6 +2,17 @@ import { z } from 'zod'
 import { DEFAULT_CONCEPT_LIMIT, normalizeConceptLimit } from '@/services/config'
 import type { ImportPayload } from '@/types/domain'
 
+export const MAX_CONCEPT_NAME_LENGTH = 24
+
+export function validateConceptName(value: unknown): ValidationIssue[] {
+  if (typeof value !== 'string' || !value.trim()) return [{ path: 'name', message: 'Concept 名称不能为空' }]
+  const name = value.trim()
+  const issues: ValidationIssue[] = []
+  if (Array.from(name).length > MAX_CONCEPT_NAME_LENGTH) issues.push({ path: 'name', message: `Concept 名称不能超过 ${MAX_CONCEPT_NAME_LENGTH} 个字符` })
+  if (/[、/／]|(?:与|和|及)/u.test(name)) issues.push({ path: 'name', message: 'Concept 名称必须表示单一主题，不能用“与/和/及/、/”拼接多个概念' })
+  return issues
+}
+
 const messageSchema = z.object({
   role: z.enum(['user', 'assistant', 'system']),
   content: z.string(),
@@ -112,6 +123,7 @@ export const validateConceptAssignments = validateConceptMemberships
 export interface OriginConceptValidationOptions {
   targetIds?: Iterable<string>
   conceptIds?: Iterable<string>
+  conceptCatalog?: Array<{ id: string; name: string; aliases?: string[] }>
   maxConcepts?: number
 }
 
@@ -136,7 +148,9 @@ export function validateOriginConceptResult(
   const issues: ValidationIssue[] = []
   const candidateRefs = new Set<string>()
   const candidateNames = new Set<string>()
+  const requiredPrefixParents = new Map<string, string>()
   const maxConcepts = normalizeConceptLimit(options.maxConcepts, DEFAULT_CONCEPT_LIMIT)
+  const catalog = options.conceptCatalog ?? []
 
   if (!Array.isArray(rawConcepts)) {
     issues.push({ path: 'concepts', message: 'concepts 必须是数组' })
@@ -166,11 +180,26 @@ export function validateOriginConceptResult(
       if (!name) {
         issues.push({ path: `${path}.name`, message: 'Concept 名称不能为空' })
       } else {
+        validateConceptName(name).filter((issue) => issue.message !== 'Concept 名称不能为空').forEach((issue) => {
+          issues.push({ path: `${path}.${issue.path}`, message: issue.message })
+        })
         const normalizedName = name.toLocaleLowerCase()
         if (candidateNames.has(normalizedName)) {
           issues.push({ path: `${path}.name`, message: '同一响应中不能重复 Concept 名称' })
         }
         candidateNames.add(normalizedName)
+        const matchingCatalog = catalog
+          .flatMap((concept) => [concept.name, ...(concept.aliases ?? [])].map((label) => ({ id: concept.id, label: label.trim().toLocaleLowerCase() })))
+          .filter(({ label }) => label.length >= 2 && normalizedName === label)
+        if (matchingCatalog.length) {
+          issues.push({ path: `${path}.name`, message: `主题已在当前目录中，必须复用 Concept ID ${matchingCatalog[0].id}，不能重复创建` })
+        } else if (clientRef) {
+          const prefixParent = catalog
+            .flatMap((concept) => [concept.name, ...(concept.aliases ?? [])].map((label) => ({ id: concept.id, label: label.trim().toLocaleLowerCase() })))
+            .filter(({ label }) => label.length >= 2 && normalizedName.length > label.length && normalizedName.startsWith(label))
+            .sort((left, right) => right.label.length - left.label.length)[0]
+          if (prefixParent) requiredPrefixParents.set(clientRef, prefixParent.id)
+        }
       }
       if (summary.length > 120) {
         issues.push({ path: `${path}.summary`, message: 'Concept 摘要不能超过 120 个字符' })
@@ -207,6 +236,7 @@ export function validateOriginConceptResult(
   })
 
   const rawRelations = result.relations
+  const hierarchyPairs = new Set<string>()
   if (rawRelations != null && !Array.isArray(rawRelations)) {
     issues.push({ path: 'relations', message: 'relations 必须是数组' })
   } else if (Array.isArray(rawRelations)) {
@@ -221,6 +251,7 @@ export function validateOriginConceptResult(
       const target = typeof relation.target === 'string' ? relation.target.trim() : ''
       const type = relation.type
       const status = relation.status
+      if (type === 'hierarchy' && source && target) hierarchyPairs.add(`${source}\u0000${target}`)
       if (!source || !conceptIds.has(source)) issues.push({ path: `${path}.source`, message: '关系 source 必须引用已披露 Concept 或 client_ref' })
       if (!target || !conceptIds.has(target)) issues.push({ path: `${path}.target`, message: '关系 target 必须引用已披露 Concept 或 client_ref' })
       if (source && source === target) issues.push({ path, message: '关系两端不能是同一个 Concept' })
@@ -231,6 +262,11 @@ export function validateOriginConceptResult(
       if (status != null && status !== 'proposed') issues.push({ path: `${path}.status`, message: 'LLM 关系 status 只能省略或为 proposed' })
     })
   }
+  requiredPrefixParents.forEach((parentId, clientRef) => {
+    if (!hierarchyPairs.has(`${parentId}\u0000${clientRef}`)) {
+      issues.push({ path: 'relations', message: `${clientRef} 名称沿用了已披露父主题前缀，必须返回从 ${parentId} 到 ${clientRef} 的直接 hierarchy，不能另建一级根` })
+    }
+  })
 
   if (candidateRefs.size === 0 && !Array.isArray(result.memberships)) {
     issues.push({ path: 'memberships', message: '至少需要声明 Concept 归属' })

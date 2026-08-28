@@ -259,8 +259,11 @@ describe('prompt harness and progressive disclosure', () => {
 
   it('requires narrow parent matching for unit Concept extraction', () => {
     const prompt = buildConceptPrompt(session, unit, [{ id: 'm', sessionId: 's', role: 'user' as const, content: '问题', orderInSession: 0 }], [])
+    expect(prompt).toContain('最长 24 个字符')
+    expect(prompt).toContain('禁止用“与/和/及/、/”拼接多个主题')
     expect(prompt).toContain('语义范围最窄且直接包含它的父主题')
     expect(prompt).toContain('只有确无合适上位主题才允许暂作根')
+    expect(prompt).toContain('CAVER 路径信息交换')
     expect(prompt).toContain('"status":"proposed"')
   })
 
@@ -268,6 +271,7 @@ describe('prompt harness and progressive disclosure', () => {
     const prompt = buildOriginConceptPrompt(session, [{ id: 'm', sessionId: 's', role: 'user' as const, content: '问题', orderInSession: 0 }], undefined, undefined, 3)
     expect(prompt).toContain('最多只能返回 3 个 Concept')
     expect(prompt).toContain('client_ref 只能使用 new:1 到 new:3')
+    expect(prompt).toContain('不需要为前缀匹配另开 API 调用')
   })
 })
 

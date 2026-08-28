@@ -7,7 +7,7 @@ import { buildGraph, graphSnapshotIsProgressiveCompatible, graphStats, graphView
 import { buildSearchDocuments, searchKnowledge } from '@/services/search'
 import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildOriginConceptPrompt, buildRepairPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, ensureHarnessPrompt, formatMaintenanceActionApi, listMaintenanceMcpTools, listedDisclosureRefIds, MAINTENANCE_ACTION_API, maintenanceToolCallSuggestion, parseDisclosureContext, PROMPT_VERSION, renderQuickPhrase, replaceDisclosureContext } from '@/services/prompts'
 import { conversationMessageBranchNodeId } from '@/services/conversation'
-import { importPayloadSchema, parseImportPayload, validateConceptIdList, validateConceptMemberships, validateDisclosureRequests, validateOriginConceptResult, validateSegmentationResult, validateUnitText } from '@/services/validation'
+import { importPayloadSchema, parseImportPayload, validateConceptIdList, validateConceptMemberships, validateConceptName, validateDisclosureRequests, validateOriginConceptResult, validateSegmentationResult, validateUnitText } from '@/services/validation'
 import type { DisclosureContext } from '@/services/prompts'
 import { combineSegmentationChunks, splitMessageChunks } from '@/utils/chunks'
 import { wouldCreateHierarchyCycle } from '@/utils/graph-rules'
@@ -1487,6 +1487,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     return new Set([...listedDisclosureRefIds(context)].filter((id) => activeIds.has(id)))
   }
 
+  function promptConceptCatalog(task: LLMTask): Array<{ id: string; name: string; aliases: string[] }> {
+    const ids = promptConceptIds(task)
+    return activeConcepts.value
+      .filter((concept) => ids.has(concept.id))
+      .map((concept) => ({
+        id: concept.id,
+        name: concept.name,
+        aliases: aliases.value.filter((alias) => alias.conceptId === concept.id).map((alias) => alias.alias),
+      }))
+  }
+
   function validateConceptMembershipPayload(
     task: LLMTask,
     data: Record<string, unknown>,
@@ -2359,6 +2370,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         errors.push(...validateOriginConceptResult(data, {
           targetIds: membershipTargets,
           conceptIds: promptConceptIds(task),
+          conceptCatalog: promptConceptCatalog(task),
           maxConcepts: conceptLimit,
         }).map((issue) => `${issue.path}: ${issue.message}`))
       } else {
@@ -2388,7 +2400,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         }
       }) : []
       candidates.forEach((candidate) => {
-        if (!normalizeText(candidate.name)) errors.push('Concept 名称不能为空')
+        if (task.type !== 'origin_concepts') errors.push(...validateConceptName(candidate.name).map((issue) => issue.message))
         if (candidate.summary.length > 120) errors.push('Concept 摘要不能超过 120 个字符')
       })
       if (errors.length) {
@@ -2523,7 +2535,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         if (!unit.unitId && !unit.title) errors.push('新建对话阅读片段标题不能为空')
         if (!unit.unitId && validateUnitText(unit.title, unit.summary).length) errors.push('新建对话阅读片段标题或摘要超出长度限制')
         unit.concepts.forEach((concept) => {
-          if (!normalizeText(concept.name)) errors.push('对话返回的知识主题名称不能为空')
+          errors.push(...validateConceptName(concept.name).map((issue) => `对话返回的${issue.message}`))
           if (concept.summary.length > 120) errors.push('对话返回的知识主题摘要不能超过 120 个字符')
         })
         if (unit.conceptIdsProvided) {
@@ -2547,6 +2559,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         }, {
           targetIds: conversationTargetIds,
           conceptIds: promptConceptIds(task),
+          conceptCatalog: promptConceptCatalog(task),
           maxConcepts: conceptLimit,
         }).map((issue) => `${issue.path}: ${issue.message}`))
         errors.push(...validateConceptIdList(data.concept_ids, promptConceptIds(task)).map((issue) => `${issue.path}: ${issue.message}`))
@@ -2563,6 +2576,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           errors.push(...validateOriginConceptResult({ concepts: [], memberships: [], relations: data.relations }, {
             targetIds: conversationTargetIds,
             conceptIds: promptConceptIds(task),
+            conceptCatalog: promptConceptCatalog(task),
           }).map((issue) => `${issue.path}: ${issue.message}`))
         }
       }
