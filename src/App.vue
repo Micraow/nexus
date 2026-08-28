@@ -2263,11 +2263,11 @@ onBeforeUnmount(() => {
         <div class="maintenance-panel-actions"><Sparkles :size="18" /><button class="icon-button" aria-label="关闭知识维护" title="关闭知识维护" @click="maintenancePanelOpen = false"><X :size="15" /></button></div>
       </div>
       <div v-if="(activeView === 'concepts' || activeView === 'graph') && selectedConcept" class="maintenance-scope">
-        <div class="maintenance-scope-copy"><strong>{{ selectedConcept.name }}</strong><span>检查该知识主题的别名、关系和关联阅读片段</span></div>
+        <div class="maintenance-scope-copy"><strong>全图扫描 · 优先关注「{{ selectedConcept.name }}」</strong><span>模型仍会检查全部根节点、层级、归属和阅读片段</span></div>
         <button class="button primary-button" @click="createConceptMaintenance"><Sparkles :size="14" />生成维护建议</button>
       </div>
       <div v-if="activeView === 'sessions' && selectedSession" class="maintenance-scope">
-        <div class="maintenance-scope-copy"><strong>{{ selectedSession.title }}</strong><span>检查当前会话中的知识主题和阅读片段</span></div>
+        <div class="maintenance-scope-copy"><strong>全图扫描 · 优先关注「{{ selectedSession.title }}」</strong><span>当前会话只是优先证据范围，不会隐藏其他主题</span></div>
         <button class="button primary-button" @click="createSessionMaintenance"><Sparkles :size="14" />生成维护建议</button>
       </div>
       <div v-if="store.selectedUnits.length" class="maintenance-scope">
