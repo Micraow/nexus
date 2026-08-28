@@ -120,6 +120,7 @@ describe('renderMarkdown', () => {
     const existingStart = html.indexOf('md-concept-existing')
     const existingEnd = html.indexOf('</span>', existingStart)
     expect(html.slice(existingStart, existingEnd)).not.toContain('HPCC')
+    expect(html).not.toContain('[[/nexus]]')
   })
 
   it('keeps an unclosed or nested suggested marker ahead of existing-name matching', () => {

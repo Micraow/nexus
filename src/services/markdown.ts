@@ -166,6 +166,11 @@ function markerHeaderEnd(raw: string, start: number): number {
 function linkifyMarkedConcepts(raw: string, matcher: ConceptMatcher | null): InlineToken[] {
   const tokens: InlineToken[] = []
   let cursor = 0
+  const pushPlain = (value: string): void => {
+    // A response may contain a stray closing marker after a malformed opener.
+    // It is presentation syntax, so never expose it as answer text.
+    tokens.push(...linkifyConcepts(value.replace(/\[\[\/nexus\s*\]\]/gi, ''), matcher))
+  }
   const findOpening = (from: number): { index: number; kind: 'existing' | 'suggested'; name: string; headerEnd: number } | null => {
     const opening = /\[\[nexus:(existing|suggested):/gi
     opening.lastIndex = from
@@ -183,10 +188,10 @@ function linkifyMarkedConcepts(raw: string, matcher: ConceptMatcher | null): Inl
   for (;;) {
     const match = findOpening(cursor)
     if (!match) {
-      if (cursor < raw.length) tokens.push(...linkifyConcepts(raw.slice(cursor), matcher))
+      if (cursor < raw.length) pushPlain(raw.slice(cursor))
       break
     }
-    if (match.index > cursor) tokens.push(...linkifyConcepts(raw.slice(cursor, match.index), matcher))
+    if (match.index > cursor) pushPlain(raw.slice(cursor, match.index))
     const kind = match.kind
     const headerEnd = match.headerEnd
     const name = match.name
