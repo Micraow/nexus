@@ -213,6 +213,33 @@ describe('GraphCanvas progressive disclosure', () => {
     expect([...target.querySelectorAll<SVGGElement>('.graph-node')].map((node) => node.dataset.refId)).toEqual(['root'])
   })
 
+  it('promotes a disclosed child to a root immediately when the authoritative hierarchy edge is removed', async () => {
+    const snapshot: GraphSnapshot = {
+      revision: 61,
+      nodes: [
+        { id: 'concept:root', type: 'concept', refId: 'root', label: '旧父主题', degree: 1, unitCount: 0, parentIds: [], hasChildren: true },
+        // Worker/layout snapshots may retain these stale hierarchy fields for
+        // one frame after a local promotion.
+        { id: 'concept:child', type: 'concept', refId: 'child', label: '已晋级主题', degree: 1, unitCount: 0, parentId: 'root', parentIds: ['root'] },
+      ],
+      edges: [{ id: 'edge:stale', source: 'concept:root', target: 'concept:child', type: 'hierarchy', weight: 1, status: 'confirmed' }],
+    }
+    const { target, state } = mountReactiveSnapshot(snapshot, {
+      expandedConceptIds: ['root'],
+      hierarchyRelations: [{ parentConceptId: 'root', childConceptId: 'child', relationType: 'hierarchy', status: 'confirmed' }],
+    })
+    await nextTick()
+    expect(target.querySelector('[data-ref-id="child"]')).toBeTruthy()
+    expect(target.querySelector('[data-edge-id="edge:stale"]')).toBeTruthy()
+
+    state.expandedConceptIds = []
+    state.hierarchyRelations = []
+    await nextTick()
+
+    expect([...target.querySelectorAll<SVGGElement>('.graph-node')].map((node) => node.dataset.refId).sort()).toEqual(['child', 'root'])
+    expect(target.querySelector('[data-edge-id="edge:stale"]')).toBeNull()
+  })
+
   it('shows Reading Unit association links only while an endpoint node is hovered', async () => {
     const target = mountSnapshot({
       revision: 7,

@@ -62,7 +62,6 @@ const props = withDefaults(
     visibleNodeDepth: undefined,
     conceptHierarchy: undefined,
     conceptChildren: undefined,
-    hierarchyRelations: () => [],
     showProposed: false,
     expandableConceptIds: () => [],
     fitOnTopologyChange: false,
@@ -197,7 +196,10 @@ function visibleSnapshot(): { nodes: GraphNode[]; edges: GraphEdge[] } {
   const conceptIds = new Set(conceptNodes.map((node) => node.refId))
   const parentsByConcept = new Map<string, Set<string>>()
   const visibleChildrenByParent = new Map<string, Set<string>>()
-  const externalHierarchy = props.hierarchyRelations.filter((relation) => relation.relationType === 'hierarchy' && relation.status !== 'rejected')
+  const externalHierarchyProvided = props.hierarchyRelations !== undefined
+  const externalHierarchy = (props.hierarchyRelations ?? []).filter((relation) => relation.relationType === 'hierarchy' && relation.status !== 'rejected')
+  const visibleExternalHierarchy = externalHierarchy.filter((relation) => relation.status === 'confirmed' || (props.showProposed && relation.status === 'proposed') || relation.status == null)
+  const externalHierarchyEdgeKeys = new Set(visibleExternalHierarchy.map((relation) => `concept:${relation.parentConceptId}|concept:${relation.childConceptId}`))
   externalHierarchy.forEach((relation) => {
     if (relation.parentConceptId === relation.childConceptId) return
     const parents = parentsByConcept.get(relation.childConceptId) ?? new Set<string>()
@@ -209,17 +211,19 @@ function visibleSnapshot(): { nodes: GraphNode[]; edges: GraphEdge[] } {
       visibleChildrenByParent.set(relation.parentConceptId, children)
     }
   })
-  conceptNodes.forEach((node) => {
-    const parentIds = (node.parentIds ?? (node.parentId ? [node.parentId] : []))
-      .map((id) => id.startsWith('concept:') ? id.slice('concept:'.length) : id)
-      .filter((id) => conceptIds.has(id) && id !== node.refId)
-    if (parentIds.length) parentsByConcept.set(node.refId, new Set(parentIds))
-  })
+  if (!externalHierarchyProvided) {
+    conceptNodes.forEach((node) => {
+      const parentIds = (node.parentIds ?? (node.parentId ? [node.parentId] : []))
+        .map((id) => id.startsWith('concept:') ? id.slice('concept:'.length) : id)
+        .filter((id) => conceptIds.has(id) && id !== node.refId)
+      if (parentIds.length) parentsByConcept.set(node.refId, new Set(parentIds))
+    })
+  }
   edges.forEach((edge) => {
     if (edge.type !== 'hierarchy') return
     // When the caller supplied the complete relation set, stale snapshot
     // edges must not override status or disclose a proposed child.
-    if (externalHierarchy.length) return
+    if (externalHierarchyProvided) return
     const source = edge.source.startsWith('concept:') ? edge.source.slice('concept:'.length) : edge.source
     const target = edge.target.startsWith('concept:') ? edge.target.slice('concept:'.length) : edge.target
     if (!conceptIds.has(source) || !conceptIds.has(target) || source === target) return
@@ -230,7 +234,10 @@ function visibleSnapshot(): { nodes: GraphNode[]; edges: GraphEdge[] } {
     children.add(target)
     visibleChildrenByParent.set(source, children)
   })
-  const hasHierarchyMetadata = externalHierarchy.length > 0
+  if (externalHierarchyProvided) {
+    edges = edges.filter((edge) => edge.type !== 'hierarchy' || externalHierarchyEdgeKeys.has(`${edge.source}|${edge.target}`))
+  }
+  const hasHierarchyMetadata = externalHierarchyProvided
     || conceptNodes.some((node) => node.depth != null || node.parentId != null || (node.parentIds?.length ?? 0) > 0)
     || edges.some((edge) => edge.type === 'hierarchy')
   if (hasHierarchyMetadata && conceptNodes.length) {
@@ -951,7 +958,7 @@ watch(() => {
   const edges = props.snapshot.edges.map((edge) => `${edge.id}:${edge.source}:${edge.target}:${edge.type}:${edge.status ?? ''}:${edge.weight}`).join('|')
   const expanded = (props.expandedConceptIds ?? []).slice().sort().join(',')
   const expandable = (props.expandableConceptIds ?? []).slice().sort().join(',')
-  const hierarchy = props.hierarchyRelations.map((relation) => `${relation.parentConceptId}:${relation.childConceptId}:${relation.relationType}:${relation.status ?? ''}`).sort().join('|')
+  const hierarchy = props.hierarchyRelations?.map((relation) => `${relation.parentConceptId}:${relation.childConceptId}:${relation.relationType}:${relation.status ?? ''}`).sort().join('|') ?? 'unspecified'
   return `${props.snapshot.revision}|${nodes}|${edges}|${expanded}|${expandable}|${hierarchy}|${props.showProposed ? 1 : 0}|${props.reducedMotion ? 1 : 0}|${props.maxVisibleLevel ?? ''}|${props.expandedConceptDepth ?? ''}|${props.visibleNodeDepth ?? ''}|${typeof props.visibleNodeLevels === 'number' ? props.visibleNodeLevels : mapSignature(props.visibleNodeLevels)}|${mapSignature(props.conceptHierarchy)}|${mapSignature(props.conceptChildren)}|${props.fitOnTopologyChange ? 1 : 0}`
 }, render)
 
