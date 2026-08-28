@@ -28,7 +28,7 @@ function mountTree(relations: ConceptRelation[], expandedIds: string[] = []): HT
 }
 
 describe('ConceptTree hierarchy', () => {
-  it('keeps proposed hierarchy out of the canonical tree while exposing its review badge', async () => {
+  it('keeps proposed hierarchy in the tree while exposing its review badge', async () => {
     const target = mountTree([{
       id: 'proposal',
       parentConceptId: 'root',
@@ -38,11 +38,12 @@ describe('ConceptTree hierarchy', () => {
       status: 'proposed',
       createdAt: now,
       updatedAt: now,
-    }])
+    }], ['root'])
     await nextTick()
 
-    expect(target.querySelectorAll(':scope > .concept-tree > .concept-tree-branch')).toHaveLength(2)
-    expect(target.querySelectorAll('.concept-tree-children')).toHaveLength(0)
+    expect(target.querySelectorAll(':scope > .concept-tree > .concept-tree-branch')).toHaveLength(1)
+    expect(target.querySelectorAll('.concept-tree-children')).toHaveLength(1)
+    expect(target.querySelector('.concept-tree-children .concept-tree-label')?.textContent).toBe('子主题')
     expect(target.querySelectorAll('.concept-tree-proposed')).toHaveLength(1)
   })
 

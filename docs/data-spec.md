@@ -214,7 +214,7 @@ Concept ID 导入 `message_concepts`，同时保留 metadata 原文以便回溯�
 - `hierarchy` 不允许自环和任何可达环；
 - `hierarchy` 构成可无限向下扩展且允许多父节点的 DAG；只有它参与父级、子级、祖先、后代、根节点和深度计算；
 - `related` 不表达方向语义，查询、去重和图谱绘制应按无向关系处理；`parent_concept_id`/`child_concept_id` 对它只是两个存储端点，绝不能用于判断父子或根节点；
-- `proposed` 关系不能作为默认确认关系参与布局；
+- `proposed` 关系不能作为默认确认关系参与绘制或布局；但未拒绝的 hierarchy 提议仍属于结构父级判定，因此其子 Concept 不能在默认根投影中被提升为一级节点；
 - 拒绝关系保留历史记录，但不参与图谱和搜索；
 - 删除一条 hierarchy 只解除该父子引用，不删除任一 Concept；子节点仍有其他父级时保留其他路径，否则自然成为根节点。提升为根节点等价于可撤销地删除该节点的全部 hierarchy 父引用。
 
@@ -370,7 +370,7 @@ Concept 提取结果必须包含 `concepts` 数组；全部复用目录中已有
 
 ### 6.1 节点
 
-- `active` Concept 是候选节点，但默认只返回 hierarchy 根节点；根集合只依据可见的 hierarchy（`confirmed`，以及 `showProposed=true` 时的 `proposed`）计算，`related` 永远不影响根集合；
+- `active` Concept 是候选节点，但默认只返回 hierarchy 根节点；根集合依据所有未拒绝的 hierarchy 结构父级计算，边是否绘制再由 `showProposed` 过滤，`related` 永远不影响根集合；
 - hierarchy 是无限深度 DAG。`expandedConceptIds` 是用户明确展开的 Concept ID 集合；显式展开的后代会自动补齐祖先路径。父节点展开只使直接子节点可见，继续展开子节点才进入下一层；`expandedConceptDepth=0` 表示仅根节点，正值是可选的批量深度上限，不是模型层数上限；
 - 收起一个 Concept 必须递归移除其后代的展开状态；后代事实仍在数据库中，重新展开即可恢复；
 - 可见 Concept 集合是根节点加上沿“已展开父节点”可达的后代。对隐藏 Concept，计算其到最近可见 hierarchy 祖先的一个或多个代表节点；这组代表用于折叠投影；

@@ -4,8 +4,8 @@
 
 ## 2026-08-28 图谱与主题页实现状态
 
-- 图谱默认只投影 active hierarchy 的根主题。Concept 主体的一次单击同时打开右侧详情并切换当前分支；有子主题时显示下一层，叶主题只打开详情。Enter/Space 与单击相同，图谱不提供独立的 `+/-` 展开控件。
-- 收起主题会递归清除后代的展开状态；隐藏后代通过 hierarchy 投影到最近可见祖先。`related` 永远不参与根节点、祖先路径、深度或展开；待确认的 hierarchy/related 只有在 `showProposed=true` 时进入图谱。
+- 图谱默认只投影没有未拒绝 hierarchy 父节点的 active 根主题。提议父关系默认不绘制但仍阻止子主题成为根；Concept 主体的一次单击同时打开右侧详情并切换当前分支；有子主题时显示下一层，叶主题只打开详情。Enter/Space 与单击相同，图谱不提供独立的 `+/-` 展开控件。
+- 收起主题会递归清除后代的展开状态；隐藏后代通过 hierarchy 投影到最近可见祖先。`related` 永远不参与根节点、祖先路径、深度或展开；待确认的 hierarchy/related 只有在 `showProposed=true` 时绘制，提议 hierarchy 仍参与结构父级判定。
 - 共现边按 Session 去重：只要同一 Session 的两个不同 Concept 归属最终落到两个可见代表主题，该 Session 对这对主题贡献一次权重，不按消息或单元条数重复累计。多父后代投影到每条父链上第一个可见祖先，但单个多父 Concept 不会凭空产生根节点共现。`showUnits`/`showMessages`/保留会话筛选不会被主题展开绕过。
 - Worker 返回前的图谱缓存只允许在筛选项、深度和展开集合兼容时复用；更深展开、不同开关或收起后的旧快照不会短暂泄露到当前视图。新增节点沿用已有位置并以确定性种子布局，避免拓扑变化时整图闪烁。
 - 图谱显示选项默认收起，通过右下角按钮打开，避免在 1024/1440 宽度下遮住首屏根节点；375、768、1024、1440 四档视口均需保持画布非空且无横向溢出。
@@ -58,7 +58,7 @@
 
 - 图谱共现计算运行在 Web Worker（`workers/graph.worker.ts`）中；主线程只做缓存命中与布局回填。缓存键包含 `graph_revision`、Session/Message/KnowledgeUnit/待确认/保留会话开关、`expandedConceptDepth` 和排序后的 `expandedConceptIds`，任一输入变化即重新计算，计算期间先返回最近一次快照（stale-while-revalidate 式），完成后增量刷新。Worker 不可用时退回主线程同步计算。
 - Worker 通信的数据必须先深拷贝为纯 JSON（`toPlainJson`）：Pinia 的响应式代理无法结构化克隆，直接 `postMessage` 会抛 `DataCloneError` 并中断图谱视图渲染。新增图谱输入字段时必须保持可 JSON 序列化。
-- GraphNode/GraphEdge 继续作为派生视图。`resolveVisibleConceptIds` 默认只返回 active hierarchy 根节点；Concept 主体单击、Enter 或 Space 把节点加入/移出 `expandedConceptIds`，逐层显示直接子节点，叶节点单击只打开详情。`normalizeExpandedConceptIds` 会补齐显式后代的祖先路径；`toggleConceptExpansion` 在收起父节点时递归清除后代。hierarchy 不限制深度且允许多父节点；`related` 始终无向，完全不参与根节点、祖先、深度或展开判断。`showProposed=false` 时 proposed hierarchy/related 均被排除。
+- GraphNode/GraphEdge 继续作为派生视图。`resolveVisibleConceptIds` 默认只返回没有未拒绝 hierarchy 父节点的 active 根节点；Concept 主体单击、Enter 或 Space 把节点加入/移出 `expandedConceptIds`，逐层显示直接子节点，叶节点单击只打开详情。`normalizeExpandedConceptIds` 会补齐显式后代的祖先路径；`toggleConceptExpansion` 在收起父节点时递归清除后代。hierarchy 不限制深度且允许多父节点；`related` 始终无向，完全不参与根节点、祖先、深度或展开判断。`showProposed=false` 时 proposed hierarchy/related 均被排除绘制，但 proposed hierarchy 仍参与结构父级判定。
 - Concept 的直接证据同时来自 SessionConcept、MessageConcept 和 UnitConcept。没有 KnowledgeUnit 的消息仍可生成图谱关联；KnowledgeUnit 只作为可选阅读片段投影。窗口化处理保留全局 Message ID，不把窗口边界写入图谱。
 - 主题详情的关联会话、消息和单元统一从三类直接归属事实推导；因此只有 MessageConcept 或 UnitConcept、没有直接 SessionConcept 的历史数据也能显示关联会话。
 - Store 传给图谱服务的 Session 集合只包含未归档 Session；当调用方提供该集合时，残留的 `session_concepts` 不得为已归档 Session 生成共现边。独立调用 `buildGraph` 未提供 Session 集合时，仍按调用方显式传入的事实计算。
@@ -83,7 +83,7 @@
 - `Concept` 在用户界面中显示为“知识主题”。这是中文产品文案的显示层选择：它比“概念”更能表达跨会话复用的稳定知识主体；数据库字段、TypeScript 类型和 Prompt 契约仍使用 `Concept`，以保持设计文档的数据契约不变。
 - 界面文案不暴露开发术语：面向用户使用“会话 / 阅读片段 / 知识主题 / 任务”等词，`KnowledgeUnit` 作为可选证据包保留在数据层；`Session`、`Concept`、`schema` 等只出现在数据层与文档。
 - 从知识主题详情或上下文面板发起对话时，总是打开独立的 composer。快捷短语先渲染 `$(topic)` / `$(context)`，用户仍可编辑生成的问题；创建后落库新的 Session、导航根节点、用户首条消息和待处理 conversation 任务，不在界面中直接发送网络请求。预选主题同时写入 Session/Message 直接归属。
-- 导航树使用 `NavTreeNode` 的父子关系递归渲染；会话页按时间排列可选阅读片段，节点点击只定位已有片段或原始消息，不复制或重建事实数据。
+- 导航树使用 `NavTreeNode` 的父子关系递归渲染；根调用传入完整 Session 节点集合，圆点为主要可点击区域，细线表达父子关系，标签通过悬停/聚焦提示显示；会话页按时间排列可选阅读片段，节点点击只定位已有片段或原始消息，不复制或重建事实数据。
 - 上下文排序在界面状态中保持为用户拖拽顺序，创建 conversation 任务时按该顺序写入 `ContextReference.order_in_context`。输入 token 以字符数除以 4 估算；超过配置预算时只提示并禁止创建任务，不静默截断。
 - 长列表使用分段加载而非虚拟滚动：会话每页 40、知识主题每页 60、历史任务每页 30；主题的“包含消息”全屏查看器跨 Session 固定每页 20 条，并在每条消息头部标记来源会话，使用上一页/下一页翻页。该阈值是界面常量，后续接入虚拟滚动时可整体替换。
 - 知识主题详情的关联单元列表支持三种排序：最近更新、创建时间、名称（中文 `Intl.Collator('zh-Hans-CN')` 排序）；父/子/相关主题行按对方主题关联的单元数量降序排列，常用主体靠前。
@@ -109,7 +109,7 @@
 
 ## 验收覆盖说明（对应设计 15.1）
 
-- 单元测试（Vitest，116 项）覆盖 Markdown 渲染与注入防护、分块切分与合并校验、图谱关系/渐进披露、中文搜索回退与排序、扩展会话发现与导出 payload、主题证据分页、任务迁移和直接对话写入。数据库耦合路径依赖 sql.js WASM；当前测试已覆盖直接导入、旧 segmentation 归一化、对话结果应用和 API 任务并发护栏，仍不替代真实桌面环境的备份恢复验收。
+- 单元测试（Vitest，123 项）覆盖 Markdown 渲染与注入防护、分块切分与合并校验、图谱关系/渐进披露、中文搜索回退与排序、扩展会话发现与导出 payload、主题证据分页、任务迁移和直接对话写入。数据库耦合路径依赖 sql.js WASM；当前测试已覆盖直接导入、旧 segmentation 归一化、对话结果应用和 API 任务并发护栏，仍不替代真实桌面环境的备份恢复验收。
 - 数据库耦合路径通过 headless Chromium + CDP 冒烟脚本人工验收：空态加载、图谱渲染、帮助弹窗、Provider 保存、导入 JSON → 任务中心 → Prompt 粘贴应用 Session/Message Concept 归属（旧数据另验阅读片段兼容与废弃分段任务归档）→ 图谱出现主题与直接证据节点 → 主题目录右栏跨 Session 消息分页 → 会话列表核对，全程断言无运行时异常。该脚本为临时验收工具，不随应用分发。
 
 ## 直接 Concept 流程迁移约定
@@ -125,6 +125,6 @@
 - 事实层次：`Session` 是完整对话容器，`Message` 是不可丢失的原始消息，`Concept` 是跨 Session 复用的知识主题。`KnowledgeUnit` 保留为同一 Session 内可选的阅读片段/证据包，不是主题层级、不是分段前置条件，也不参与根主题判断。
 - 导入链：原始 `Session/Message` 先写入 → 创建 `session_triage` 与 `origin_concepts` 任务 → 任务经历 `pending → running → success`，异常进入 `needs_review/failed`，输入版本变化进入 `stale`；直接主题结果写入 `SessionConcept/MessageConcept`，不等待 KnowledgeUnit。
 - 对话链：本地草稿 → 创建 `conversation` 任务（API 为 `pending → running`，Prompt 粘贴保持 `pending` 等待人工回传）→ 校验结果 → `success` 写入 assistant Message、导航树节点和多主题归属；`units` 可以为空或包含多个本轮可选阅读片段。非法结果进入 `needs_review`，重试或版本变化分别回到 `pending` 或 `stale`。没有摘要的已应用片段仍为 `ready`，不再伪装成等待分段。
-- 关系链：LLM/维护任务产生 `proposed` → 用户确认变为 `confirmed` 或拒绝变为 `rejected`。只有 `confirmed` 默认参与图谱，`showProposed` 打开时才显示建议关系。
+- 关系链：LLM/维护任务产生 `proposed` → 用户确认变为 `confirmed` 或拒绝变为 `rejected`。只有 `confirmed` 默认参与图谱绘制；未拒绝的 hierarchy proposal 仍参与根节点结构判定，`showProposed` 打开时才显示建议关系。
 - 展示层：图谱从事实层实时派生；默认只显示 hierarchy 根主题，Concept 单击同时打开详情并逐层展开/递归收起，`related` 永不改变层级。Sigma.js 评估后暂不替换 D3：现有 SVG 图谱已覆盖缩放、拖拽、悬停高亮、键盘语义、框选和稳定布局，贸然换成 Sigma 会改写测试与交互层；后续若节点规模超过当前阈值，再以独立适配层引入 graphology/Sigma。
-- 知识主题页的左栏使用可折叠 hierarchy 树，主题行单击选中并打开右侧内容，树节点的独立折叠控件负责展开/收起；过滤时保留命中主题的祖先节点，父子跳转后详情列滚动回顶。图谱主题节点不提供独立 `+/-` 控件，主体单击同时打开详情并展开/收起。
+- 知识主题页的左栏使用可折叠 hierarchy 树，主题行单击选中并打开右侧内容，树节点的独立折叠控件负责展开/收起；过滤时保留命中主题的祖先节点，父子跳转后详情列滚动回顶。会话探索树使用大圆点、细连接线和悬停/聚焦标签。图谱主题节点不提供独立 `+/-` 控件，主体单击同时打开详情并展开/收起。
