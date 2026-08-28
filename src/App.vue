@@ -50,7 +50,7 @@ import nexusLogo from '../src-tauri/icons/icon.svg'
 import { MIN_TOKEN_BUDGET, normalizeTokenBudget, serializeConfig } from '@/services/config'
 import { saveTextFile } from '@/services/files'
 import type { SaveFileRequest } from '@/services/files'
-import { conversationTaskForNode, suggestedExplorationQuestion, unfinishedConversationTask } from '@/services/conversation'
+import { conversationMessageBranchNodeId, conversationTaskForNode, suggestedExplorationQuestion, unfinishedConversationTask } from '@/services/conversation'
 import { resolveConceptEvidence } from '@/services/concept-evidence'
 import { paginateMessages } from '@/services/message-pagination'
 import { renderMarkdown } from '@/services/markdown'
@@ -278,12 +278,6 @@ const activeConversationBranchCards = computed(() => {
   const pathIds = activeConversationPathNodeIds.value
   const byId = new Map(activeConversationNodes.value.map((node) => [node.id, node]))
   const messages = activeConversationMessages.value
-  const answerNodeByMessageId = new Map<string, string>()
-  messages.forEach((message) => {
-    if (message.role !== 'assistant') return
-    const nodeId = parseMetadata(message.metadata).navNodeId
-    if (typeof nodeId === 'string') answerNodeByMessageId.set(message.id, nodeId)
-  })
   return pathIds.map((nodeId) => {
     const node = byId.get(nodeId)
     if (!node) return null
@@ -291,19 +285,9 @@ const activeConversationBranchCards = computed(() => {
     // assistant answer is recorded on the newly-created child node. Keeping
     // those facts separate prevents sibling branches from leaking messages
     // into one another while still showing the root's opening question.
-    const cardMessages = messages.filter((message) => {
-      const metadata = parseMetadata(message.metadata)
-      if (message.role === 'assistant') return metadata.navNodeId === nodeId
-      if (message.role === 'user') {
-        // Completed questions belong to the branch created by their answer;
-        // pending questions stay on the parent so the user can see what is
-        // waiting. This keeps sibling questions out of the shared parent card.
-        const answerMessageId = metadata.answerMessageId
-        const answerNodeId = typeof answerMessageId === 'string' ? answerNodeByMessageId.get(answerMessageId) : undefined
-        return answerNodeId ? answerNodeId === nodeId : metadata.parentNodeId === nodeId
-      }
-      return false
-    }).sort((left, right) => left.orderInSession - right.orderInSession)
+    const cardMessages = messages
+      .filter((message) => conversationMessageBranchNodeId(message, messages) === nodeId)
+      .sort((left, right) => left.orderInSession - right.orderInSession)
     return cardMessages.length ? { node, messages: cardMessages } : null
   }).filter((card): card is { node: NavTreeNode; messages: Message[] } => Boolean(card))
 })

@@ -50,6 +50,21 @@ export function conversationTaskForNode(
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0] ?? null
 }
 
+/** Resolve the navigation branch that owns a conversation message. */
+export function conversationMessageBranchNodeId(message: Message, messages: Message[]): string | null {
+  const metadata = parseMetadata(message.metadata)
+  if (message.role === 'assistant') {
+    return typeof metadata.navNodeId === 'string' && metadata.navNodeId.trim() ? metadata.navNodeId : null
+  }
+  if (message.role !== 'user') return null
+  if (typeof metadata.answerMessageId === 'string' && metadata.answerMessageId.trim()) {
+    const answer = messages.find((candidate) => candidate.id === metadata.answerMessageId && candidate.role === 'assistant')
+    const answerNodeId = parseMetadata(answer?.metadata).navNodeId
+    if (typeof answerNodeId === 'string' && answerNodeId.trim()) return answerNodeId
+  }
+  return typeof metadata.parentNodeId === 'string' && metadata.parentNodeId.trim() ? metadata.parentNodeId : null
+}
+
 export function suggestedExplorationQuestion(topic: string): string {
   const normalized = topic.replace(/\s+/g, ' ').trim()
   return normalized ? `请继续解释「${normalized}」，并说明它与当前讨论的关系。` : ''

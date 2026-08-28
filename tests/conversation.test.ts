@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { conversationTaskForNode, suggestedExplorationQuestion, unfinishedConversationTask } from '@/services/conversation'
+import { conversationMessageBranchNodeId, conversationTaskForNode, suggestedExplorationQuestion, unfinishedConversationTask } from '@/services/conversation'
 import type { LLMTask, Message } from '@/types/domain'
 
 const task = (id: string, status: LLMTask['status'], createdAt: string): LLMTask => ({
@@ -44,5 +44,18 @@ describe('conversation branch task mapping', () => {
   it('builds an editable follow-up from a suggested topic', () => {
     expect(suggestedExplorationQuestion('  量子   纠错 ')).toBe('请继续解释「量子 纠错」，并说明它与当前讨论的关系。')
     expect(suggestedExplorationQuestion('')).toBe('')
+  })
+
+  it('moves answered sibling questions onto their own answer branches', () => {
+    const messages = [
+      message('question-a', 'user', { mode: 'follow_up', parentNodeId: 'root', answerMessageId: 'answer-a' }),
+      message('question-b', 'user', { mode: 'follow_up', parentNodeId: 'root', answerMessageId: 'answer-b' }),
+      message('pending', 'user', { mode: 'follow_up', parentNodeId: 'root', answerMessageId: 'answer-pending' }),
+      message('answer-a', 'assistant', { navNodeId: 'branch-a' }),
+      message('answer-b', 'assistant', { navNodeId: 'branch-b' }),
+    ]
+    expect(conversationMessageBranchNodeId(messages[0], messages)).toBe('branch-a')
+    expect(conversationMessageBranchNodeId(messages[1], messages)).toBe('branch-b')
+    expect(conversationMessageBranchNodeId(messages[2], messages)).toBe('root')
   })
 })
