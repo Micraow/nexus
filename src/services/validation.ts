@@ -215,15 +215,10 @@ export function validateOriginConceptResult(
       const source = typeof relation.source === 'string' ? relation.source.trim() : ''
       const target = typeof relation.target === 'string' ? relation.target.trim() : ''
       const type = relation.type
-      const status = relation.status
       if (!source || !conceptIds.has(source)) issues.push({ path: `${path}.source`, message: '关系 source 必须引用已披露 Concept 或 client_ref' })
       if (!target || !conceptIds.has(target)) issues.push({ path: `${path}.target`, message: '关系 target 必须引用已披露 Concept 或 client_ref' })
       if (source && source === target) issues.push({ path, message: '关系两端不能是同一个 Concept' })
-      // Ordinary extraction may only propose hierarchy. Related edges are
-      // derived from shared Session/Message evidence and are edited through
-      // the maintenance action API instead.
-      if (type !== 'hierarchy') issues.push({ path: `${path}.type`, message: '普通提取关系只能是 hierarchy；related 由共享 Session/Message 自动计算' })
-      if (status != null && status !== 'proposed') issues.push({ path: `${path}.status`, message: 'LLM 关系 status 只能省略或为 proposed' })
+      if (type !== 'hierarchy') issues.push({ path: `${path}.type`, message: '普通 Concept 提取只允许 hierarchy；related 由应用根据共享 Session/Message 派生' })
     })
   }
 

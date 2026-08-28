@@ -88,6 +88,7 @@ describe('direct origin Concept response validation', () => {
     }, { targetIds: ['u1'], conceptIds: [] })
     expect(invalid.some((issue) => issue.message.includes('当前任务不允许 unit'))).toBe(true)
     expect(invalid.some((issue) => issue.message.includes('关系 target'))).toBe(true)
+    expect(invalid.some((issue) => issue.message.includes('普通 Concept 提取只允许 hierarchy'))).toBe(true)
     expect(invalid.some((issue) => issue.message.includes('至少归属于一条 Message'))).toBe(true)
   })
 
