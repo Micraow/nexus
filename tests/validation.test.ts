@@ -90,4 +90,14 @@ describe('direct origin Concept response validation', () => {
     expect(invalid.some((issue) => issue.message.includes('关系 target'))).toBe(true)
     expect(invalid.some((issue) => issue.message.includes('至少归属于一条 Message'))).toBe(true)
   })
+
+  it('only permits proposed LLM relation status', () => {
+    const invalid = validateOriginConceptResult({
+      concepts: [{ client_ref: 'new:1', name: 'TCP 拥塞控制', summary: '', aliases: [] }],
+      memberships: [{ target_type: 'message', target_id: 'm1', concept_ids: ['new:1'] }],
+      relations: [{ source: 'existing-network', target: 'new:1', type: 'hierarchy', status: 'confirmed' }],
+    }, { targetIds: ['m1'], conceptIds: ['existing-network'] })
+
+    expect(invalid.some((issue) => issue.message.includes('只能省略或为 proposed'))).toBe(true)
+  })
 })

@@ -137,6 +137,18 @@ export interface ConceptRelation {
   updatedAt: string
 }
 
+/**
+ * Relation shape accepted from an LLM task before it becomes a persisted
+ * ConceptRelation. LLMs may only propose a relation; confirmation belongs to
+ * the user-facing review flow.
+ */
+export interface ProposedConceptRelation {
+  source: string
+  target: string
+  type: RelationType
+  status?: 'proposed'
+}
+
 export interface NavTreeNode {
   id: string
   sessionId: string

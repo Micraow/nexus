@@ -215,10 +215,12 @@ export function validateOriginConceptResult(
       const source = typeof relation.source === 'string' ? relation.source.trim() : ''
       const target = typeof relation.target === 'string' ? relation.target.trim() : ''
       const type = relation.type
+      const status = relation.status
       if (!source || !conceptIds.has(source)) issues.push({ path: `${path}.source`, message: '关系 source 必须引用已披露 Concept 或 client_ref' })
       if (!target || !conceptIds.has(target)) issues.push({ path: `${path}.target`, message: '关系 target 必须引用已披露 Concept 或 client_ref' })
       if (source && source === target) issues.push({ path, message: '关系两端不能是同一个 Concept' })
       if (type !== 'hierarchy' && type !== 'related') issues.push({ path: `${path}.type`, message: '关系 type 必须是 hierarchy 或 related' })
+      if (status != null && status !== 'proposed') issues.push({ path: `${path}.status`, message: 'LLM 关系 status 只能省略或为 proposed' })
     })
   }
 
