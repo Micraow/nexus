@@ -165,6 +165,7 @@ export const MAINTENANCE_ACTION_API: readonly MaintenanceActionDefinition[] = [
   maintenanceAction('set_hierarchy_parents', ['concept_id', 'parent_concept_ids', 'reason'], { concept_id: 'string', parent_concept_ids: 'string[]' }, '原子替换该 Concept 的全部 hierarchy 父级；空数组表示提升为根，允许多个父节点且必须保持 DAG'),
   maintenanceAction('remove_hierarchy', ['child_concept_id', 'reason'], { child_concept_id: 'string', parent_concept_id: 'string?' }, '解除指定父子边；省略 parent_concept_id 时解除全部父级'),
   maintenanceAction('unit_relink', ['unit_id', 'concept_ids', 'reason'], { unit_id: 'string', concept_ids: 'string[]', replace: 'boolean?' }, '修改阅读片段归属；默认替换，replace=false 时追加；空数组且默认替换表示清除归属'),
+  maintenanceAction('unit_create', ['session_id', 'message_ids', 'reason'], { session_id: 'string', message_ids: 'string[]', title: 'string?', summary: 'string?', concept_ids: 'string[]' }, '从同一 Session 的一组未归档消息创建阅读片段；可同时设置标题、摘要和主题归属'),
   maintenanceAction('membership_relink', ['target_type', 'target_id', 'concept_ids', 'replace', 'reason'], { target_type: ['session', 'message', 'unit'], target_id: 'string', concept_ids: 'string[]', replace: 'boolean' }, '替换或追加 Session、Message、KnowledgeUnit 的直接 Concept 归属；replace=true 替换，false 追加'),
   maintenanceAction('unit_revision', ['unit_id', 'reason'], { unit_id: 'string', title: 'string?', summary: 'string?' }, '更新阅读片段标题或摘要，至少提供一个字段'),
   maintenanceAlias('archive_concept', 'delete_concept', ['concept_id', 'reason'], { concept_id: 'string' }, 'delete_concept 的兼容别名；只归档，不删除证据'),
@@ -684,6 +685,7 @@ export function buildMaintenancePrompt(input: {
 - set_hierarchy_parents：一次性替换全部父主题，参数 concept_id、parent_concept_ids（字符串数组，可为空）；允许多父节点，必须保持 DAG。
 - remove_hierarchy：解除层级引用，参数 child_concept_id，以及可选 parent_concept_id；省略 parent 时解除该主题全部父引用。
 - unit_relink：修改阅读片段归属，参数 unit_id、concept_ids（可为空数组，表示清除归属）。
+- unit_create：从同一 Session 的未归档消息创建阅读片段，参数 session_id、message_ids（至少一条）、可选 title、summary、concept_ids；消息必须属于该 Session 且未已有阅读片段。
 - membership_relink：修改 Session、Message 或 KnowledgeUnit 的直接主题归属，参数 target_type、target_id、concept_ids、replace；replace=true 替换，false 追加。消息归属同步兼容 metadata.concept_ids。
 - unit_revision：编辑阅读片段，参数 unit_id、title、summary，至少提供一个字段。
 - relation、archive_concept 仍作为兼容别名；机器目录中的 deprecated=true 表示新任务应优先使用对应的 canonical 动作。所有未知动作、未知字段组合和不存在的 ID 必须拒绝。
@@ -717,8 +719,8 @@ ${disclosureText}
 ${disclosureAvailability(input.disclosure)}
 
 只返回 JSON：
-{"reason":"对当前图谱是否需要变更的简短总体判断；即使没有建议也必须填写","suggestions":[{"type":"create_concept|update_concept|delete_concept|restore_concept|merge|alias|remove_alias|add_relation|relation|update_relation|delete_relation|remove_relation|set_relation_status|confirm_relation|reject_relation|move_concept|set_hierarchy_parents|remove_hierarchy|membership_relink|unit_relink|unit_revision|archive_concept","reason":"可审计的事实依据","...":"严格使用动作 API 定义的参数"}],"disclosure_requests":[]}
+{"reason":"对当前图谱是否需要变更的简短总体判断；即使没有建议也必须填写","suggestions":[{"type":"create_concept|update_concept|delete_concept|restore_concept|merge|alias|remove_alias|add_relation|relation|update_relation|delete_relation|remove_relation|set_relation_status|confirm_relation|reject_relation|move_concept|set_hierarchy_parents|remove_hierarchy|membership_relink|unit_relink|unit_create|unit_revision|archive_concept","reason":"可审计的事实依据","...":"严格使用动作 API 定义的参数"}],"disclosure_requests":[]}
 reason 是给用户看的总体说明：概括你检查了什么、为何提出或没有提出变更。只返回确有依据的建议；关系建议最多 2 条，不能仅凭共同出现推断 related；新主题优先匹配已有或同批次中最窄且有直接证据的父主题，只有没有足够层级证据时才允许成为根；不要把所有主题平铺为一级。没有建议时仍返回非空 reason，明确说明“未发现需要修改的地方”或指出缺少证据。不要输出解释文字。
 
-动作响应的规范格式：{"reason":"总体判断（必填）","suggestions":[{"type":"create_concept|update_concept|delete_concept|restore_concept|merge|alias|remove_alias|add_relation|relation|update_relation|delete_relation|remove_relation|set_relation_status|confirm_relation|reject_relation|move_concept|set_hierarchy_parents|remove_hierarchy|membership_relink|unit_relink|unit_revision|archive_concept","reason":"可审计的事实依据","...":"严格使用上方动作 API 定义的参数"}],"disclosure_requests":[]}。每条 suggestion 的 type 与参数必须能一一映射到机器目录中的 nexus_maintenance_* 工具；没有变更时返回空 suggestions，但 reason 仍不可省略。`)
+动作响应的规范格式：{"reason":"总体判断（必填）","suggestions":[{"type":"create_concept|update_concept|delete_concept|restore_concept|merge|alias|remove_alias|add_relation|relation|update_relation|delete_relation|remove_relation|set_relation_status|confirm_relation|reject_relation|move_concept|set_hierarchy_parents|remove_hierarchy|membership_relink|unit_relink|unit_create|unit_revision|archive_concept","reason":"可审计的事实依据","...":"严格使用上方动作 API 定义的参数"}],"disclosure_requests":[]}。每条 suggestion 的 type 与参数必须能一一映射到机器目录中的 nexus_maintenance_* 工具；没有变更时返回空 suggestions，但 reason 仍不可省略。`)
 }

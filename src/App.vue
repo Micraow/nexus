@@ -46,6 +46,8 @@ import {
 import GraphCanvas from '@/components/GraphCanvas.vue'
 import ConceptTree from '@/components/ConceptTree.vue'
 import NavTree from '@/components/NavTree.vue'
+import SearchSelect from '@/components/SearchSelect.vue'
+import ReadingUnitsView from '@/components/ReadingUnitsView.vue'
 import { deriveConceptRelatedPairs } from '@/services/graph'
 import nexusLogo from '../src-tauri/icons/icon.svg'
 import { DEFAULT_CONCEPT_LIMIT, MAX_API_CONCURRENCY, MAX_CONCEPT_LIMIT, MIN_API_CONCURRENCY, MIN_CONCEPT_LIMIT, MIN_TOKEN_BUDGET, normalizeApiConcurrency, normalizeConceptLimit, normalizeTokenBudget, serializeConfig } from '@/services/config'
@@ -61,7 +63,7 @@ import { invokeTauri, isTauriRuntime } from '@/services/tauri'
 import { useWorkspaceStore } from '@/stores/workspace'
 import type { AppConfig, Concept, ConceptRelation, GraphNodeType, KnowledgeUnit, LLMTask, MaintenanceSuggestion, Message, NavTreeNode, Session, TaskType } from '@/types/domain'
 
-type ViewName = 'overview' | 'graph' | 'sessions' | 'concepts' | 'tasks' | 'settings'
+type ViewName = 'overview' | 'graph' | 'sessions' | 'concepts' | 'units' | 'tasks' | 'settings'
 
 const store = useWorkspaceStore()
 const activeView = ref<ViewName>('overview')
@@ -86,6 +88,7 @@ const graphShowMessages = ref(false)
 const graphShowProposed = ref(false)
 const graphShowRetainedSessions = ref(false)
 const graphSearch = ref('')
+const unitSearch = ref('')
 const graphControlsOpen = ref(false)
 const conceptTreeExpandedIds = ref<string[]>([])
 // Concept disclosure is kept in the view. A body activation selects the
@@ -119,6 +122,9 @@ const composerSourceUnitIds = ref<string[]>([])
 const composerSourceMessageIds = ref<string[]>([])
 const composerFollowUp = ref<{ sessionId: string; nodeId: string; label: string } | null>(null)
 const activeConversationSessionId = ref<string | null>(null)
+// A suggested keyword opens a lightweight branch immediately. It is kept in
+// the conversation UI until the answer is materialised as a real nav node.
+const pendingConversationBranch = ref<(NavTreeNode & { started: boolean }) | null>(null)
 const customPhraseDraft = ref('')
 const editingPhraseId = ref<string | null>(null)
 const welcomePhrases = [
@@ -155,6 +161,7 @@ const fullscreenPage = ref(0)
 const fullscreenPageSize = 20
 const detailDrawer = ref<HTMLElement | null>(null)
 const conceptPageDetail = ref<HTMLElement | null>(null)
+const unitPageDetail = ref<HTMLElement | null>(null)
 const storageInfo = ref<{ dataDir: string; databasePath: string; configPath: string } | null>(null)
 const databasePathDraft = ref('')
 const visibleSessionCount = ref(40)
@@ -217,6 +224,7 @@ const navItems: Array<{ id: ViewName; label: string; icon: typeof LayoutDashboar
   { id: 'graph', label: '知识图谱', icon: Network },
   { id: 'sessions', label: '会话', icon: History },
   { id: 'concepts', label: '知识主题', icon: Layers3 },
+  { id: 'units', label: '阅读片段', icon: BookOpen },
   { id: 'tasks', label: '任务中心', icon: ListChecks, badge: () => store.pendingTaskCount },
   { id: 'settings', label: '设置', icon: Settings2 },
 ]
@@ -253,7 +261,12 @@ const activeConversationMessages = computed(() => activeConversationSessionId.va
   ? store.messages.filter((message) => message.sessionId === activeConversationSessionId.value).sort((left, right) => left.orderInSession - right.orderInSession)
   : [])
 const activeConversationNodes = computed(() => activeConversationSessionId.value
-  ? store.navNodes.filter((node) => node.sessionId === activeConversationSessionId.value)
+  ? [
+      ...store.navNodes.filter((node) => node.sessionId === activeConversationSessionId.value),
+      ...(pendingConversationBranch.value && pendingConversationBranch.value.sessionId === activeConversationSessionId.value
+        ? [pendingConversationBranch.value]
+        : []),
+    ]
   : [])
 const activeConversationRoot = computed(() => activeConversationNodes.value.find((node) => !node.parentId) ?? null)
 /**
@@ -292,7 +305,14 @@ const activeConversationBranchCards = computed(() => {
   return activeConversationPathNodeIds.value
     .map((nodeId) => byId.get(nodeId))
     .filter((node): node is NavTreeNode => Boolean(node))
-    .map((node) => ({ node, messages: conversationMessagesForNode(node.id, messages) }))
+    .map((node) => {
+      const branchMessages = conversationMessagesForNode(node.id, messages)
+      // Imported sessions predate navigation metadata. Their synthetic root
+      // still needs to render the complete transcript so a restored session
+      // feels continuous and can be continued from that card.
+      if (!branchMessages.length && !node.parentId && messages.length) return { node, messages }
+      return { node, messages: branchMessages }
+    })
 })
 const conversationNavTrail = computed(() => {
   const selected = activeConversationNodes.value.find((node) => node.id === selectedNavNodeId.value) ?? activeConversationRoot.value
@@ -310,7 +330,10 @@ const activeConversationUnfinishedTask = computed(() => activeConversationSessio
   ? unfinishedConversationTask(store.tasks, activeConversationSessionId.value)
   : null)
 const activeConversationTask = computed(() => activeConversationSessionId.value
-  ? conversationTaskForNode(store.tasks, store.messages, activeConversationSessionId.value, selectedNavNodeId.value)
+  ? conversationTaskForNode(store.tasks, store.messages, activeConversationSessionId.value,
+      pendingConversationBranch.value?.id === selectedNavNodeId.value
+        ? pendingConversationBranch.value.parentId
+        : selectedNavNodeId.value)
   : null)
 const activeConversationStatus = computed(() => {
   const task = activeConversationTask.value
@@ -350,6 +373,15 @@ const maintenanceSuggestions = computed(() => {
     return Array.isArray(parsed.suggestions) ? parsed.suggestions as Array<MaintenanceSuggestion & { applied?: boolean }> : []
   } catch {
     return [] as Array<MaintenanceSuggestion & { applied?: boolean }>
+  }
+})
+const maintenanceOverallReason = computed(() => {
+  if (!selectedTask.value || selectedTask.value.type !== 'maintenance' || !selectedTask.value.parsedResult) return ''
+  try {
+    const parsed = JSON.parse(selectedTask.value.parsedResult) as { reason?: unknown }
+    return typeof parsed.reason === 'string' ? parsed.reason : ''
+  } catch {
+    return ''
   }
 })
 const conceptTreeConcepts = computed(() => {
@@ -404,6 +436,19 @@ const conceptTreeExpandedIdsForView = computed(() => {
     }
   })
   return [...expanded]
+})
+const unitSearchQuery = computed(() => unitSearch.value.trim().toLocaleLowerCase())
+const unitsForView = computed(() => {
+  const units = store.units
+    .filter((unit) => store.activeSessions.some((session) => session.id === unit.sessionId))
+    .slice()
+    .sort((left, right) => (right.updatedAt || right.createdAt).localeCompare(left.updatedAt || left.createdAt))
+  const needle = unitSearchQuery.value
+  if (!needle) return units
+  return units.filter((unit) => {
+    const session = sessionForUnit(unit)
+    return `${unit.title ?? ''} ${unit.summary ?? ''} ${session?.title ?? ''}`.toLocaleLowerCase().includes(needle)
+  })
 })
 // Legacy LLM-authored related rows are not actionable relations. Related
 // signals are derived from shared evidence; only hierarchy proposals and
@@ -723,7 +768,7 @@ function openUnit(unitId: string, additive = false): void {
   selectedMessageId.value = null
   if (!additive) store.reorderContext([unitId])
   else store.selectContext(unitId, !store.selectedContextIds.includes(unitId))
-  isDetailOpen.value = true
+  isDetailOpen.value = activeView.value !== 'units'
   void nextTick(() => detailDrawer.value?.scrollTo({ top: 0, behavior: store.config.ui.reducedMotion ? 'auto' : 'smooth' }))
 }
 
@@ -953,7 +998,7 @@ function applyMaintenanceSuggestion(index: number): void {
 }
 
 function maintenanceSuggestionLabel(type: MaintenanceSuggestion['type']): string {
-  return ({ merge: '合并知识主题', alias: '添加别名', remove_alias: '删除别名', relation: '建立关系', add_relation: '添加关系', update_relation: '修改关系', delete_relation: '删除关系', remove_relation: '删除关系', set_relation_status: '审核关系', confirm_relation: '确认关系', reject_relation: '拒绝关系', membership_relink: '调整主题归属', create_concept: '创建知识主题', update_concept: '编辑知识主题', move_concept: '移动知识主题', set_hierarchy_parents: '重设全部父主题', remove_hierarchy: '解除父子关系', archive_concept: '归档知识主题', delete_concept: '删除知识主题', restore_concept: '恢复知识主题', unit_relink: '重新关联片段', unit_revision: '修订片段' } as Record<string, string>)[type] ?? '维护建议'
+  return ({ merge: '合并知识主题', alias: '添加别名', remove_alias: '删除别名', relation: '建立关系', add_relation: '添加关系', update_relation: '修改关系', delete_relation: '删除关系', remove_relation: '删除关系', set_relation_status: '审核关系', confirm_relation: '确认关系', reject_relation: '拒绝关系', membership_relink: '调整主题归属', create_concept: '创建知识主题', update_concept: '编辑知识主题', move_concept: '移动知识主题', set_hierarchy_parents: '重设全部父主题', remove_hierarchy: '解除父子关系', archive_concept: '归档知识主题', delete_concept: '删除知识主题', restore_concept: '恢复知识主题', unit_relink: '重新关联片段', unit_create: '创建阅读片段', unit_revision: '修订片段' } as Record<string, string>)[type] ?? '维护建议'
 }
 
 function conceptName(conceptId?: string | null): string {
@@ -997,6 +1042,7 @@ function maintenanceSuggestionSummary(suggestion: MaintenanceSuggestion): string
   if (suggestion.type === 'archive_concept' || suggestion.type === 'delete_concept' || suggestion.type === 'restore_concept') return conceptName(suggestion.concept_id)
   if (suggestion.type === 'membership_relink') return `${suggestion.target_type || '目标'} ${suggestion.target_id || '未知'} · ${suggestion.replace ? '替换' : '追加'} ${suggestion.concept_ids?.length ?? 0} 个主题`
   if (suggestion.type === 'unit_relink') return `${store.units.find((unit) => unit.id === suggestion.unit_id)?.title || '未命名阅读片段'} · ${suggestion.replace === false ? '追加' : '替换'} ${suggestion.concept_ids?.length ?? 0} 个主题`
+  if (suggestion.type === 'unit_create') return `${suggestion.title || '新阅读片段'} · ${suggestion.message_ids?.length ?? 0} 条消息`
   return `${store.units.find((unit) => unit.id === suggestion.unit_id)?.title || '未命名阅读片段'} · ${suggestion.title || suggestion.summary || '修订标题或摘要'}`
 }
 
@@ -1099,6 +1145,9 @@ function submitComposer(): void {
   if (composerTokenEstimate.value > store.config.llm.tokenBudget) return notify(`上下文约 ${composerTokenEstimate.value.toLocaleString()} tokens，超过当前预算，请移除阅读片段或关闭完整原文`)
   if (composerFollowUp.value) {
     try {
+      if (pendingConversationBranch.value && pendingConversationBranch.value.parentId === composerFollowUp.value.nodeId) {
+        pendingConversationBranch.value.started = true
+      }
       const taskId = store.createFollowUpTask({
         sessionId: composerFollowUp.value.sessionId,
         parentNodeId: composerFollowUp.value.nodeId,
@@ -1113,7 +1162,7 @@ function submitComposer(): void {
       composerPhraseId.value = ''
       selectedTaskId.value = taskId
       activeConversationSessionId.value = composerFollowUp.value.sessionId
-      selectedNavNodeId.value = composerFollowUp.value.nodeId
+      selectedNavNodeId.value = pendingConversationBranch.value?.id ?? composerFollowUp.value.nodeId
       setView('overview')
       const task = store.tasks.find((item) => item.id === taskId)
       if (task?.mode === 'api') {
@@ -1160,11 +1209,15 @@ function submitComposer(): void {
 
 function openConversationSession(sessionId: string): void {
   const session = store.sessions.find((item) => item.id === sessionId)
-  if (!session || session.source !== 'in_app') return
+  // Imported sessions are first-class conversation history too. Their
+  // generated root node lets users inspect the single-card transcript and
+  // continue asking questions from the recovered context.
+  if (!session) return
   activeConversationSessionId.value = sessionId
+  pendingConversationBranch.value = null
   store.setSelectedSession(sessionId)
   const nodes = store.navNodes.filter((node) => node.sessionId === sessionId).sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-  selectedNavNodeId.value = nodes[0]?.id ?? null
+  selectedNavNodeId.value = (session.source === 'in_app' ? nodes[0] : nodes.find((node) => !node.parentId))?.id ?? nodes[0]?.id ?? null
   selectedConceptId.value = null
   selectedUnitId.value = null
   selectedMessageId.value = null
@@ -1174,14 +1227,32 @@ function openConversationSession(sessionId: string): void {
 function leaveConversationSession(): void {
   activeConversationSessionId.value = null
   selectedNavNodeId.value = null
+  pendingConversationBranch.value = null
   composerQuestion.value = ''
   setView('overview')
+}
+
+function closePendingConversationBranch(): void {
+  const branch = pendingConversationBranch.value
+  if (!branch) return
+  if (branch.started || activeConversationUnfinishedTask.value) {
+    notify('这条探索已经开始，不能关闭；请等待回答完成')
+    return
+  }
+  pendingConversationBranch.value = null
+  selectedNavNodeId.value = branch.parentId ?? null
+  composerFollowUp.value = null
+  composerQuestion.value = ''
+  composerPhraseId.value = ''
 }
 
 function startConversationFollowUp(): void {
   const session = activeConversationSession.value
   if (!session) return
-  const node = activeConversationNodes.value.find((item) => item.id === selectedNavNodeId.value)
+  const selected = activeConversationNodes.value.find((item) => item.id === selectedNavNodeId.value)
+  const node = (pendingConversationBranch.value?.id === selected?.id
+    ? activeConversationNodes.value.find((item) => item.id === selected?.parentId)
+    : selected)
     ?? activeConversationNodes.value.slice().sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]
   if (!node) return notify('当前会话还没有可继续的探索节点')
   composerFollowUp.value = { sessionId: session.id, nodeId: node.id, label: node.label }
@@ -1357,7 +1428,19 @@ function handleRenderedClick(event: Event, message?: Message): void {
     return
   }
   selectedNavNodeId.value = parentNode.id
-  composerFollowUp.value = { sessionId: session.id, nodeId: parentNode.id, label: parentNode.label }
+  const branchId = `pending-nav-${session.id}-${Date.now().toString(36)}`
+  pendingConversationBranch.value = {
+    id: branchId,
+    sessionId: session.id,
+    parentId: parentNode.id,
+    triggerConceptId: null,
+    label: suggestedConcept,
+    depth: parentNode.depth + 1,
+    createdAt: new Date().toISOString(),
+    started: false,
+  }
+  selectedNavNodeId.value = branchId
+  composerFollowUp.value = { sessionId: session.id, nodeId: parentNode.id, label: suggestedConcept }
   composerTopicId.value = parentNode.triggerConceptId ?? null
   composerSourceUnitIds.value = []
   composerSourceMessageIds.value = []
@@ -1478,6 +1561,7 @@ function selectTaskAnswerNode(taskId: string): void {
   if (typeof navNodeId !== 'string') return
   const node = store.navNodes.find((item) => item.id === navNodeId)
   if (!node) return
+  if (pendingConversationBranch.value) pendingConversationBranch.value = null
   activeConversationSessionId.value = node.sessionId
   store.setSelectedSession(node.sessionId)
   selectConversationNode(node)
@@ -1937,7 +2021,7 @@ onBeforeUnmount(() => {
                   <div v-if="activeConversationCurrentCard" class="conversation-card-stage" :style="{ '--stack-count': activeConversationBranchCards.length }">
                     <TransitionGroup name="branch-card" tag="div" class="conversation-card-stack">
                       <section v-for="(card, cardIndex) in activeConversationBranchCards" :key="card.node.id" class="conversation-branch-card" :class="{ current: cardIndex === activeConversationBranchCards.length - 1, ancestor: cardIndex < activeConversationBranchCards.length - 1 }" :aria-hidden="cardIndex < activeConversationBranchCards.length - 1 ? 'true' : undefined" :aria-label="`${cardIndex === activeConversationBranchCards.length - 1 ? '当前' : '祖先'}探索分支：${card.node.label}`" :style="{ '--stack-depth': activeConversationBranchCards.length - cardIndex - 1 }">
-                        <button v-if="cardIndex === activeConversationBranchCards.length - 1" class="conversation-branch-card-title" type="button" @click="selectConversationNode(card.node)"><span class="branch-card-dot" aria-hidden="true" /><strong>{{ card.node.label }}</strong><span class="branch-card-depth">第 {{ card.node.depth + 1 }} 层</span></button>
+                        <div v-if="cardIndex === activeConversationBranchCards.length - 1" class="conversation-branch-card-title current-title"><button class="branch-card-title-main" type="button" @click="selectConversationNode(card.node)"><span class="branch-card-dot" aria-hidden="true" /><strong>{{ card.node.label }}</strong><span class="branch-card-depth">第 {{ card.node.depth + 1 }} 层</span></button><button v-if="pendingConversationBranch?.id === card.node.id" class="icon-button branch-card-close" type="button" aria-label="关闭这条未开始的探索分支" title="关闭分支" @click="closePendingConversationBranch"><X :size="15" /></button></div>
                         <div v-else class="conversation-branch-card-title" aria-hidden="true"><span class="branch-card-dot" aria-hidden="true" /><strong>{{ card.node.label }}</strong><span class="branch-card-depth">第 {{ card.node.depth + 1 }} 层</span></div>
                         <article v-for="message in card.messages" :key="message.id" :data-conversation-message="message.id" class="conversation-message" :class="message.role"><div class="conversation-message-meta"><strong>{{ message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : '系统' }}</strong><span>消息 #{{ message.orderInSession + 1 }}</span></div><div class="md-body" v-html="renderedMessageContent(message.content)" @click="handleRenderedClick($event, message)" @keydown.enter.prevent="handleRenderedClick($event, message)" /></article>
                       </section>
@@ -1981,6 +2065,8 @@ onBeforeUnmount(() => {
         </section>
 
         <section v-else-if="activeView === 'sessions'" class="view-panel sessions-view"><div class="page-toolbar"><div><span class="eyebrow">SESSION ARCHIVE</span><h2>会话与探索树</h2></div><button class="button secondary-button" @click="triggerImport"><Upload :size="15" />导入更多</button></div><div class="session-list surface-section"><div v-for="session in store.activeSessions.slice(0, visibleSessionCount)" :key="session.id" class="session-block"><div class="session-row-wrap"><button class="session-row" @click="toggleSession(session.id); selectSession(session.id)"><div class="session-avatar"><History :size="16" /></div><div class="row-main"><strong>{{ session.title }}</strong><span>{{ session.platform }} · {{ session.messageCount }} 条消息 · {{ session.unitCount }} 个阅读片段</span></div><span v-if="session.localOnly" class="soft-tag">仅本地</span><ChevronDown v-if="expandedSessionIds.includes(session.id)" :size="17" /><ChevronRight v-else :size="17" /></button><button class="icon-button session-fullscreen-button" aria-label="全屏查看会话" title="全屏查看会话" @click.stop="openFullscreenSession(session.id)"><Maximize2 :size="16" /></button></div><div v-if="expandedSessionIds.includes(session.id)" class="session-expanded"><div class="session-meta-line"><span>创建于 {{ new Date(session.createdAt).toLocaleDateString('zh-CN') }}</span><label class="inline-toggle"><input type="checkbox" :checked="session.localOnly" @change="store.toggleSessionLocalOnly(session.id, ($event.target as HTMLInputElement).checked)" />仅本地（禁止 API 任务）</label><button class="text-button" @click.stop="exportSession(session)"><Download :size="14" />导出会话</button></div><div class="unit-timeline"><button v-for="unit in store.units.filter((item) => item.sessionId === session.id)" :key="unit.id" class="timeline-unit" :class="{ selected: selectedUnitId === unit.id }" @click="openUnit(unit.id)"><span class="timeline-dot" /><div><strong>{{ unit.title || '未命名阅读片段' }}</strong><span>{{ unit.summary || '暂无摘要' }}</span><small>{{ store.unitConceptNames(unit.id).join(' · ') || '未关联知识主题' }}</small></div></button><div v-if="!store.units.some((unit) => unit.sessionId === session.id)" class="empty-inline">这个会话没有整理阅读片段；原始消息、主题归属和探索树仍可直接使用。</div></div></div></div><div v-if="!store.activeSessions.length" class="empty-state session-empty-state"><History :size="30" /><strong>还没有会话</strong><span>导入历史对话后，所有会话和探索树会显示在这里。</span><button class="button secondary-button" @click="triggerImport"><Upload :size="15" />导入历史对话</button></div></div><button v-if="store.activeSessions.length > visibleSessionCount" class="text-button load-more-button" @click="visibleSessionCount += 40">加载更多会话（还有 {{ store.activeSessions.length - visibleSessionCount }} 个）</button></section>
+
+        <ReadingUnitsView v-else-if="activeView === 'units'" :units="store.units.filter((unit) => store.activeSessions.some((session) => session.id === unit.sessionId))" :sessions="store.activeSessions" :messages="store.messages" :selected-unit-id="selectedUnitId" @select="openUnit" @close="selectedUnitId = null" />
 
         <section v-else-if="activeView === 'concepts'" class="view-panel concepts-view">
           <div class="page-toolbar">
@@ -2127,8 +2213,8 @@ onBeforeUnmount(() => {
                 <section class="detail-subsection concept-page-maintenance">
                   <div class="subsection-title"><strong>建立关系</strong><span>手动写入，不调用 API</span></div>
                   <div class="relation-form">
-                    <select v-model="relationParentId" :aria-label="relationType === 'hierarchy' ? '父知识主题' : '相关关系一端'"><option value="">{{ relationType === 'hierarchy' ? '选择父知识主题' : '选择相关关系一端' }}</option><option v-for="concept in store.activeConcepts" :key="concept.id" :value="concept.id">{{ concept.name }}</option></select>
-                    <select v-model="relationChildId" :aria-label="relationType === 'hierarchy' ? '子知识主题' : '相关关系另一端'"><option value="">{{ relationType === 'hierarchy' ? '选择子知识主题' : '选择相关关系另一端' }}</option><option v-for="concept in store.activeConcepts" :key="concept.id" :value="concept.id">{{ concept.name }}</option></select>
+                    <SearchSelect v-model="relationParentId" :options="[{ value: '', label: relationType === 'hierarchy' ? '选择父知识主题' : '选择相关关系一端' }, ...store.activeConcepts.map((concept) => ({ value: concept.id, label: concept.name, hint: concept.summary }))]" :aria-label="relationType === 'hierarchy' ? '父知识主题' : '相关关系一端'" />
+                    <SearchSelect v-model="relationChildId" :options="[{ value: '', label: relationType === 'hierarchy' ? '选择子知识主题' : '选择相关关系另一端' }, ...store.activeConcepts.map((concept) => ({ value: concept.id, label: concept.name, hint: concept.summary }))]" :aria-label="relationType === 'hierarchy' ? '子知识主题' : '相关关系另一端'" />
                     <select v-model="relationType" aria-label="关系类型"><option value="hierarchy">父子</option><option value="related">相关</option></select>
                     <button class="button secondary-button" @click="createRelationFromForm"><Link2 :size="14" />建立</button>
                   </div>
@@ -2136,7 +2222,7 @@ onBeforeUnmount(() => {
 
                 <section class="detail-subsection">
                   <div class="subsection-title"><strong>合并到</strong><span>可撤销事务</span></div>
-                  <div class="merge-form"><select v-model="mergeTargetId" aria-label="合并目标"><option value="">选择目标知识主题</option><option v-for="concept in store.activeConcepts.filter((item) => item.id !== selectedConcept?.id)" :key="concept.id" :value="concept.id">{{ concept.name }}</option></select><button class="button danger-button" :disabled="!mergeTargetId" @click="mergeSelectedConcept"><GitBranch :size="14" />合并</button></div>
+<div class="merge-form"><SearchSelect v-model="mergeTargetId" :options="[{ value: '', label: '选择目标知识主题' }, ...store.activeConcepts.filter((item) => item.id !== selectedConcept?.id).map((concept) => ({ value: concept.id, label: concept.name, hint: concept.summary }))]" aria-label="合并目标" /><button class="button danger-button" :disabled="!mergeTargetId" @click="mergeSelectedConcept"><GitBranch :size="14" />合并</button></div>
                 </section>
               </template>
               <div v-else class="empty-detail"><Layers3 :size="30" /><strong>选择一个知识主题</strong><span>查看它的父子层级、相关主题、来源会话和消息证据。</span></div>
@@ -2180,6 +2266,10 @@ onBeforeUnmount(() => {
           <span v-else class="status-label label-success">已应用</span>
         </article>
       </div>
+      <div v-else-if="selectedTask?.type === 'maintenance' && maintenanceOverallReason" class="maintenance-results">
+        <div class="subsection-title"><strong>模型判断</strong></div>
+        <p class="maintenance-overall-reason">{{ maintenanceOverallReason }}</p>
+      </div>
       <div v-if="(activeView === 'concepts' || activeView === 'graph') && selectedConcept && selectedConceptRelations.length" class="maintenance-results">
         <div class="subsection-title"><strong>关系审核</strong><span>{{ selectedConceptRelations.filter((relation) => relation.status === 'proposed').length }} 条待确认</span></div>
         <article v-for="relation in selectedConceptRelations" :key="relation.id" class="maintenance-relation-row">
@@ -2212,7 +2302,7 @@ onBeforeUnmount(() => {
           <p class="field-hint">摘要用于目录和上下文导航；说明 / 笔记用于记录长期理解。</p>
           <div class="concept-editor-actions"><button class="button primary-button" @click="saveConcept"><Check :size="14" />保存主题</button><button class="button ghost-button" @click="resetConceptDraft">撤销修改</button></div>
         </section>
-        <div class="drawer-actions concept-drawer-actions"><button class="button danger-button" @click="archiveSelectedConcept"><Archive :size="14" />归档主题</button><select v-model="mergeTargetId" aria-label="合并到另一个知识主题"><option value="">选择合并目标</option><option v-for="concept in store.activeConcepts.filter((item) => item.id !== selectedConcept?.id)" :key="concept.id" :value="concept.id">{{ concept.name }}</option></select><button class="button secondary-button" :disabled="!mergeTargetId" @click="mergeSelectedConcept"><GitBranch :size="14" />合并</button></div>
+<div class="drawer-actions concept-drawer-actions"><button class="button danger-button" @click="archiveSelectedConcept"><Archive :size="14" />归档主题</button><SearchSelect v-model="mergeTargetId" :options="[{ value: '', label: '选择合并目标' }, ...store.activeConcepts.filter((item) => item.id !== selectedConcept?.id).map((concept) => ({ value: concept.id, label: concept.name, hint: concept.summary }))]" aria-label="合并到另一个知识主题" /><button class="button secondary-button" :disabled="!mergeTargetId" @click="mergeSelectedConcept"><GitBranch :size="14" />合并</button></div>
         <section class="drawer-section concept-relations-section">
           <div class="subsection-title"><strong>父主题</strong><span>{{ selectedConceptParents.length }} 个，可多选</span></div>
           <div class="concept-relation-list">
@@ -2259,7 +2349,7 @@ onBeforeUnmount(() => {
       <section class="composer-modal" role="dialog" aria-modal="true" aria-labelledby="composer-title">
         <div class="modal-header"><div><span class="eyebrow">{{ composerFollowUp ? 'FOLLOW-UP' : 'NEW CONVERSATION' }}</span><h2 id="composer-title">{{ composerFollowUp ? `继续追问：${composerFollowUp.label}` : '发起新对话' }}</h2></div><button class="icon-button" aria-label="关闭新对话" title="关闭" @click="composerOpen = false"><X :size="17" /></button></div>
         <div class="composer-fields">
-          <label>围绕知识主题<select v-model="composerTopicId"><option :value="null">不指定主题</option><option v-for="concept in store.activeConcepts" :key="concept.id" :value="concept.id">{{ concept.name }}</option></select></label>
+          <label>围绕知识主题<SearchSelect v-model="composerTopicId" :options="[{ value: null, label: '不指定主题' }, ...store.activeConcepts.map((concept) => ({ value: concept.id, label: concept.name, hint: concept.summary }))]" aria-label="围绕知识主题" /></label>
           <label>快捷短语<select v-model="composerPhraseId" @change="applyComposerPhrase"><option value="">选择一个快捷短语</option><option v-for="phrase in store.quickPhrases" :key="phrase.id" :value="phrase.id">{{ phrase.template }}</option></select></label>
           <label class="composer-question">问题<textarea v-model="composerQuestion" rows="5" placeholder="输入你想继续探索的问题"></textarea></label>
           <label class="toggle-row"><span><strong>附带完整原文</strong><small>关闭时只发送标题、摘要和知识主题</small></span><input v-model="composerIncludeFull" type="checkbox" /></label>

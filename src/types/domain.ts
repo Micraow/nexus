@@ -216,6 +216,7 @@ export type MaintenanceSuggestionType =
   | 'remove_alias'
   | 'membership_relink'
   | 'unit_relink'
+  | 'unit_create'
   | 'unit_revision'
   | 'create_concept'
   | 'update_concept'
@@ -250,6 +251,9 @@ export interface MaintenanceSuggestion {
   new_target_concept_id?: string
   new_relation_type?: RelationType
   unit_id?: string
+  /** Session and source messages for maintenance-created reading fragments. */
+  session_id?: string
+  message_ids?: string[]
   /** Many-to-many replacement/addition set for a unit_relink suggestion. */
   concept_ids?: string[]
   /** Replace or append direct Session/Message/Unit memberships. */
@@ -326,6 +330,8 @@ export interface GraphNode {
   rootIds?: string[]
   /** Whether this Concept has at least one active hierarchy child. */
   hasChildren?: boolean
+  /** Number of direct hierarchy children (used for graph sizing). */
+  childCount?: number
   /** Whether this Concept is currently in the expansion set. */
   expanded?: boolean
 }
@@ -377,6 +383,8 @@ export interface AppConfig {
     concurrency: number
     conceptLimit: number
     tokenBudget: number
+    /** Request OpenAI-compatible streaming responses for interactive tasks. */
+    stream?: boolean
     providers: ProviderConfig[]
     taskOverrides: Record<string, string>
   }

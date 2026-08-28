@@ -49,7 +49,7 @@ export type { GraphViewOptions } from '@/types/domain'
 type Row = Record<string, unknown>
 
 const DEFAULT_CONFIG: AppConfig = {
-  llm: { mode: null, defaultProvider: null, concurrency: DEFAULT_API_CONCURRENCY, conceptLimit: DEFAULT_CONCEPT_LIMIT, tokenBudget: DEFAULT_TOKEN_BUDGET, providers: [], taskOverrides: {} },
+  llm: { mode: null, defaultProvider: null, concurrency: DEFAULT_API_CONCURRENCY, conceptLimit: DEFAULT_CONCEPT_LIMIT, tokenBudget: DEFAULT_TOKEN_BUDGET, stream: false, providers: [], taskOverrides: {} },
   prompts: { overrideDir: '' },
   ui: { theme: 'system', reducedMotion: false, fontFamily: 'system-sans', fontSize: 15, graph: { showUnits: false, showMessages: false, showProposed: false, showRetainedSessions: false } },
   storage: { databasePath: '' },
@@ -422,9 +422,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     // so the next render remains a valid roots/expanded projection.
     const input = graphInputFor(options)
     const visibleConceptIds = resolveVisibleConceptIds(input.concepts, input.relations, input).visibleIds
-    const respectsCurrentProjection = snapshot.nodes
-      .filter((node) => node.type === 'concept')
-      .every((node) => visibleConceptIds.has(node.refId))
+    const snapshotConceptIds = new Set(snapshot.nodes.filter((node) => node.type === 'concept').map((node) => node.refId))
+    // A worker response may be structurally safe yet stale (for example,
+    // after promoting a child to a root). Require every currently visible
+    // Concept root/branch node before caching it; otherwise the UI can keep
+    // serving an old subset indefinitely while waiting for another render.
+    const respectsCurrentProjection = snapshotConceptIds.size === visibleConceptIds.size
+      && [...snapshotConceptIds].every((id) => visibleConceptIds.has(id))
     const safeSnapshot = respectsCurrentProjection && graphSnapshotIsProgressiveCompatible(snapshot, options)
       ? snapshot
       : buildGraph(input)
@@ -443,7 +447,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (snapshot.revision !== graphRevision.value) return
       const candidateOptions = graphSnapshotOptions.get(key)
       if (!candidateOptions || !graphViewFallbackIsCompatible(candidateOptions, options)) return
-      if (!snapshot.nodes.filter((node) => node.type === 'concept').every((node) => visibleConceptIds.has(node.refId))) return
+      const candidateConceptIds = new Set(snapshot.nodes.filter((node) => node.type === 'concept').map((node) => node.refId))
+      if (candidateConceptIds.size !== visibleConceptIds.size || [...candidateConceptIds].some((id) => !visibleConceptIds.has(id))) return
       if (!graphSnapshotIsProgressiveCompatible(snapshot, options)) return
       const expansionCount = candidateOptions.expandedConceptIds?.length ?? 0
       if (expansionCount > bestExpansionCount) {
@@ -1786,6 +1791,32 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         if (!suggestion.title?.trim() && !suggestion.summary?.trim()) errors.push(`suggestions.${index} 至少需要标题或摘要`)
         errors.push(...validateUnitText(suggestion.title, suggestion.summary).map((issue) => `suggestions.${index}.${issue.path}：${issue.message}`))
       }
+      if (suggestion.type === 'unit_create') {
+        const sessionId = suggestion.session_id
+        const session = sessionId ? activeSessions.value.find((item) => item.id === sessionId) : undefined
+        if (!session) errors.push(`suggestions.${index} 的 Session 不存在或已归档`)
+        if (!Array.isArray(suggestion.message_ids) || suggestion.message_ids.length === 0) errors.push(`suggestions.${index}.message_ids 必须至少包含一条消息`)
+        else {
+          const seen = new Set<string>()
+          suggestion.message_ids.forEach((messageId) => {
+            if (typeof messageId !== 'string' || !messageId.trim()) errors.push(`suggestions.${index}.message_ids 必须只包含非空字符串`)
+            else if (seen.has(messageId)) errors.push(`suggestions.${index}.message_ids 不能重复`)
+            else {
+              seen.add(messageId)
+              const message = messages.value.find((item) => item.id === messageId)
+              if (!message) errors.push(`suggestions.${index} 的消息 ${messageId} 不存在`)
+              else if (sessionId && message.sessionId !== sessionId) errors.push(`suggestions.${index} 的消息必须属于同一 Session`)
+              else if (message.unitId) errors.push(`suggestions.${index} 的消息 ${messageId} 已属于阅读片段`)
+            }
+          })
+        }
+        if (suggestion.title != null) errors.push(...validateUnitText(suggestion.title, suggestion.summary).filter((issue) => issue.path === 'title').map((issue) => `suggestions.${index}.${issue.path}：${issue.message}`))
+        if (suggestion.summary != null) errors.push(...validateUnitText(suggestion.title, suggestion.summary).filter((issue) => issue.path === 'summary').map((issue) => `suggestions.${index}.${issue.path}：${issue.message}`))
+        if (suggestion.concept_ids !== undefined) {
+          if (!Array.isArray(suggestion.concept_ids)) errors.push(`suggestions.${index}.concept_ids 必须是数组`)
+          else errors.push(...validateConceptIdList(suggestion.concept_ids, activeConcepts.value.map((concept) => concept.id)).map((issue) => `suggestions.${index}.${issue.path}: ${issue.message}`))
+        }
+      }
       if (suggestion.type === 'create_concept') {
         if (!suggestion.name?.trim()) errors.push(`suggestions.${index}.name 不能为空`)
         else if (suggestion.name.trim().length > 120) errors.push(`suggestions.${index}.name 不能超过 120 个字符`)
@@ -1944,6 +1975,22 @@ export const useWorkspaceStore = defineStore('workspace', () => {
             db.run('UPDATE messages SET metadata = ? WHERE id = ?', [Object.keys(metadata).length ? JSON.stringify(metadata) : null, targetId])
             db.run('UPDATE sessions SET revision = revision + 1, updated_at = ? WHERE id = ?', [now, text(row.session_id)])
           }
+        } else if (suggestion.type === 'unit_create') {
+          const sessionId = suggestion.session_id
+          const messageIds = [...new Set(suggestion.message_ids ?? [])]
+          if (!sessionId || messageIds.length === 0) throw new Error('创建阅读片段需要 Session 和消息')
+          const session = sessions.value.find((item) => item.id === sessionId)
+          if (!session) throw new Error('Session 不存在')
+          const selectedMessages = messageIds.map((messageId) => messages.value.find((message) => message.id === messageId))
+          if (selectedMessages.some((message) => !message || message.sessionId !== sessionId || message.unitId)) throw new Error('消息不存在、跨 Session 或已属于阅读片段')
+          const maxOrder = units.value.filter((unit) => unit.sessionId === sessionId).reduce((max, unit) => Math.max(max, unit.orderInSession), -1)
+          const unitId = createId('unit')
+          db.run('INSERT INTO knowledge_units(id, session_id, title, summary, order_in_session, status, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)', [unitId, sessionId, suggestion.title?.trim() || null, suggestion.summary?.trim() || null, maxOrder + 1, 'ready', now, now])
+          messageIds.forEach((messageId) => db.run('UPDATE messages SET unit_id = ? WHERE id = ?', [unitId, messageId]))
+          ;(suggestion.concept_ids ?? []).forEach((conceptId) => {
+            db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [unitId, conceptId, 'maintenance', now])
+          })
+          db.run('UPDATE sessions SET unit_count = (SELECT COUNT(*) FROM knowledge_units WHERE session_id = ?), revision = revision + 1, updated_at = ? WHERE id = ?', [sessionId, now, sessionId])
         } else if (suggestion.type === 'unit_relink') {
           // This is a replacement operation, so an empty list intentionally
           // clears stale memberships instead of leaving old links behind.
@@ -2462,8 +2509,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
             parentDepth = -1
           }
         }
-        const branchNodeId = createId('nav')
-        db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [branchNodeId, targetId, parentNodeId, meta.topicId ?? null, normalizedUnits[0]?.title || '对话回答', parentDepth + 1, now])
+        // The opening question already owns the session root. Keep its first
+        // answer on that same card; only follow-up questions create a child
+        // branch. This prevents the initial Q&A from being split into two
+        // apparently duplicated cards in the conversation view.
+        const branchNodeId = followUp ? createId('nav') : parentNodeId
+        if (followUp) {
+          db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [branchNodeId, targetId, parentNodeId, meta.topicId ?? null, normalizedUnits[0]?.title || '对话回答', parentDepth + 1, now])
+        }
         const sessionMessages = messages.value.filter((message) => message.sessionId === targetId).sort((left, right) => left.orderInSession - right.orderInSession)
         const assistantOrder = sessionMessages.length ? sessionMessages[sessionMessages.length - 1].orderInSession + 1 : 1
         const assistantMessageId = plannedAssistantMessageId
@@ -2580,7 +2633,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const targetId = task.inputRevision.split(':')[0]
     const ownerUnit = units.value.find((item) => item.id === targetId)
     const session = sessions.value.find((item) => item.id === (ownerUnit?.sessionId ?? targetId))
-    if (session?.localOnly) return { ok: false, error: '该会话已标记为仅本地，禁止 API 任务；可以改用 Prompt 粘贴模式' }
     executingTaskIds.add(taskId)
     try {
       mutate(() => db.run("UPDATE llm_tasks SET status = 'running', updated_at = ? WHERE id = ? AND status = 'pending'", [isoNow(), taskId]))
@@ -2605,6 +2657,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
             temperature: 0,
             messages: [{ role: 'user', content: task.prompt }],
           }
+          if (config.value.llm.stream && task.type === 'conversation') requestBody.stream = true
           // Expose maintenance operations as OpenAI-compatible functions when
           // the provider supports tool calling. The resulting calls are still
           // converted into suggestions and pass the same local validator.
@@ -2629,13 +2682,61 @@ export const useWorkspaceStore = defineStore('workspace', () => {
             const retryable = response.status === 408 || response.status === 429 || response.status >= 500
             throw Object.assign(new Error(`Provider 返回 HTTP ${response.status}`), { retryable })
           }
-          const payload = await response.json() as {
+          let payload: {
             choices?: Array<{
               message?: {
                 content?: string | null
                 tool_calls?: Array<{ function?: { name?: string; arguments?: string | Record<string, unknown> } }>
               }
             }>
+          }
+          const isEventStream = response.headers?.get?.('content-type')?.toLocaleLowerCase().includes('text/event-stream') ?? false
+          if (config.value.llm.stream && task.type === 'conversation' && response.body && isEventStream) {
+            const reader = response.body.getReader()
+            const decoder = new TextDecoder()
+            let buffer = ''
+            let streamed = ''
+            for (;;) {
+              const chunk = await reader.read()
+              if (chunk.done) break
+              buffer += decoder.decode(chunk.value, { stream: true })
+              const lines = buffer.split(/\r?\n/)
+              buffer = lines.pop() ?? ''
+              for (const line of lines) {
+                const data = line.trim().replace(/^data:\s*/, '')
+                if (!data || data === '[DONE]') continue
+                try {
+                  const delta = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string | null } }> }
+                  const text = delta.choices?.[0]?.delta?.content
+                  if (typeof text === 'string') streamed += text
+                } catch {
+                  // Providers occasionally split a JSON event across chunks;
+                  // keep it in the next buffer and continue collecting output.
+                }
+              }
+            }
+            // Some providers omit the final newline before [DONE]. Parse any
+            // complete event left in the buffer as well.
+            const tail = buffer.trim().replace(/^data:\s*/, '')
+            if (tail && tail !== '[DONE]') {
+              try {
+                const delta = JSON.parse(tail) as { choices?: Array<{ delta?: { content?: string | null } }> }
+                const text = delta.choices?.[0]?.delta?.content
+                if (typeof text === 'string') streamed += text
+              } catch {
+                // Ignore an incomplete trailing SSE frame.
+              }
+            }
+            payload = { choices: [{ message: { content: streamed } }] }
+          } else {
+            payload = await response.json() as {
+              choices?: Array<{
+                message?: {
+                  content?: string | null
+                  tool_calls?: Array<{ function?: { name?: string; arguments?: string | Record<string, unknown> } }>
+                }
+              }>
+            }
           }
           const message = payload.choices?.[0]?.message
           let content = typeof message?.content === 'string' ? message.content : ''
