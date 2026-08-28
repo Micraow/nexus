@@ -358,12 +358,13 @@ textarea { resize: vertical; }
 .unit-detail { padding: 21px; }
 .unit-summary-copy { margin: 17px 0; padding: 13px; color: var(--muted); background: var(--surface-soft); border-radius: 6px; line-height: 1.6; }
 .search-select { position: relative; min-width: 0; }
-.search-select-trigger { width: 100%; min-height: 36px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 9px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; text-align: left; }
+.search-select-trigger { width: 100%; min-height: 44px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 10px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; text-align: left; }
+.search-select-trigger:focus-visible, .search-select-input input:focus-visible, .search-select-option:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .search-select-trigger .placeholder { color: var(--muted); }
 .search-select-popover { position: absolute; z-index: 80; top: calc(100% + 4px); left: 0; right: 0; max-height: 270px; overflow: auto; padding: 5px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 7px; box-shadow: var(--shadow-md); }
 .search-select-input { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 6px; padding: 5px; background: var(--surface); }
-.search-select-input input { width: 100%; height: 30px; padding: 0 7px; border-radius: 5px; }
-.search-select-option { width: 100%; min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; color: var(--text); background: transparent; border-radius: 5px; text-align: left; }
+.search-select-input input { width: 100%; height: 40px; padding: 0 9px; border-radius: 5px; }
+.search-select-option { width: 100%; min-height: 44px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 9px; color: var(--text); background: transparent; border-radius: 5px; text-align: left; }
 .search-select-option:hover, .search-select-option.selected { background: var(--primary-soft); }
 .search-select-option span { min-width: 0; display: grid; gap: 2px; }
 .search-select-option strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(12px * var(--app-font-scale)); }
