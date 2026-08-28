@@ -399,8 +399,20 @@ function render(): void {
       seedPositions.set(node.id, { x: node.x, y: node.y })
     }
   })
+  // Seed roots before children are mapped. A first-click expansion can happen
+  // before the initial force simulation has produced a persisted coordinate;
+  // in that case an unseeded child would otherwise default to the canvas
+  // center and all siblings could fly into the same corner.
+  const rootConcepts = snapshot.nodes.filter((node) => node.type === 'concept' && !(node.parentIds?.length || node.parentId))
+  const rootCount = rootConcepts.length
+  rootConcepts.forEach((node, rootIndex) => {
+    if (seedPositions.has(node.id)) return
+    const angle = rootCount > 1 ? (rootIndex / rootCount) * Math.PI * 2 - Math.PI / 2 : 0
+    const radius = rootCount > 1 ? Math.min(width, height) * 0.24 : 0
+    seedPositions.set(node.id, { x: width / 2 + Math.cos(angle) * radius, y: height / 2 + Math.sin(angle) * radius })
+  })
   const nodes = snapshot.nodes.map((node, index) => {
-    const position = nodePositions.get(node.id)
+    const position = seedPositions.get(node.id)
     const copy = { ...node } as GraphNode & d3.SimulationNodeDatum
     if (position) {
       copy.x = position.x
