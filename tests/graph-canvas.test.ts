@@ -25,8 +25,21 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 
+function mountSnapshot(snapshot: GraphSnapshot, listeners: Record<string, (...args: unknown[]) => void> = {}, props: Record<string, unknown> = {}): HTMLElement {
+  const target = document.createElement('div')
+  Object.defineProperties(target, {
+    clientWidth: { configurable: true, value: 800 },
+    clientHeight: { configurable: true, value: 600 },
+  })
+  document.body.appendChild(target)
+  const app = createApp(GraphCanvas, { snapshot, reducedMotion: true, ...props, ...listeners })
+  mounted.push(app)
+  app.mount(target)
+  return target
+}
+
 function mountGraph(listeners: Record<string, (...args: unknown[]) => void> = {}, hasChildren = true): HTMLElement {
-  const snapshot: GraphSnapshot = {
+  return mountSnapshot({
     revision: 1,
     nodes: [{
       id: 'concept:root',
@@ -39,17 +52,7 @@ function mountGraph(listeners: Record<string, (...args: unknown[]) => void> = {}
       expanded: false,
     }],
     edges: [],
-  }
-  const target = document.createElement('div')
-  Object.defineProperties(target, {
-    clientWidth: { configurable: true, value: 800 },
-    clientHeight: { configurable: true, value: 600 },
-  })
-  document.body.appendChild(target)
-  const app = createApp(GraphCanvas, { snapshot, reducedMotion: true, ...listeners })
-  mounted.push(app)
-  app.mount(target)
-  return target
+  }, listeners)
 }
 
 describe('GraphCanvas progressive disclosure', () => {
@@ -93,5 +96,23 @@ describe('GraphCanvas progressive disclosure', () => {
     node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     expect(selectConcept).toHaveBeenCalledTimes(2)
     expect(toggleConcept).not.toHaveBeenCalled()
+  })
+
+  it('filters a complete hierarchy snapshot to roots until a parent is expanded', async () => {
+    const snapshot: GraphSnapshot = {
+      revision: 2,
+      nodes: [
+        { id: 'concept:root', type: 'concept', refId: 'root', label: '根主题', degree: 1, unitCount: 0, depth: 0, parentIds: [], hasChildren: true },
+        { id: 'concept:child', type: 'concept', refId: 'child', label: '子主题', degree: 1, unitCount: 0, depth: 1, parentIds: ['root'], hasChildren: false },
+      ],
+      edges: [{ id: 'edge:h', source: 'concept:root', target: 'concept:child', type: 'hierarchy', weight: 1, status: 'confirmed' }],
+    }
+    const collapsed = mountSnapshot(snapshot)
+    await nextTick()
+    expect([...collapsed.querySelectorAll<SVGGElement>('.graph-node')].map((node) => node.dataset.refId)).toEqual(['root'])
+
+    const expanded = mountSnapshot(snapshot, {}, { expandedConceptIds: ['root'] })
+    await nextTick()
+    expect([...expanded.querySelectorAll<SVGGElement>('.graph-node')].map((node) => node.dataset.refId).sort()).toEqual(['child', 'root'])
   })
 })

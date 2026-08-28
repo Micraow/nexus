@@ -103,18 +103,21 @@ const palette: Record<string, string> = {
 
 function edgeColor(edge: GraphEdge): string {
   if (edge.type === 'hierarchy') return '#2c6e9e'
-  if (edge.type === 'related') return '#aeb9c1'
-  if (edge.type === 'conversation') return '#b9b5aa'
-  if (edge.type === 'association') return '#c7d0d6'
-  if (edge.type === 'co_occurrence') return '#9daab4'
-  return '#aeb9c1'
+  if (edge.type === 'related') return '#c2cbd1'
+  if (edge.type === 'conversation') return '#c8c5bd'
+  if (edge.type === 'association') return '#d0d7dc'
+  if (edge.type === 'co_occurrence') return '#b8c2c9'
+  return '#c2cbd1'
 }
 
 function edgeWidth(edge: GraphEdge): number {
-  if (edge.type === 'co_occurrence') return Math.min(2.5, 0.65 + Math.log2(edge.weight + 1) * 0.45)
+  // Hierarchy is the visual backbone. Co-occurrence still communicates its
+  // Session count, but remains thinner than a parent-child edge.
+  if (edge.type === 'co_occurrence') return Math.min(1.45, 0.48 + Math.log2(edge.weight + 1) * 0.3)
   if (edge.type === 'hierarchy') return 1.65
-  if (edge.type === 'manual') return 0.7
-  return edge.type === 'related' ? 0.55 : 0.5
+  if (edge.type === 'manual') return 0.45
+  if (edge.type === 'related') return 0.4
+  return 0.42
 }
 
 function mapValue<T>(map: Record<string, T> | Map<string, T> | undefined, key: string): T | undefined {
@@ -151,15 +154,85 @@ function configuredMaxLevel(): number | undefined {
  */
 function visibleSnapshot(): { nodes: GraphNode[]; edges: GraphEdge[] } {
   const maxLevel = configuredMaxLevel()
-  if (maxLevel == null) return { nodes: props.snapshot.nodes, edges: props.snapshot.edges }
-  const nodes = props.snapshot.nodes.filter((node) => {
-    const level = nodeLevel(node)
-    return level == null || level <= maxLevel
+  let nodes = props.snapshot.nodes
+  let edges = props.snapshot.edges
+  if (maxLevel != null) {
+    nodes = nodes.filter((node) => {
+      const level = nodeLevel(node)
+      return level == null || level <= maxLevel
+    })
+  }
+
+  // A stale Worker/legacy snapshot can contain the complete Concept graph.
+  // Re-apply the disclosure contract at the final rendering boundary so a
+  // response cannot flash descendants before the store's compatibility guard
+  // has rebuilt it. Snapshots without hierarchy metadata remain compatible
+  // with older callers and are left untouched.
+  const conceptNodes = nodes.filter((node) => node.type === 'concept')
+  const conceptIds = new Set(conceptNodes.map((node) => node.refId))
+  const parentsByConcept = new Map<string, Set<string>>()
+  conceptNodes.forEach((node) => {
+    const parentIds = (node.parentIds ?? (node.parentId ? [node.parentId] : []))
+      .map((id) => id.startsWith('concept:') ? id.slice('concept:'.length) : id)
+      .filter((id) => conceptIds.has(id) && id !== node.refId)
+    if (parentIds.length) parentsByConcept.set(node.refId, new Set(parentIds))
   })
+  edges.forEach((edge) => {
+    if (edge.type !== 'hierarchy') return
+    const source = edge.source.startsWith('concept:') ? edge.source.slice('concept:'.length) : edge.source
+    const target = edge.target.startsWith('concept:') ? edge.target.slice('concept:'.length) : edge.target
+    if (!conceptIds.has(source) || !conceptIds.has(target) || source === target) return
+    const parents = parentsByConcept.get(target) ?? new Set<string>()
+    parents.add(source)
+    parentsByConcept.set(target, parents)
+  })
+  const hasHierarchyMetadata = conceptNodes.some((node) => node.depth != null || node.parentId != null || (node.parentIds?.length ?? 0) > 0)
+    || edges.some((edge) => edge.type === 'hierarchy')
+  if (hasHierarchyMetadata && conceptNodes.length) {
+    const roots = conceptNodes
+      .filter((node) => node.depth != null
+        ? node.depth === 0
+        : !(parentsByConcept.get(node.refId)?.size))
+      .map((node) => node.refId)
+    // Keep malformed/cyclic snapshots inspectable, matching the service
+    // resolver's cycle fallback instead of rendering an empty graph.
+    const rootIds = roots.length ? roots : conceptNodes.map((node) => node.refId)
+    const expanded = new Set((props.expandedConceptIds ?? []).map((id) => id.startsWith('concept:') ? id.slice('concept:'.length) : id))
+    // An explicitly expanded descendant requires its ancestor path to be
+    // visible before its own children can be considered.
+    ;[...expanded].forEach((id) => {
+      const queue = [id]
+      const visited = new Set<string>()
+      for (let index = 0; index < queue.length; index += 1) {
+        const current = queue[index]
+        if (visited.has(current)) continue
+        visited.add(current)
+        ;(parentsByConcept.get(current) ?? new Set<string>()).forEach((parentId) => {
+          expanded.add(parentId)
+          queue.push(parentId)
+        })
+      }
+    })
+    const visibleConceptIds = new Set<string>()
+    const queue = rootIds.slice()
+    for (let index = 0; index < queue.length; index += 1) {
+      const parentId = queue[index]
+      if (visibleConceptIds.has(parentId)) continue
+      visibleConceptIds.add(parentId)
+      if (!expanded.has(parentId)) continue
+      parentsByConcept.forEach((parentIds, childId) => {
+        if (parentIds.has(parentId) && !visibleConceptIds.has(childId)) queue.push(childId)
+      })
+    }
+    const visibleNodeIds = new Set(nodes.filter((node) => node.type !== 'concept' || visibleConceptIds.has(node.refId)).map((node) => node.id))
+    nodes = nodes.filter((node) => visibleNodeIds.has(node.id))
+    edges = edges.filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target))
+  }
+
   const visibleIds = new Set(nodes.map((node) => node.id))
   return {
     nodes,
-    edges: props.snapshot.edges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target)),
+    edges: edges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target)),
   }
 }
 
@@ -529,19 +602,19 @@ function render(): void {
     // the result from becoming a runaway spring system.
     .distance((edge) => {
       if (edge.type === 'hierarchy') return 148
-      if (edge.type === 'conversation') return 72
-      if (edge.type === 'association') return 96
-      if (edge.type === 'related') return 126
-      if (edge.type === 'co_occurrence') return 132
-      return 126
+      if (edge.type === 'conversation') return 86
+      if (edge.type === 'association') return 112
+      if (edge.type === 'related') return 176
+      if (edge.type === 'co_occurrence') return 166
+      return 150
     })
     .strength((edge) => {
-      if (edge.type === 'hierarchy') return 0.92
-      if (edge.type === 'conversation') return 0.16
-      if (edge.type === 'association') return 0.12
-      if (edge.type === 'related') return 0.1
-      if (edge.type === 'manual') return 0.14
-      return Math.min(0.24, 0.08 + edge.weight * 0.025)
+      if (edge.type === 'hierarchy') return 0.94
+      if (edge.type === 'conversation') return 0.08
+      if (edge.type === 'association') return 0.07
+      if (edge.type === 'related') return 0.035
+      if (edge.type === 'manual') return 0.06
+      return Math.min(0.12, 0.035 + edge.weight * 0.012)
     })
     .iterations(largeGraph ? 1 : 2)
   const chargeForce = d3
