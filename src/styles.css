@@ -379,17 +379,20 @@ textarea { resize: vertical; }
 
 @media (max-width: 900px) { .units-layout { grid-template-columns: 1fr; } .unit-list, .unit-detail { min-height: auto; } }
 
-.maintenance-launcher { position: fixed; z-index: 23; right: 24px; bottom: 24px; box-shadow: 0 10px 30px rgba(25, 48, 65, .15); }
+.maintenance-entry-button { flex: 0 0 auto; }
 .maintenance-panel { position: fixed; z-index: 24; right: 24px; bottom: 24px; width: min(560px, calc(100vw - 48px)); max-height: min(720px, calc(100vh - 48px)); overflow: auto; padding: 18px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: 0 18px 48px rgba(25, 48, 65, .18); animation: drawer-enter var(--motion) ease-out both; }
 .maintenance-panel-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding-bottom: 13px; border-bottom: 1px solid var(--line); }
 .maintenance-panel-header h3 { margin: 4px 0 0; font-size: calc(17px * var(--app-font-scale)); }
 .maintenance-panel-actions { display: flex; align-items: center; gap: 7px; }
+.maintenance-scope-note { display: block; margin-top: 4px; color: var(--muted); font-size: calc(11px * var(--app-font-scale)); line-height: 1.45; }
 .maintenance-scope { display: flex; align-items: center; gap: 12px; padding: 13px 0; border-bottom: 1px solid var(--line); }
+.maintenance-global-scope { background: var(--primary-soft); margin: 13px -10px 0; padding: 13px 10px; border-radius: 7px; }
 .maintenance-scope-copy { min-width: 0; flex: 1; display: grid; gap: 3px; }
 .maintenance-scope-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(12px * var(--app-font-scale)); }
 .maintenance-scope-copy span { color: var(--muted); font-size: calc(11px * var(--app-font-scale)); line-height: 1.45; }
 .maintenance-results { display: grid; gap: 8px; margin-top: 15px; }
 .maintenance-task-results { margin-top: var(--workspace-section-gap); padding: var(--workspace-section-padding); }
+.maintenance-task-heading-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .maintenance-suggestion { display: flex; align-items: flex-start; gap: 10px; padding: 11px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 6px; }
 .maintenance-suggestion.applied { opacity: .68; }
 .maintenance-suggestion-main { min-width: 0; flex: 1; display: grid; gap: 6px; }
@@ -423,7 +426,6 @@ textarea { resize: vertical; }
 .operation-log-row span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(11px * var(--app-font-scale)); }
 .operation-log-row small { flex: 0 0 auto; color: var(--muted); font-size: calc(10px * var(--app-font-scale)); }
 @media (max-width: 600px) {
-  .maintenance-launcher { right: 14px; bottom: 14px; }
   .maintenance-panel { right: 14px; bottom: 14px; width: calc(100vw - 28px); max-height: calc(100vh - 28px); padding: 14px; }
   .maintenance-scope { align-items: flex-start; flex-direction: column; }
   .maintenance-scope .button { width: 100%; }
