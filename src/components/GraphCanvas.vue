@@ -97,7 +97,8 @@ const nodePositions = new Map<string, { x: number; y: number }>()
 let renderGeneration = 0
 let fitTimer: number | null = null
 let resizeTimer: number | null = null
-let topologyAnchorTimer: number | null = null
+let paintFrame: number | null = null
+let renderedSize: { width: number; height: number } | null = null
 let draggingNodeId: string | null = null
 let dragStartPoint: { x: number; y: number } | null = null
 let dragMoved = false
@@ -324,17 +325,46 @@ function mapSignature<T>(map: Record<string, T> | Map<string, T> | undefined): s
     .join('|')
 }
 
+function canvasSize(): { width: number; height: number } {
+  return {
+    width: Math.max(host.value?.clientWidth ?? 0, 480),
+    height: Math.max(host.value?.clientHeight ?? 0, 460),
+  }
+}
+
+function scheduleResizeRender(): void {
+  const nextSize = canvasSize()
+  if (renderedSize && nextSize.width === renderedSize.width && nextSize.height === renderedSize.height) return
+  if (resizeTimer != null) window.clearTimeout(resizeTimer)
+  resizeTimer = window.setTimeout(() => {
+    resizeTimer = null
+    const settledSize = canvasSize()
+    if (renderedSize && settledSize.width === renderedSize.width && settledSize.height === renderedSize.height) return
+    render()
+  }, 120)
+}
+
 function render(): void {
   if (!svg.value || !host.value) return
   draggingNodeId = null
   const generation = ++renderGeneration
+  // A repeated render must first retire all work owned by the previous DOM.
+  // Otherwise ResizeObserver bursts can leave several simulations scheduling
+  // paint frames against detached selections, which presents as persistent
+  // flicker even when the graph topology itself is unchanged.
+  simulation?.stop()
+  simulation = null
+  if (paintFrame != null) {
+    cancelAnimationFrame(paintFrame)
+    paintFrame = null
+  }
   if (fitTimer != null) {
     window.clearTimeout(fitTimer)
     fitTimer = null
   }
   const element = svg.value
-  const width = Math.max(host.value.clientWidth, 480)
-  const height = Math.max(host.value.clientHeight, 460)
+  const { width, height } = canvasSize()
+  renderedSize = { width, height }
   const root = d3.select(element)
   const snapshot = visibleSnapshot()
   const nodeSignature = snapshot.nodes.map((node) => node.id).join('|')
@@ -394,7 +424,10 @@ function render(): void {
     // the final position through the force simulation.
     if (!anchorByNode.has(edge.target)) anchorByNode.set(edge.target, edge.source)
   })
-  const hasPreviousLayout = nodePositions.size > 0
+  // A user can expand a root before the first simulation tick has populated
+  // nodePositions. The previous rendered node set still constitutes a valid
+  // layout because deterministic seeds were already painted synchronously.
+  const hasPreviousLayout = previousVisibleNodeIds.size > 0
   const seedPositions = new Map(nodePositions)
   snapshot.nodes.forEach((node) => {
     if (!seedPositions.has(node.id) && node.x != null && node.y != null) {
@@ -468,13 +501,10 @@ function render(): void {
       node.fy = node.y
     }
   })
-  // During the first disclosure render, hold the existing topology in place
-  // while newly revealed children settle around their parent. Without this
-  // short anchor window d3's center force can pull every root toward the
-  // canvas center, making the first click appear to fling the branch to a
-  // corner; a refresh then mysteriously produces a different layout.
-  if (topologyAnchorTimer != null) window.clearTimeout(topologyAnchorTimer)
-  topologyAnchorTimer = null
+  // During a disclosure render, hold the existing topology in place for the
+  // lifetime of this simulation while newly revealed children settle around
+  // their parent. Releasing and reheating these nodes on a timer produces a
+  // delayed second movement that users perceive as graph flicker.
   const anchoredNodes = topologyChanged && hasPreviousLayout
     ? nodes.filter((node) => knownNodeIds.has(node.id) && !node.fixed && node.x != null && node.y != null)
     : []
@@ -739,7 +769,6 @@ function render(): void {
     })
   nodeSelection.call(drag)
 
-  simulation?.stop()
   const linkForce = d3
     .forceLink<GraphNode & d3.SimulationNodeDatum, GraphEdge>(links)
     .id((node) => node.id)
@@ -801,30 +830,23 @@ function render(): void {
     })
     if (paintPending) return
     paintPending = true
-    requestAnimationFrame(() => {
+    paintFrame = requestAnimationFrame(() => {
+      paintFrame = null
       paintPending = false
       if (generation === renderGeneration) paint()
     })
   })
-  if (props.reducedMotion) simulation.alphaDecay(0.5)
-  else if (largeGraph) simulation.alphaDecay(0.045).alpha(0.3)
+  if (props.reducedMotion) {
+    // Reduced motion must not leave an asynchronous force animation running.
+    // Settle a small deterministic number of ticks and paint once.
+    simulation.stop().alphaDecay(0.5).tick(largeGraph ? 8 : 12)
+    nodes.forEach((node) => {
+      if (node.x != null && node.y != null) nodePositions.set(node.id, { x: node.x, y: node.y })
+    })
+    paint()
+  } else if (largeGraph) simulation.alphaDecay(0.045).alpha(0.3)
   else if (hasPreviousLayout) simulation.alphaDecay(0.04).alpha(0.24)
   else simulation.alphaDecay(0.05).alpha(0.62)
-
-  if (anchoredNodes.length) {
-    topologyAnchorTimer = window.setTimeout(() => {
-      topologyAnchorTimer = null
-      anchoredNodes.forEach((node) => {
-        // A user may have dragged a node while the anchor window was active;
-        // keep the latest pointer position in that case.
-        if (!draggingNodeId || draggingNodeId !== node.id) {
-          node.fx = null
-          node.fy = null
-        }
-      })
-      simulation?.alpha(Math.max(simulation.alpha(), 0.08)).restart()
-    }, props.reducedMotion ? 180 : 720)
-  }
 
   // 首次挂载且用户未操作时，等力向布局稳定后只适配一次画布，避免每个 tick 触发 zoom 重排。
   if (shouldFitView) {
@@ -849,13 +871,17 @@ function render(): void {
       fittingProgrammatically = false
     }
     simulation.on('end.fit', fitView)
-    // 极大图谱或后台节流时 end 事件可能很晚，给用户一个确定的最终视口。
-    fitTimer = window.setTimeout(() => {
-      fitTimer = null
-      // 超大图谱的力向计算可能被后台节流；此时冻结当前布局并适配，
-      // 避免节点在适配后继续漂移到画布外。
-      fitView(true)
-    }, largeGraph ? 2600 : 6000)
+    if (props.reducedMotion) {
+      fitView()
+    } else {
+      // 极大图谱或后台节流时 end 事件可能很晚，给用户一个确定的最终视口。
+      fitTimer = window.setTimeout(() => {
+        fitTimer = null
+        // 超大图谱的力向计算可能被后台节流；此时冻结当前布局并适配，
+        // 避免节点在适配后继续漂移到画布外。
+        fitView(true)
+      }, largeGraph ? 2600 : 6000)
+    }
   }
 
   // 框选多选：Shift+左键拖出选框，松开后把框内阅读片段加入上下文选择。
@@ -914,11 +940,7 @@ onMounted(() => {
   render()
   if (host.value) {
     resizeObserver = new ResizeObserver(() => {
-      if (resizeTimer != null) window.clearTimeout(resizeTimer)
-      resizeTimer = window.setTimeout(() => {
-        resizeTimer = null
-        render()
-      }, 120)
+      scheduleResizeRender()
     })
     resizeObserver.observe(host.value)
   }
@@ -927,11 +949,12 @@ onMounted(() => {
 // 视口以 liveTransform 为准；展开状态/层级窗口变化也需要更新控件，
 // 但不会因为选中状态变化而重建力向布局。
 watch(() => {
-  const nodes = props.snapshot.nodes.map((node) => `${node.id}:${node.label}:${node.subtitle ?? ''}`).join('|')
-  const edges = props.snapshot.edges.map((edge) => `${edge.id}:${edge.source}:${edge.target}:${edge.type}:${edge.status ?? ''}`).join('|')
+  const nodes = props.snapshot.nodes.map((node) => `${node.id}:${node.label}:${node.subtitle ?? ''}:${node.childCount ?? ''}:${node.descendantCount ?? ''}:${node.hasChildren ? 1 : 0}`).join('|')
+  const edges = props.snapshot.edges.map((edge) => `${edge.id}:${edge.source}:${edge.target}:${edge.type}:${edge.status ?? ''}:${edge.weight}`).join('|')
   const expanded = (props.expandedConceptIds ?? []).slice().sort().join(',')
   const expandable = (props.expandableConceptIds ?? []).slice().sort().join(',')
-  return `${props.snapshot.revision}|${nodes}|${edges}|${expanded}|${expandable}|${props.maxVisibleLevel ?? ''}|${props.expandedConceptDepth ?? ''}|${props.visibleNodeDepth ?? ''}|${typeof props.visibleNodeLevels === 'number' ? props.visibleNodeLevels : mapSignature(props.visibleNodeLevels)}|${mapSignature(props.conceptHierarchy)}|${mapSignature(props.conceptChildren)}|${props.fitOnTopologyChange ? 1 : 0}`
+  const hierarchy = props.hierarchyRelations.map((relation) => `${relation.parentConceptId}:${relation.childConceptId}:${relation.relationType}:${relation.status ?? ''}`).sort().join('|')
+  return `${props.snapshot.revision}|${nodes}|${edges}|${expanded}|${expandable}|${hierarchy}|${props.showProposed ? 1 : 0}|${props.reducedMotion ? 1 : 0}|${props.maxVisibleLevel ?? ''}|${props.expandedConceptDepth ?? ''}|${props.visibleNodeDepth ?? ''}|${typeof props.visibleNodeLevels === 'number' ? props.visibleNodeLevels : mapSignature(props.visibleNodeLevels)}|${mapSignature(props.conceptHierarchy)}|${mapSignature(props.conceptChildren)}|${props.fitOnTopologyChange ? 1 : 0}`
 }, render)
 
 watch(() => props.selectedUnitIds.slice(), (selectedIds) => {
@@ -944,7 +967,7 @@ onBeforeUnmount(() => {
   if (fitTimer != null) window.clearTimeout(fitTimer)
   if (resizeTimer != null) window.clearTimeout(resizeTimer)
   if (suppressClickTimer != null) window.clearTimeout(suppressClickTimer)
-  if (topologyAnchorTimer != null) window.clearTimeout(topologyAnchorTimer)
+  if (paintFrame != null) cancelAnimationFrame(paintFrame)
   simulation?.stop()
   resizeObserver?.disconnect()
 })
