@@ -1544,62 +1544,106 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     return taskId
   }
 
-  function maintenanceSuggestionErrors(value: unknown): { suggestions: MaintenanceSuggestion[]; errors: string[] } {
+  function maintenanceSuggestionErrors(value: unknown, onlyIndex?: number): { suggestions: MaintenanceSuggestion[]; errors: string[] } {
     const errors: string[] = []
+    const nonEmptyString = (candidate: unknown): candidate is string => typeof candidate === 'string' && candidate.trim().length > 0
     if (!value || typeof value !== 'object' || Array.isArray(value)) return { suggestions: [], errors: ['维护结果必须是 JSON 对象'] }
     const rawSuggestions = (value as Record<string, unknown>).suggestions
     if (!Array.isArray(rawSuggestions)) return { suggestions: [], errors: ['suggestions 必须是数组'] }
     const suggestions = rawSuggestions.map((item) => item && typeof item === 'object' ? item as MaintenanceSuggestion : { type: '' as MaintenanceSuggestion['type'] })
     suggestions.forEach((suggestion, index) => {
-      if (!['merge', 'alias', 'relation', 'unit_relink', 'unit_revision', 'create_concept', 'update_concept', 'move_concept', 'remove_hierarchy', 'archive_concept'].includes(String(suggestion.type))) errors.push(`suggestions.${index}.type 不受支持`)
+      if (onlyIndex !== undefined && index !== onlyIndex) return
+      if (!['merge', 'alias', 'relation', 'remove_relation', 'update_relation', 'unit_relink', 'membership_relink', 'unit_revision', 'create_concept', 'update_concept', 'move_concept', 'remove_hierarchy', 'delete_concept', 'restore_concept', 'archive_concept'].includes(String(suggestion.type))) errors.push(`suggestions.${index}.type 不受支持`)
       if (suggestion.type === 'merge') {
-        if (!concepts.value.some((concept) => concept.id === suggestion.source_concept_id)) errors.push(`suggestions.${index} 的源知识主题不存在`)
-        if (!concepts.value.some((concept) => concept.id === suggestion.target_concept_id)) errors.push(`suggestions.${index} 的目标知识主题不存在`)
+        const source = concepts.value.find((concept) => concept.id === suggestion.source_concept_id)
+        if (!source || (source.status !== 'active' && !(source.status === 'merged' && source.mergedIntoId === suggestion.target_concept_id))) errors.push(`suggestions.${index} 的源知识主题不存在、已归档或已合并到其他主题`)
+        if (!activeConcepts.value.some((concept) => concept.id === suggestion.target_concept_id)) errors.push(`suggestions.${index} 的目标知识主题不存在或已归档`)
         if (suggestion.source_concept_id === suggestion.target_concept_id) errors.push(`suggestions.${index} 不能合并自身`)
       }
       if (suggestion.type === 'alias') {
-        if (!concepts.value.some((concept) => concept.id === suggestion.concept_id)) errors.push(`suggestions.${index} 的知识主题不存在`)
-        if (!suggestion.alias?.trim()) errors.push(`suggestions.${index}.alias 不能为空`)
+        if (!activeConcepts.value.some((concept) => concept.id === suggestion.concept_id)) errors.push(`suggestions.${index} 的知识主题不存在或已归档`)
+        if (!nonEmptyString(suggestion.alias)) errors.push(`suggestions.${index}.alias 不能为空`)
+        if (nonEmptyString(suggestion.alias)) {
+          const normalizedAlias = normalizeText(suggestion.alias)
+          const nameOwner = concepts.value.find((concept) => concept.normalizedName === normalizedAlias && concept.id !== suggestion.concept_id)
+          const aliasOwner = aliases.value.find((alias) => alias.normalizedAlias === normalizedAlias && alias.conceptId !== suggestion.concept_id)
+          if (nameOwner || aliasOwner) errors.push(`suggestions.${index}.alias 与其他知识主题名称或别名冲突`)
+        }
       }
       if (suggestion.type === 'relation') {
         const sourceId = suggestion.source_concept_id ?? suggestion.parent_concept_id
         const targetId = suggestion.target_concept_id ?? suggestion.child_concept_id
-        if (!concepts.value.some((concept) => concept.id === sourceId) || !concepts.value.some((concept) => concept.id === targetId)) errors.push(`suggestions.${index} 的关系端点不存在`)
+        if (!activeConcepts.value.some((concept) => concept.id === sourceId) || !activeConcepts.value.some((concept) => concept.id === targetId)) errors.push(`suggestions.${index} 的关系端点不存在或已归档`)
         if (sourceId === targetId) errors.push(`suggestions.${index} 不能连接自身`)
         if (suggestion.relation_type !== 'hierarchy' && suggestion.relation_type !== 'related') errors.push(`suggestions.${index}.relation_type 无效`)
         if (suggestion.relation_type === 'hierarchy' && sourceId && targetId && wouldCreateHierarchyCycle(sourceId, targetId, relations.value)) errors.push(`suggestions.${index} 会形成父子关系环`)
+      }
+      if (suggestion.type === 'remove_relation') {
+        if (!nonEmptyString(suggestion.relation_id)) errors.push(`suggestions.${index}.relation_id 不能为空`)
+      }
+      if (suggestion.type === 'update_relation') {
+        const relation = suggestion.relation_id ? relations.value.find((item) => item.id === suggestion.relation_id) : undefined
+        if (!relation) errors.push(`suggestions.${index} 的关系不存在`)
+        const sourceId = suggestion.new_source_concept_id ?? relation?.parentConceptId
+        const targetId = suggestion.new_target_concept_id ?? relation?.childConceptId
+        const relationType = suggestion.new_relation_type ?? relation?.relationType
+        if (!sourceId || !targetId || !activeConcepts.value.some((concept) => concept.id === sourceId) || !activeConcepts.value.some((concept) => concept.id === targetId)) errors.push(`suggestions.${index} 的关系端点不存在或已归档`)
+        if (sourceId === targetId) errors.push(`suggestions.${index} 不能连接自身`)
+        if (relationType !== 'hierarchy' && relationType !== 'related') errors.push(`suggestions.${index}.new_relation_type 无效`)
+        if (relationType === 'hierarchy' && sourceId && targetId) {
+          const remaining = relation ? relations.value.filter((item) => item.id !== relation.id) : relations.value
+          if (wouldCreateHierarchyCycle(sourceId, targetId, remaining)) errors.push(`suggestions.${index} 会形成父子关系环`)
+        }
       }
       if (suggestion.type === 'unit_relink') {
         if (!units.value.some((unit) => unit.id === suggestion.unit_id)) errors.push(`suggestions.${index} 的知识单元不存在`)
         if (!Array.isArray(suggestion.concept_ids)) errors.push(`suggestions.${index}.concept_ids 必须是数组（可选择多个知识主题）`)
         else {
-          const listIssues = validateConceptIdList(suggestion.concept_ids, concepts.value.map((concept) => concept.id))
+          const listIssues = validateConceptIdList(suggestion.concept_ids, activeConcepts.value.map((concept) => concept.id))
           listIssues.forEach((issue) => errors.push(`suggestions.${index}.${issue.path}: ${issue.message}`))
           const seen = new Set<string>()
           suggestion.concept_ids.forEach((conceptId) => {
             if (typeof conceptId === 'string') {
-              if (!concepts.value.some((concept) => concept.id === conceptId)) errors.push(`suggestions.${index} 的知识主题 ${conceptId} 不存在`)
+              if (!activeConcepts.value.some((concept) => concept.id === conceptId)) errors.push(`suggestions.${index} 的知识主题 ${conceptId} 不存在或已归档`)
               if (seen.has(conceptId)) errors.push(`suggestions.${index}.concept_ids 不能重复`)
               seen.add(conceptId)
             }
           })
         }
       }
+      if (suggestion.type === 'membership_relink') {
+        if (!['session', 'message', 'unit'].includes(String(suggestion.target_type))) errors.push(`suggestions.${index}.target_type 必须是 session、message 或 unit`)
+        if (!nonEmptyString(suggestion.target_id)) errors.push(`suggestions.${index}.target_id 不能为空`)
+        else if (suggestion.target_type === 'session' && !activeSessions.value.some((session) => session.id === suggestion.target_id)) errors.push(`suggestions.${index} 的 Session 不存在`)
+        else if (suggestion.target_type === 'message' && !messages.value.some((message) => message.id === suggestion.target_id)) errors.push(`suggestions.${index} 的 Message 不存在`)
+        else if (suggestion.target_type === 'unit' && !units.value.some((unit) => unit.id === suggestion.target_id)) errors.push(`suggestions.${index} 的知识单元不存在`)
+        if (!Array.isArray(suggestion.concept_ids)) errors.push(`suggestions.${index}.concept_ids 必须是数组`)
+        else errors.push(...validateConceptIdList(suggestion.concept_ids, activeConcepts.value.map((concept) => concept.id)).map((issue) => `suggestions.${index}.${issue.path}: ${issue.message}`))
+        if (typeof suggestion.replace !== 'boolean') errors.push(`suggestions.${index}.replace 必须是布尔值`)
+      }
       if (suggestion.type === 'unit_revision') {
         if (!units.value.some((unit) => unit.id === suggestion.unit_id)) errors.push(`suggestions.${index} 的知识单元不存在`)
-        if (!suggestion.title?.trim() && !suggestion.summary?.trim()) errors.push(`suggestions.${index} 至少需要标题或摘要`)
-        errors.push(...validateUnitText(suggestion.title, suggestion.summary).map((issue) => `suggestions.${index}.${issue.path}：${issue.message}`))
+        if (!nonEmptyString(suggestion.title) && !nonEmptyString(suggestion.summary)) errors.push(`suggestions.${index} 至少需要标题或摘要`)
+        if (suggestion.title != null && typeof suggestion.title !== 'string') errors.push(`suggestions.${index}.title 必须是字符串`)
+        if (suggestion.summary != null && typeof suggestion.summary !== 'string') errors.push(`suggestions.${index}.summary 必须是字符串`)
+        if ((suggestion.title == null || typeof suggestion.title === 'string') && (suggestion.summary == null || typeof suggestion.summary === 'string')) {
+          errors.push(...validateUnitText(suggestion.title, suggestion.summary).map((issue) => `suggestions.${index}.${issue.path}：${issue.message}`))
+        }
       }
       if (suggestion.type === 'create_concept') {
-        if (!suggestion.name?.trim()) errors.push(`suggestions.${index}.name 不能为空`)
+        if (!nonEmptyString(suggestion.name)) errors.push(`suggestions.${index}.name 不能为空`)
         else if (suggestion.name.trim().length > 120) errors.push(`suggestions.${index}.name 不能超过 120 个字符`)
-        if (suggestion.summary != null && suggestion.summary.length > 120) errors.push(`suggestions.${index}.summary 不能超过 120 个字符`)
+        if (suggestion.name != null && typeof suggestion.name !== 'string') errors.push(`suggestions.${index}.name 必须是字符串`)
+        if (suggestion.summary != null && (typeof suggestion.summary !== 'string' || suggestion.summary.length > 120)) errors.push(`suggestions.${index}.summary 无效或超过 120 个字符`)
         if (suggestion.parent_concept_id != null && !concepts.value.some((concept) => concept.id === suggestion.parent_concept_id && concept.status === 'active')) errors.push(`suggestions.${index} 的父知识主题不存在`)
       }
       if (suggestion.type === 'update_concept') {
         if (!suggestion.concept_id || !concepts.value.some((concept) => concept.id === suggestion.concept_id && concept.status === 'active')) errors.push(`suggestions.${index} 的知识主题不存在`)
-        if (suggestion.name != null && (!suggestion.name.trim() || suggestion.name.trim().length > 120)) errors.push(`suggestions.${index}.name 无效`)
-        if (suggestion.summary != null && suggestion.summary.length > 120) errors.push(`suggestions.${index}.summary 不能超过 120 个字符`)
+        if (suggestion.name == null && suggestion.summary == null && suggestion.notes == null) errors.push(`suggestions.${index} 至少需要 name、summary 或 notes 之一`)
+        if (suggestion.name != null && (!nonEmptyString(suggestion.name) || suggestion.name.trim().length > 120)) errors.push(`suggestions.${index}.name 无效`)
+        if (suggestion.name != null && typeof suggestion.name !== 'string') errors.push(`suggestions.${index}.name 必须是字符串`)
+        if (suggestion.summary != null && (typeof suggestion.summary !== 'string' || suggestion.summary.length > 120)) errors.push(`suggestions.${index}.summary 无效或超过 120 个字符`)
+        if (suggestion.notes != null && typeof suggestion.notes !== 'string') errors.push(`suggestions.${index}.notes 必须是字符串`)
       }
       if (suggestion.type === 'move_concept') {
         const childId = suggestion.concept_id
@@ -1612,8 +1656,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         if (!suggestion.child_concept_id || !concepts.value.some((concept) => concept.id === suggestion.child_concept_id)) errors.push(`suggestions.${index} 的子知识主题不存在`)
         if (suggestion.parent_concept_id != null && !concepts.value.some((concept) => concept.id === suggestion.parent_concept_id)) errors.push(`suggestions.${index} 的父知识主题不存在`)
       }
-      if (suggestion.type === 'archive_concept' && (!suggestion.concept_id || !concepts.value.some((concept) => concept.id === suggestion.concept_id && concept.status === 'active'))) {
-        errors.push(`suggestions.${index} 的知识主题不存在`)
+      if (suggestion.type === 'archive_concept' || suggestion.type === 'delete_concept') {
+        const concept = suggestion.concept_id ? concepts.value.find((item) => item.id === suggestion.concept_id) : undefined
+        // An already archived Concept is accepted as an idempotent no-op. A
+        // merged Concept cannot be archived independently of its merge target.
+        if (!concept || concept.status === 'merged') errors.push(`suggestions.${index} 的知识主题不存在、已合并或不可归档`)
+      }
+      if (suggestion.type === 'restore_concept') {
+        const concept = suggestion.concept_id ? concepts.value.find((item) => item.id === suggestion.concept_id) : undefined
+        // Restoring an active Concept is also an idempotent no-op; merged
+        // records remain historical merge sources and are never revived here.
+        if (!concept || concept.status === 'merged') errors.push(`suggestions.${index} 的知识主题不存在、已合并或不可恢复`)
       }
     })
     return { suggestions, errors }
@@ -1624,7 +1677,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (!task || task.type !== 'maintenance' || !task.parsedResult) return { ok: false, error: '维护任务结果尚未校验' }
     let parsed: unknown
     try { parsed = JSON.parse(task.parsedResult) } catch { return { ok: false, error: '维护结果无法解析' } }
-    const validation = maintenanceSuggestionErrors(parsed)
+    // Revalidate only the selected action against the current database. Other
+    // suggestions may intentionally depend on this action (for example a
+    // restore after a delete), so validating the whole list here would make
+    // application order unnecessarily state-dependent.
+    const validation = maintenanceSuggestionErrors(parsed, suggestionIndex)
     const suggestion = validation.suggestions[suggestionIndex]
     if (validation.errors.length || !suggestion) return { ok: false, error: validation.errors[0] ?? '找不到这条建议' }
     const raw = parsed as { suggestions: Array<MaintenanceSuggestion & { applied?: boolean }> }
@@ -1633,6 +1690,31 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     try {
       mutate(() => {
         const now = isoNow()
+        const relinkMembership = (targetType: 'session' | 'message' | 'unit', targetId: string, conceptIds: string[], replace: boolean): void => {
+          const ids = [...new Set(conceptIds)]
+          if (targetType === 'session') {
+            if (replace) db.run('DELETE FROM session_concepts WHERE session_id = ?', [targetId])
+            ids.forEach((conceptId) => db.run('INSERT OR IGNORE INTO session_concepts(session_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [targetId, conceptId, 'maintenance', now]))
+            return
+          }
+          if (targetType === 'unit') {
+            if (replace) db.run('DELETE FROM unit_concepts WHERE unit_id = ?', [targetId])
+            ids.forEach((conceptId) => db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [targetId, conceptId, 'maintenance', now]))
+            return
+          }
+          const row = db.query<Row>('SELECT metadata FROM messages WHERE id = ?', [targetId])[0]
+          if (!row) throw new Error('消息不存在')
+          if (replace) db.run('DELETE FROM message_concepts WHERE message_id = ?', [targetId])
+          ids.forEach((conceptId) => db.run('INSERT OR IGNORE INTO message_concepts(message_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [targetId, conceptId, 'maintenance', now]))
+          const metadata = parseMetadata(row.metadata)
+          const current = replace || !Array.isArray(metadata.concept_ids)
+            ? []
+            : metadata.concept_ids.filter((id): id is string => typeof id === 'string')
+          const next = [...new Set([...current, ...ids])]
+          if (next.length) metadata.concept_ids = next
+          else delete metadata.concept_ids
+          db.run('UPDATE messages SET metadata = ? WHERE id = ?', [Object.keys(metadata).length ? JSON.stringify(metadata) : null, targetId])
+        }
         if (suggestion.type === 'merge') {
           const sourceId = suggestion.source_concept_id as string
           const targetId = suggestion.target_concept_id as string
@@ -1646,15 +1728,37 @@ export const useWorkspaceStore = defineStore('workspace', () => {
             ? [rawTargetId, rawSourceId]
             : [rawSourceId, rawTargetId]
           db.run('INSERT OR IGNORE INTO concept_relations(id, parent_concept_id, child_concept_id, relation_type, source, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [createId('relation'), sourceId, targetId, suggestion.relation_type, 'maintenance', 'proposed', now, now])
+        } else if (suggestion.type === 'remove_relation') {
+          db.run('DELETE FROM concept_relations WHERE id = ?', [suggestion.relation_id])
+        } else if (suggestion.type === 'update_relation') {
+          const relation = relations.value.find((item) => item.id === suggestion.relation_id)
+          if (!relation) throw new Error('关系不存在')
+          const rawSourceId = suggestion.new_source_concept_id ?? relation.parentConceptId
+          const rawTargetId = suggestion.new_target_concept_id ?? relation.childConceptId
+          const relationType = suggestion.new_relation_type ?? relation.relationType
+          const [sourceId, targetId] = relationType === 'related' && rawSourceId > rawTargetId
+            ? [rawTargetId, rawSourceId]
+            : [rawSourceId, rawTargetId]
+          const remaining = relations.value.filter((item) => item.id !== relation.id)
+          if (relationType === 'hierarchy' && wouldCreateHierarchyCycle(sourceId, targetId, remaining)) throw new Error('这个父子关系会形成环，无法建立')
+          const duplicate = db.query<Row>('SELECT id FROM concept_relations WHERE id <> ? AND parent_concept_id = ? AND child_concept_id = ? AND relation_type = ? LIMIT 1', [relation.id, sourceId, targetId, relationType])[0]
+          if (!duplicate) db.run('UPDATE concept_relations SET parent_concept_id = ?, child_concept_id = ?, relation_type = ?, source = \'maintenance\', status = \'proposed\', updated_at = ? WHERE id = ?', [sourceId, targetId, relationType, now, relation.id])
         } else if (suggestion.type === 'unit_relink') {
+          if (suggestion.replace) db.run('DELETE FROM unit_concepts WHERE unit_id = ?', [suggestion.unit_id])
           ;(suggestion.concept_ids ?? []).forEach((conceptId) => {
             db.run('INSERT OR IGNORE INTO unit_concepts(unit_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [suggestion.unit_id, conceptId, 'maintenance', now])
           })
+        } else if (suggestion.type === 'membership_relink') {
+          relinkMembership(suggestion.target_type!, suggestion.target_id!, suggestion.concept_ids ?? [], suggestion.replace!)
         } else if (suggestion.type === 'unit_revision') {
           const unit = units.value.find((item) => item.id === suggestion.unit_id)
           if (!unit) throw new Error('知识单元不存在')
-          db.run('UPDATE knowledge_units SET title = COALESCE(?, title), summary = COALESCE(?, summary), revision = revision + 1, status = \'ready\', updated_at = ? WHERE id = ?', [suggestion.title?.trim() || null, suggestion.summary?.trim() || null, now, suggestion.unit_id])
-          db.run('UPDATE sessions SET revision = revision + 1, updated_at = ? WHERE id = ?', [now, unit.sessionId])
+          const nextTitle = suggestion.title === undefined ? unit.title : suggestion.title.trim()
+          const nextSummary = suggestion.summary === undefined ? unit.summary : suggestion.summary.trim()
+          if (nextTitle !== unit.title || nextSummary !== unit.summary) {
+            db.run('UPDATE knowledge_units SET title = ?, summary = ?, revision = revision + 1, status = \'ready\', updated_at = ? WHERE id = ?', [nextTitle || null, nextSummary || null, now, suggestion.unit_id])
+            db.run('UPDATE sessions SET revision = revision + 1, updated_at = ? WHERE id = ?', [now, unit.sessionId])
+          }
         } else if (suggestion.type === 'create_concept') {
           const conceptId = ensureConcept(suggestion.name!.trim(), 'llm')
           if (suggestion.summary?.trim() || suggestion.notes?.trim()) {
@@ -1684,8 +1788,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         } else if (suggestion.type === 'remove_hierarchy') {
           if (suggestion.parent_concept_id) db.run('DELETE FROM concept_relations WHERE parent_concept_id = ? AND child_concept_id = ? AND relation_type = \'hierarchy\'', [suggestion.parent_concept_id, suggestion.child_concept_id])
           else db.run('DELETE FROM concept_relations WHERE child_concept_id = ? AND relation_type = \'hierarchy\'', [suggestion.child_concept_id])
-        } else if (suggestion.type === 'archive_concept') {
-          db.run('UPDATE concepts SET status = \'archived\', deleted_at = ?, updated_at = ? WHERE id = ?', [now, now, suggestion.concept_id])
+        } else if (suggestion.type === 'archive_concept' || suggestion.type === 'delete_concept') {
+          db.run('UPDATE concepts SET status = \'archived\', deleted_at = COALESCE(deleted_at, ?), updated_at = ? WHERE id = ?', [now, now, suggestion.concept_id])
+        } else if (suggestion.type === 'restore_concept') {
+          db.run('UPDATE concepts SET status = \'active\', deleted_at = NULL, merged_into_id = NULL, updated_at = ? WHERE id = ?', [now, suggestion.concept_id])
         }
         raw.suggestions[suggestionIndex] = { ...raw.suggestions[suggestionIndex], applied: true }
         db.run('UPDATE llm_tasks SET parsed_result = ?, updated_at = ? WHERE id = ?', [JSON.stringify(raw), now, taskId])
@@ -2008,11 +2114,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           const targetName = typeof value.target === 'string' ? value.target : typeof value.child === 'string' ? value.child : typeof value.target_name === 'string' ? value.target_name : typeof value.child_name === 'string' ? value.child_name : ''
           const sourceRawId = resolveConceptRef(sourceName) ?? conceptIdsByName.get(normalizeText(sourceName))
           const targetRawId = resolveConceptRef(targetName) ?? conceptIdsByName.get(normalizeText(targetName))
-          const relationType = value.type === 'related' ? 'related' as const : value.type === 'hierarchy' ? 'hierarchy' as const : null
+          // Related edges are derived from shared Session/Message evidence;
+          // ordinary extraction may only propose direct hierarchy.
+          const relationType = value.type === 'hierarchy' ? 'hierarchy' as const : null
           if (!sourceRawId || !targetRawId || !relationType || sourceRawId === targetRawId) return
-          const [sourceId, targetId] = relationType === 'related' && sourceRawId > targetRawId ? [targetRawId, sourceRawId] : [sourceRawId, targetRawId]
+          const [sourceId, targetId] = [sourceRawId, targetRawId]
           if (relationType === 'hierarchy' && wouldCreateHierarchyCycle(sourceId, targetId, [...relations.value, ...pendingRelations])) return
-          const pair = relationType === 'related' ? [sourceId, targetId].sort().join('|') : `${sourceId}|${targetId}`
+          const pair = `${sourceId}|${targetId}`
           const relationKey = `${relationType}:${pair}`
           if (relationKeys.has(relationKey)) return
           relationKeys.add(relationKey)
@@ -2178,11 +2286,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           const target = typeof value.target === 'string' ? value.target : ''
           const sourceId = resolveConversationConceptRef(source)
           const targetId = resolveConversationConceptRef(target)
-          const relationType = value.type === 'hierarchy' ? 'hierarchy' as const : value.type === 'related' ? 'related' as const : null
+          // Conversation output may propose hierarchy only. Related signals
+          // are derived by the graph from shared Session/Message membership.
+          const relationType = value.type === 'hierarchy' ? 'hierarchy' as const : null
           if (!sourceId || !targetId || !relationType || sourceId === targetId) return
-          const [parentId, childId] = relationType === 'related' && sourceId > targetId ? [targetId, sourceId] : [sourceId, targetId]
+          const [parentId, childId] = [sourceId, targetId]
           if (relationType === 'hierarchy' && wouldCreateHierarchyCycle(parentId, childId, [...relations.value, ...pendingRelations])) return
-          const pair = relationType === 'related' ? [parentId, childId].sort().join('|') : `${parentId}|${childId}`
+          const pair = `${parentId}|${childId}`
           const key = `${relationType}:${pair}`
           if (relationKeys.has(key)) return
           relationKeys.add(key)

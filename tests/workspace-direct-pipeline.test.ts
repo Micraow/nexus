@@ -305,6 +305,96 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.relations).toContainEqual(expect.objectContaining({ parentConceptId: parentId, childConceptId: child.id, relationType: 'hierarchy', status: 'proposed' }))
   })
 
+  it('supports explicit maintenance relation edits and direct message relinking', () => {
+    const parentId = store.createConcept('关系父主题')
+    const childId = store.createConcept('关系子主题')
+    const otherId = store.createConcept('关系关联主题')
+    store.createRelation(parentId, childId, 'hierarchy')
+    const sessionId = store.createConversationTask({ question: '准备维护消息归属' })
+    const question = store.messages.find((message) => message.sessionId === sessionId && message.role === 'user')!
+    const taskId = store.createMaintenanceTask({ conceptIds: [childId] })
+    const task = store.tasks.find((item) => item.id === taskId)!
+    const relationId = store.relations.find((relation) => relation.parentConceptId === parentId && relation.childConceptId === childId)!.id
+    const result = store.applyTaskResult(task.id, JSON.stringify({
+      suggestions: [
+        { type: 'update_relation', relation_id: relationId, new_source_concept_id: otherId, new_target_concept_id: childId, new_relation_type: 'related', reason: '维护确认的显式相关关系' },
+        { type: 'membership_relink', target_type: 'message', target_id: question.id, concept_ids: [childId, otherId], replace: true, reason: '消息明确提及两个主题' },
+      ],
+      disclosure_requests: [],
+    }))
+    expect(result.ok, result.errors.join('; ')).toBe(true)
+
+    expect(store.applyMaintenanceSuggestion(taskId, 0).ok).toBe(true)
+    expect(store.relations).toContainEqual(expect.objectContaining({ id: relationId, parentConceptId: childId, childConceptId: otherId, relationType: 'related', status: 'proposed' }))
+    expect(store.applyMaintenanceSuggestion(taskId, 1).ok).toBe(true)
+    expect(store.messageConcepts.filter((link) => link.messageId === question.id).map((link) => link.conceptId)).toEqual(expect.arrayContaining([childId, otherId]))
+
+    const removeTaskId = store.createMaintenanceTask()
+    const removeTask = store.tasks.find((item) => item.id === removeTaskId)!
+    expect(store.applyTaskResult(removeTask.id, JSON.stringify({ suggestions: [{ type: 'remove_relation', relation_id: relationId, reason: '移除过时关联' }], disclosure_requests: [] })).ok).toBe(true)
+    expect(store.applyMaintenanceSuggestion(removeTaskId, 0).ok).toBe(true)
+    expect(store.relations.some((relation) => relation.id === relationId)).toBe(false)
+  })
+
+  it('supports idempotent Concept delete/restore and unit membership relinking', () => {
+    const conceptId = store.createConcept('可恢复维护主题')
+    const otherConceptId = store.createConcept('补充维护主题')
+    const sessionId = store.createConversationTask({ question: '准备一个可维护的阅读片段' })
+    const conversationTask = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
+    expect(store.applyTaskResult(conversationTask.id, JSON.stringify({
+      answer: '这是可维护的阅读证据。',
+      units: [{ title: '待维护片段', summary: '原始摘要', concept_ids: [] }],
+      memberships: [],
+      disclosure_requests: [],
+    })).ok).toBe(true)
+    const unit = store.units.find((item) => item.sessionId === sessionId)!
+    const taskId = store.createMaintenanceTask()
+    const task = store.tasks.find((item) => item.id === taskId)!
+    const result = store.applyTaskResult(task.id, JSON.stringify({
+      suggestions: [
+        { type: 'delete_concept', concept_id: conceptId, reason: '主题不再使用' },
+        { type: 'restore_concept', concept_id: conceptId, reason: '恢复主题' },
+        { type: 'membership_relink', target_type: 'unit', target_id: unit.id, concept_ids: [conceptId, otherConceptId], replace: true, reason: '片段明确涉及两个主题' },
+        { type: 'unit_revision', unit_id: unit.id, title: '修订后的片段', summary: '更新后的摘要', reason: '补全片段元数据' },
+      ],
+      disclosure_requests: [],
+    }))
+    expect(result.ok, result.errors.join('; ')).toBe(true)
+
+    expect(store.applyMaintenanceSuggestion(taskId, 0).ok).toBe(true)
+    expect(store.concepts.find((concept) => concept.id === conceptId)?.status).toBe('archived')
+    expect(store.applyMaintenanceSuggestion(taskId, 1).ok).toBe(true)
+    expect(store.concepts.find((concept) => concept.id === conceptId)?.status).toBe('active')
+    expect(store.applyMaintenanceSuggestion(taskId, 2).ok).toBe(true)
+    expect(store.unitConcepts.filter((link) => link.unitId === unit.id).map((link) => link.conceptId)).toEqual(expect.arrayContaining([conceptId, otherConceptId]))
+    const revisionBefore = store.units.find((item) => item.id === unit.id)!.revision
+    expect(store.applyMaintenanceSuggestion(taskId, 3).ok).toBe(true)
+    expect(store.units.find((item) => item.id === unit.id)).toMatchObject({ title: '修订后的片段', summary: '更新后的摘要', revision: revisionBefore + 1 })
+
+    const repeatDeleteTaskId = store.createMaintenanceTask()
+    const repeatDeleteTask = store.tasks.find((item) => item.id === repeatDeleteTaskId)!
+    expect(store.applyTaskResult(repeatDeleteTask.id, JSON.stringify({ suggestions: [{ type: 'delete_concept', concept_id: conceptId, reason: '重复归档应幂等' }], disclosure_requests: [] })).ok).toBe(true)
+    expect(store.applyMaintenanceSuggestion(repeatDeleteTaskId, 0).ok).toBe(true)
+    expect(store.concepts.find((concept) => concept.id === conceptId)?.status).toBe('archived')
+  })
+
+  it('rejects maintenance hierarchy updates that would create a cycle', () => {
+    const rootId = store.createConcept('环检测根')
+    const childId = store.createConcept('环检测子')
+    const grandchildId = store.createConcept('环检测孙')
+    store.createRelation(rootId, childId, 'hierarchy')
+    store.createRelation(childId, grandchildId, 'hierarchy')
+    const relationId = store.relations.find((relation) => relation.parentConceptId === rootId && relation.childConceptId === childId)!.id
+    const taskId = store.createMaintenanceTask()
+    const task = store.tasks.find((item) => item.id === taskId)!
+    const result = store.applyTaskResult(task.id, JSON.stringify({
+      suggestions: [{ type: 'update_relation', relation_id: relationId, new_source_concept_id: grandchildId, new_target_concept_id: childId, new_relation_type: 'hierarchy', reason: '无效环' }],
+      disclosure_requests: [],
+    }))
+    expect(result.ok).toBe(false)
+    expect(result.errors.some((error) => error.includes('关系环'))).toBe(true)
+  })
+
   it('does not issue duplicate API requests when queue and detail start the same task', async () => {
     let resolveFetch: ((response: Response) => void) | undefined
     const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { resolveFetch = resolve }))

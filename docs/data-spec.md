@@ -320,9 +320,15 @@ Concept 提取结果必须包含 `concepts` 数组；全部复用目录中已有
 
 ### 4.3 维护建议
 
-维护任务扫描整个 active Concept 图谱；选中的主题、会话或知识单元只作为关注提示，不构成输入边界。任务只允许返回建议变更，不允许返回“直接执行 SQL”或不可追溯的自由文本命令。每条建议需要包含类型、目标 ID、影响范围、理由和可逆操作描述。除既有的 `merge`、`alias`、`relation`、`unit_relink`、`unit_revision` 外，维护结果可以提出 `create_concept`、`update_concept`、`move_concept`、`remove_hierarchy` 和 `archive_concept`；应用前必须验证端点、名称和 DAG 成环，所有写入走可撤销快照事务。
+维护任务扫描整个 active Concept 图谱；选中的主题、会话或知识单元只作为关注提示，不构成输入边界。任务只允许返回建议变更，不允许返回“直接执行 SQL”或不可追溯的自由文本命令。每条建议需要包含类型、目标 ID、影响范围、理由和可逆操作描述。维护结果支持 `merge`、`alias`、`relation`、`remove_relation`、`update_relation`、`create_concept`、`update_concept`、`delete_concept`、`restore_concept`、`move_concept`、`remove_hierarchy`、`membership_relink`、兼容用的 `unit_relink` 和 `unit_revision`；`archive_concept` 作为 `delete_concept` 的兼容别名保留。应用前必须验证端点、名称、目标类型、归属 ID 和 DAG 成环，所有写入走可撤销快照事务。
 
-`create_concept`/`move_concept` 的 `parent_concept_id` 表示直接父主题，`null` 仅在没有充分层级证据、确需提升为根时使用；新主题应优先挂到已有或同批次中最窄且有直接语义包含证据的父主题。`remove_hierarchy` 只删除指定父子引用，不删除 Concept；`archive_concept` 保留关系、归属和证据，可通过恢复操作撤销。维护产生的层级关系默认写入 `proposed`，等待用户确认。
+`create_concept`/`move_concept` 的 `parent_concept_id` 表示直接父主题，`null` 仅在没有充分层级证据、确需提升为根时使用；新主题应优先挂到已有或同批次中最窄且有直接语义包含证据的父主题。`remove_hierarchy` 只删除指定父子引用，不删除 Concept；`delete_concept`/`archive_concept` 只把 active Concept 标为 archived，保留关系、归属和证据，已归档时重复提交为幂等无操作；`restore_concept` 只将 archived Concept 恢复为 active，active 时为幂等无操作，merged 主题不可恢复。维护产生的层级关系默认写入 `proposed`，等待用户确认。
+
+维护关系动作使用 `relation`（新增）、`remove_relation`（按 `relation_id` 删除）和 `update_relation`（按 `relation_id` 替换端点或 `new_relation_type`）。`hierarchy` 修改必须重新通过 DAG 环检测；`related` 两端按无向集合规范化。关系删除/重复新增是幂等的，所有动作都记录快照以支持撤销。普通 Concept 提取和对话结果不得返回 `related`；图谱的相关信号由共享 Session/Message 的归属派生，只有维护任务可以显式写入 related。
+
+`merge` 要求 source 与 target 均为 active 且不相同；它把 source 的别名、关系和 Session/Message/KnowledgeUnit 多主题归属并入 target，再将 source 标记为 `merged`，重复合并到同一 target 为幂等。`alias` 要求 active Concept 和非空别名，重复别名幂等，不能与其他名称/别名冲突。`unit_revision` 要求 `unit_id` 以及 `title` 或 `summary` 至少一项，只更新 KnowledgeUnit 元数据并递增 revision，不修改原始 Message 或直接归属；相同内容重复提交不改变业务结果。
+
+直接归属维护使用 `membership_relink`：`target_type` 可为 `session`、`message` 或 `unit`，`target_id` 必须存在，`concept_ids` 必须全部指向 active Concept，`replace=true` 替换目标的直接归属，`replace=false` 只追加。`unit_relink` 保留为旧协议，支持可选 `replace` 字段。消息归属更新同步 `message_concepts` 和兼容用的 `messages.metadata.concept_ids`，不隐式复制到 KnowledgeUnit。
 
 ### 4.4 Prompt Harness 与渐进式披露
 

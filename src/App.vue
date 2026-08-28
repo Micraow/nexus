@@ -856,7 +856,7 @@ function applyMaintenanceSuggestion(index: number): void {
 }
 
 function maintenanceSuggestionLabel(type: MaintenanceSuggestion['type']): string {
-  return ({ merge: '合并知识主题', alias: '添加别名', relation: '建立关系', create_concept: '创建知识主题', update_concept: '编辑知识主题', move_concept: '移动知识主题', remove_hierarchy: '解除父子关系', archive_concept: '归档知识主题', unit_relink: '重新关联片段', unit_revision: '修订片段' } as Record<string, string>)[type] ?? '维护建议'
+  return ({ merge: '合并知识主题', alias: '添加别名', relation: '建立关系', remove_relation: '删除关系', update_relation: '修改关系', create_concept: '创建知识主题', update_concept: '编辑知识主题', move_concept: '移动知识主题', remove_hierarchy: '解除父子关系', delete_concept: '删除知识主题', restore_concept: '恢复知识主题', archive_concept: '归档知识主题', membership_relink: '调整主题归属', unit_relink: '重新关联片段', unit_revision: '修订片段' } as Record<string, string>)[type] ?? '维护建议'
 }
 
 function conceptName(conceptId?: string | null): string {
@@ -885,11 +885,15 @@ function maintenanceSuggestionSummary(suggestion: MaintenanceSuggestion): string
     const targetId = suggestion.target_concept_id ?? suggestion.child_concept_id
     return `${conceptName(sourceId)} ${suggestion.relation_type === 'hierarchy' ? '→' : '↔'} ${conceptName(targetId)}`
   }
+  if (suggestion.type === 'remove_relation') return `关系 ${suggestion.relation_id || '未知'}`
+  if (suggestion.type === 'update_relation') return `关系 ${suggestion.relation_id || '未知'} · ${suggestion.new_relation_type || '保持类型'}`
   if (suggestion.type === 'create_concept') return `${suggestion.name || '新知识主题'}${suggestion.parent_concept_id ? ` → ${conceptName(suggestion.parent_concept_id)}` : ' · 根主题'}`
   if (suggestion.type === 'update_concept') return `${conceptName(suggestion.concept_id)} · ${suggestion.name || suggestion.summary || '更新主题信息'}`
   if (suggestion.type === 'move_concept') return `${conceptName(suggestion.concept_id)} → ${suggestion.parent_concept_id ? conceptName(suggestion.parent_concept_id) : '根主题'}`
   if (suggestion.type === 'remove_hierarchy') return `${conceptName(suggestion.parent_concept_id)} → ${conceptName(suggestion.child_concept_id)}`
+  if (suggestion.type === 'delete_concept' || suggestion.type === 'restore_concept') return conceptName(suggestion.concept_id)
   if (suggestion.type === 'archive_concept') return conceptName(suggestion.concept_id)
+  if (suggestion.type === 'membership_relink') return `${suggestion.target_type || '目标'} ${suggestion.target_id || '未知'} · ${suggestion.replace ? '替换' : '追加'} ${suggestion.concept_ids?.length ?? 0} 个主题`
   if (suggestion.type === 'unit_relink') return `${store.units.find((unit) => unit.id === suggestion.unit_id)?.title || '未命名阅读片段'} → ${conceptName(suggestion.concept_id)}`
   return `${store.units.find((unit) => unit.id === suggestion.unit_id)?.title || '未命名阅读片段'} · ${suggestion.title || suggestion.summary || '修订标题或摘要'}`
 }

@@ -194,12 +194,17 @@ export type MaintenanceSuggestionType =
   | 'merge'
   | 'alias'
   | 'relation'
+  | 'remove_relation'
+  | 'update_relation'
   | 'unit_relink'
+  | 'membership_relink'
   | 'unit_revision'
   | 'create_concept'
   | 'update_concept'
   | 'move_concept'
   | 'remove_hierarchy'
+  | 'delete_concept'
+  | 'restore_concept'
   | 'archive_concept'
 
 export interface MaintenanceSuggestion {
@@ -215,9 +220,19 @@ export interface MaintenanceSuggestion {
   parent_concept_id?: string | null
   child_concept_id?: string
   relation_type?: RelationType
+  /** Existing relation id used by remove/update actions. */
+  relation_id?: string
+  /** Replacement fields used by update_relation. */
+  new_source_concept_id?: string
+  new_target_concept_id?: string
+  new_relation_type?: RelationType
   unit_id?: string
   /** Many-to-many replacement/addition set for a unit_relink suggestion. */
   concept_ids?: string[]
+  /** Whether a relink replaces existing direct memberships; defaults false for legacy unit_relink. */
+  replace?: boolean
+  target_type?: ConceptMembershipTarget
+  target_id?: string
   title?: string
   summary?: string
   notes?: string

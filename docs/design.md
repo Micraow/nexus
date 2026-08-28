@@ -521,7 +521,7 @@ LLM 返回 Concept 名称、别名和建议关系。系统按以下顺序寻找�
 
 维护任务由用户手动触发，但维护范围始终是整个 active Concept 图谱及其层级关系；当前 Concept、Session 或选中的 KnowledgeUnit 仅作为附加关注范围。默认只发送全库 Concept 名称、别名、摘要、关系、关联单元标题/摘要和来源信息；用户明确选择后才附带原始消息。
 
-LLM 只返回建议变更：合并、别名、创建/编辑/移动/归档 Concept、解除 hierarchy、父子关系、相关关系、重新关联和标题修订。新主题优先挂到语义上最窄且有直接证据的父主题，只有缺少层级证据时才成为根；系统先展示影响数量与差异，用户逐条或批量确认后以可撤销事务应用。
+LLM 只返回建议变更：合并、别名、创建/编辑/软删除（归档）/恢复/移动 Concept、添加/删除/修改 hierarchy 或 related、解除 hierarchy、Session/Message/KnowledgeUnit 直接归属重绑和阅读片段标题/摘要修订。`delete_concept` 只改变 Concept 状态，不删除数据库行；`restore_concept` 只恢复 archived Concept，二者对重复提交都是幂等操作。`merge` 会把 source 的别名、关系和多主题归属并入 target 后标记 source 为 merged，不能把 merged 主题当作普通删除恢复。每条动作都要求明确目标 ID、前置条件和影响范围，所有写入在独立事务快照中执行并可撤销。新主题优先挂到语义上最窄且有直接证据的父主题，只有缺少层级证据时才成为根；系统先展示影响数量与差异，用户逐条或批量确认后应用。普通 Concept 提取和对话不返回 related，相关信号由共享 Session/Message 归属派生。
 
 ## 7. 功能模块
 
@@ -708,8 +708,10 @@ LLM 返回建议而不是直接修改，包括：
 - 别名候选；
 - 新的父子或相关关系；
 - KnowledgeUnit 重新关联建议；
-- Concept 创建、编辑、移动、解除 hierarchy 和归档建议；这些动作均通过快照事务记录并可撤销。
-- 标题或摘要修订建议。
+- Concept 创建、编辑、软删除/恢复、移动、解除 hierarchy 建议；这些动作均通过快照事务记录并可撤销。
+- hierarchy/related 关系新增、按 `relation_id` 修改端点或类型、删除关系；`hierarchy` 每次修改都必须重新做 DAG 环检测，`related` 端点按无向集合规范化。
+- Session、Message、KnowledgeUnit 的多主题直接归属重绑：`replace=true` 替换，`replace=false` 追加；旧 `unit_relink` 协议继续兼容。
+- KnowledgeUnit 标题或摘要修订建议；只递增单元 revision，不改原始 Message 或直接 Concept 归属。
 
 界面显示每条建议的差异、影响的单元数量和来源。用户可以逐条或批量确认；确认、拒绝和撤销均记录在操作日志中。
 

@@ -78,7 +78,17 @@ describe('maintenance prompt', () => {
     expect(prompt).toContain('"direct_children"')
     expect(prompt).toContain('根节点是例外')
     expect(prompt).toContain('create_concept')
+    expect(prompt).toContain('delete_concept')
+    expect(prompt).toContain('restore_concept')
+    expect(prompt).toContain('merge')
+    expect(prompt).toContain('alias')
     expect(prompt).toContain('remove_hierarchy')
+    expect(prompt).toContain('remove_relation')
+    expect(prompt).toContain('update_relation')
+    expect(prompt).toContain('membership_relink')
+    expect(prompt).toContain('unit_revision')
+    expect(prompt).toContain('幂等应用并撤销')
+    expect(prompt).toContain('related 只能由维护任务显式编辑')
   })
 })
 
@@ -177,14 +187,14 @@ describe('Session and Message Concept extraction contract', () => {
     expect(prompt).not.toContain('默认关联到本 Session 中相关的所有 KnowledgeUnit')
   })
 
-  it('defines sparse hierarchy and related semantics independently', () => {
+  it('keeps ordinary extraction hierarchy-only and derives related signals locally', () => {
     const prompt = buildOriginConceptPrompt({ ...session, title: 'Spine Leaf与Clos关系', messageCount: 3 }, closMessages)
 
     expect(prompt).toContain('source 是直接父主题、target 是直接子主题')
     expect(prompt).toContain('上位概念/下位概念')
-    expect(prompt).toContain('related 是无向、非层级的稳定语义关系')
-    expect(prompt).toContain('最多返回 2 条最强 related')
-    expect(prompt).toContain('不要为了把所有 Concept 连起来而补关系')
+    expect(prompt).toContain('普通 Concept 提取不返回 related')
+    expect(prompt).toContain('共享 Session/Message 计算共现/相关信号')
+    expect(prompt).not.toContain('最多返回 2 条最强 related')
   })
 
   it('treats caller windows as technical input limits instead of knowledge boundaries', () => {

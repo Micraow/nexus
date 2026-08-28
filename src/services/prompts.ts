@@ -313,12 +313,12 @@ KnowledgeUnit：${unit.title ?? '待命名'}（ID：${unit.id}）
 ${disclosureText}
 
 如果 DISCLOSURE_INDEX 中已有父主题与子主题引用，请先判断是否应复用已有主题；新主题先匹配语义上最窄、能直接包含它的父主题，只有没有直接层级证据时才允许成为根；需要更多层级时按固定协议返回 disclosure_requests，不要自行创造 refID。
-关系语义：hierarchy 使用 source 作为父主题、target 作为子主题；related 只是两个主题之间的无向关联，不存在父子顺序。
-关系必须有消息中的直接证据：不要因为两个 Concept 同时出现、属于同一知识单元或“看起来有关”就建立关系。每个 KnowledgeUnit 最多返回 0～2 条关系，宁可为空；不要为了凑数建立 related。只保留最强、最明确的关系。
+关系语义：hierarchy 使用 source 作为父主题、target 作为子主题。普通 Concept 提取不返回 related；related 由应用根据共享 Session/Message 派生，只有知识维护任务可以显式编辑它。
+hierarchy 必须有消息中的直接上位/下位证据：不要因为两个 Concept 同时出现、属于同一知识单元或“看起来有关”就建立父子关系。每个 KnowledgeUnit 最多返回 0～2 条 hierarchy，宁可为空。
 
 输出中的 memberships 是可选的细粒度归属声明；同一目标可以列出多个 Concept，必须使用 concept_ids 数组。只能引用 DISCLOSURE_INDEX 中已经出现的 Concept refID；新提取的 Concept 由 concepts 数组定义，应用会按本 KnowledgeUnit 的范围建立多对多关联。如果全部复用现有 Concept，concepts 可以返回空数组，但 concept_ids 不能同时为空。
 
-只返回 JSON：{"concepts":[{"name":"...","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"concept_ids":["已列出的 Concept refID"],"memberships":[{"target_type":"unit|message|session","target_id":"原始 ID","concept_ids":["Concept refID", "另一个 Concept refID"]}],"relations":[{"source":"Concept 名称","target":"Concept 名称","type":"hierarchy|related"}],"disclosure_requests":[]}`)
+只返回 JSON：{"concepts":[{"name":"...","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"concept_ids":["已列出的 Concept refID"],"memberships":[{"target_type":"unit|message|session","target_id":"原始 ID","concept_ids":["Concept refID", "另一个 Concept refID"]}],"relations":[{"source":"Concept 名称","target":"Concept 名称","type":"hierarchy"}],"disclosure_requests":[]}`)
 }
 
 /** Session-wide Concept extraction uses the same contract as unit extraction. */
@@ -358,7 +358,7 @@ Concept 与归属：
 
 关系：
 - hierarchy 中 source 是直接父主题、target 是直接子主题。只有 target 的语义范围严格包含于 source，且二者是稳定的“上位概念/下位概念”关系时才能使用；因果、先后、组成步骤、同会话出现或一般相关都不是 hierarchy。不要同时返回可由其他边推导出的传递关系。
-- related 是无向、非层级的稳定语义关系，不存在父子顺序。仅共同出现或都属于本 Session 不足以建立 related；最多返回 2 条最强 related，宁可为空。
+- 普通 Concept 提取不返回 related；应用会根据共享 Session/Message 计算共现/相关信号。只有 hierarchy 需要模型声明，且必须是直接的上位/下位证据。
 - 关系端点使用已披露的 Concept refID 或本次 concepts 的 client_ref。不要为了把所有 Concept 连起来而补关系。
 
 只返回 JSON：{"concepts":[{"client_ref":"new:1","name":"...","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"memberships":[{"target_type":"message","target_id":"上面列出的 Message ID","concept_ids":["已披露的 Concept refID 或 new:1","另一个 Concept refID 或 client_ref"]}],"relations":[{"source":"Concept refID 或 client_ref","target":"Concept refID 或 client_ref","type":"hierarchy"}],"disclosure_requests":[]}`)
@@ -418,10 +418,10 @@ ${disclosureText}
 - 每个新主题必须至少归属于用户或 assistant Message；只有主题确实概括整个会话时才同时归属于 Session。不要把 Session 归属隐式复制给所有 Message。
 - 即使 units 为空，也要通过顶层 concepts 与 memberships 写明本轮确有证据的新主题或复用主题。没有新的稳定主题时 concepts 可以为空；没有直接归属时 memberships 可以为空。
 - units 只表示可选阅读片段。units[].concept_ids 只能引用已披露的已有主题；units[].concepts 可以定义只属于该阅读片段的新主题，但不能替代 Message/Session 的直接证据归属。
-- relations 可选返回最多 2 条本轮有直接证据的关系；hierarchy 的 source 必须是直接父主题、target 是直接子主题，related 是无向关联。关系会以 proposed 写入图谱等待用户确认；不要为了凑数建立关系，也不要把 related 当作层级。
+- relations 可选返回最多 2 条本轮有直接证据的 hierarchy；source 必须是直接父主题、target 是直接子主题。普通对话不要返回 related，应用会根据共享 Session/Message 派生相关信号；hierarchy 会以 proposed 写入图谱等待用户确认。
 
 请只返回 JSON，格式如下：
-{"answer":"完整回答（可包含 Markdown）","session_title":"不超过 60 个字符的 Session 标题","session_summary":"不超过 120 个字符的 Session 滚动摘要","concepts":[{"client_ref":"new:1","name":"新 Concept 名称","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"memberships":[{"target_type":"session|message","target_id":"上面给出的 Session 或 Message ID","concept_ids":["已有 Concept refID 或 new:1"]}],"relations":[{"source":"Concept refID 或 new:1","target":"Concept refID 或 new:2","type":"hierarchy|related"}],"units":[{"title":"本次回答的知识单元标题","summary":"不超过 120 个中文字符的摘要","concept_ids":["已有 Concept refID"],"concepts":[{"name":"仅属于该阅读片段的新 Concept 名称","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}]}],"disclosure_requests":[]}
+{"answer":"完整回答（可包含 Markdown）","session_title":"不超过 60 个字符的 Session 标题","session_summary":"不超过 120 个字符的 Session 滚动摘要","concepts":[{"client_ref":"new:1","name":"新 Concept 名称","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"memberships":[{"target_type":"session|message","target_id":"上面给出的 Session 或 Message ID","concept_ids":["已有 Concept refID 或 new:1"]}],"relations":[{"source":"Concept refID 或 new:1","target":"Concept refID 或 new:2","type":"hierarchy"}],"units":[{"title":"本次回答的知识单元标题","summary":"不超过 120 个中文字符的摘要","concept_ids":["已有 Concept refID"],"concepts":[{"name":"仅属于该阅读片段的新 Concept 名称","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}]}],"disclosure_requests":[]}
 
 session_title 和 session_summary 概括当前完整 Session，而不只是本轮问题；已有标题合适时原样返回。旧任务可以省略这两个字段，应用会保留已有值。units 是可选的阅读片段数组；它们打包本轮用户问题和回答，不表示知识主题层级。如果回答没有稳定、可复用的证据片段，返回空数组。不要返回解释文字。`)
 }
@@ -474,7 +474,25 @@ ${JSON.stringify(input.relations, null, 2)}
 一级主题及直接子主题引用（仅用于快速建立层级意识；完整关系仍以上面的 id 为准）：
 ${JSON.stringify(hierarchyIndex, null, 2)}
 
-关系语义：sourceId/targetId 在 hierarchy 中分别表示父主题和子主题；related 是无向关联，不存在父子顺序。
+关系语义：sourceId/targetId 在 hierarchy 中分别表示父主题和子主题；related 是无向关联，不存在父子顺序。related 只能由维护任务显式编辑，普通提取和对话不得返回它。
+
+维护动作契约（每条建议都必须可单独校验、幂等应用并撤销）：
+- create_concept：必填 name；可选 summary、notes、parent_concept_id。名称已存在时复用现有 Concept；父边作为 proposed hierarchy；无充分上位证据才允许 parent_concept_id=null。
+- update_concept：必填 concept_id，至少提供一个 name、summary、notes；目标必须是 active Concept，重命名不能与名称/别名冲突。
+- delete_concept：必填 concept_id；软删除（归档）主题并保留关系、归属和证据；active 才会改变状态，已归档时幂等无操作，可撤销恢复。不要删除数据库行。
+- restore_concept：必填 concept_id；仅恢复 archived 主题，active 时幂等无操作；保留其关系、归属和证据，merged 主题不可恢复。
+- archive_concept：delete_concept 的兼容别名，语义完全相同；新建议优先使用 delete_concept。
+- merge：必填 source_concept_id、target_concept_id 且不能相同；把 source 的别名、层级关系、Session/Message/KnowledgeUnit 归属并入 target，再将 source 标记 merged；目标必须 active，重复合并幂等，可撤销恢复完整快照。
+- alias：必填 active concept_id、非空 alias；重复别名幂等，别名不能与其他主题名称/别名冲突；只改变别名，可撤销。
+- relation：新增 hierarchy 或 related；端点必须是 active Concept，不能自环；hierarchy 必须通过 DAG 环检测；新增关系默认 proposed，重复关系视为幂等。
+- remove_relation：必填 relation_id；只删除该关系，不删除端点；关系不存在时视为幂等无操作。
+- update_relation：必填 relation_id，可改 new_source_concept_id、new_target_concept_id、new_relation_type；端点必须 active，hierarchy 重新做环检测，related 端点按无向集合规范化。
+- move_concept：必填 concept_id 和 parent_concept_id（可为 null）；替换该主题全部 hierarchy 父引用，null 表示提升为根；不能移动到自身/后代，操作可撤销。
+- remove_hierarchy：必填 child_concept_id，可选 parent_concept_id；只解除一条或全部父引用，不删除主题。
+- membership_relink：必填 target_type（session|message|unit）、target_id、concept_ids 和 replace；目标与 Concept 必须存在，replace=true 替换直接归属，false 只追加；不改变 hierarchy。
+- unit_relink：兼容旧协议，必填 unit_id 和 concept_ids；默认只追加，传 replace=true 才替换单元归属。
+- unit_revision：必填 unit_id，至少提供 title 或 summary；只修订阅读片段元数据并递增 revision，不改原始 Message 或直接 Concept 归属；相同内容重复提交幂等，可撤销。
+- 所有应用都在单事务快照中执行，失败整体回滚；不要输出 SQL、自由文本命令或不存在的 ID。
 
 知识单元：
 ${JSON.stringify(input.units, null, 2)}
@@ -483,6 +501,6 @@ ${input.includeMessages ? `\n补充原文：\n${input.includeMessages}` : ''}
 ${disclosureText}
 
 只返回 JSON：
-{"suggestions":[{"type":"merge","source_concept_id":"待合并主题 id","target_concept_id":"保留主题 id","reason":"理由"},{"type":"alias","concept_id":"主题 id","alias":"别名","reason":"理由"},{"type":"relation","source_concept_id":"关系一端；hierarchy 时为父主题","target_concept_id":"关系另一端；hierarchy 时为子主题","relation_type":"hierarchy|related","reason":"理由"},{"type":"create_concept","name":"新主题名称","summary":"摘要","notes":"备注","parent_concept_id":"直接父主题 id；没有充分证据时为 null","reason":"理由"},{"type":"update_concept","concept_id":"主题 id","name":"新名称","summary":"新摘要","notes":"新备注","reason":"理由"},{"type":"move_concept","concept_id":"主题 id","parent_concept_id":"新的直接父主题 id；提升为根时为 null","reason":"理由"},{"type":"remove_hierarchy","parent_concept_id":"父主题 id（可选）","child_concept_id":"子主题 id","reason":"理由"},{"type":"archive_concept","concept_id":"主题 id","reason":"理由"},{"type":"unit_relink","unit_id":"知识单元 id","concept_ids":["主题 id","另一个主题 id"],"reason":"理由"},{"type":"unit_revision","unit_id":"知识单元 id","title":"建议标题","summary":"建议摘要","reason":"理由"}],"disclosure_requests":[]}
+{"suggestions":[{"type":"merge","source_concept_id":"待合并主题 id","target_concept_id":"保留主题 id","reason":"理由"},{"type":"alias","concept_id":"主题 id","alias":"别名","reason":"理由"},{"type":"relation","source_concept_id":"关系一端；hierarchy 时为父主题","target_concept_id":"关系另一端；hierarchy 时为子主题","relation_type":"hierarchy|related","reason":"理由"},{"type":"remove_relation","relation_id":"关系 id","reason":"理由"},{"type":"update_relation","relation_id":"关系 id","new_source_concept_id":"新关系一端 id","new_target_concept_id":"新关系另一端 id","new_relation_type":"hierarchy|related","reason":"理由"},{"type":"create_concept","name":"新主题名称","summary":"摘要","notes":"备注","parent_concept_id":"直接父主题 id；没有充分证据时为 null","reason":"理由"},{"type":"update_concept","concept_id":"主题 id","name":"新名称","summary":"新摘要","notes":"新备注","reason":"理由"},{"type":"move_concept","concept_id":"主题 id","parent_concept_id":"新的直接父主题 id；提升为根时为 null","reason":"理由"},{"type":"remove_hierarchy","parent_concept_id":"父主题 id（可选）","child_concept_id":"子主题 id","reason":"理由"},{"type":"delete_concept","concept_id":"主题 id","reason":"理由"},{"type":"restore_concept","concept_id":"已归档主题 id","reason":"理由"},{"type":"archive_concept","concept_id":"主题 id（兼容别名）","reason":"理由"},{"type":"membership_relink","target_type":"session|message|unit","target_id":"目标 ID","concept_ids":["主题 id","另一个主题 id"],"replace":true,"reason":"理由"},{"type":"unit_relink","unit_id":"知识单元 id","concept_ids":["主题 id","另一个主题 id"],"replace":false,"reason":"理由"},{"type":"unit_revision","unit_id":"知识单元 id","title":"建议标题","summary":"建议摘要","reason":"理由"}],"disclosure_requests":[]}
 只返回确有依据的建议；关系建议最多 2 条，不能仅凭共同出现推断 related；新主题优先匹配已有或同批次中最窄且有直接证据的父主题，只有没有足够层级证据时才允许成为根；不要把所有主题平铺为一级。没有建议时返回空数组。不要输出解释文字。`)
 }
