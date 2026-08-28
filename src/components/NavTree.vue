@@ -1,12 +1,19 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { MessageSquare } from 'lucide-vue-next'
 import type { KnowledgeUnit, NavTreeNode, NavTreeNodeUnit } from '@/types/domain'
 
 const props = defineProps<{
   nodes: NavTreeNode[]
+  /** Complete node list used to resolve children after the root is filtered. */
+  allNodes?: NavTreeNode[]
+  /** Alias for callers that describe the complete list as fullNodes. */
+  fullNodes?: NavTreeNode[]
   nodeUnits: NavTreeNodeUnit[]
   units: KnowledgeUnit[]
   selectedNodeId?: string | null
+  /** IDs on the current ancestor path, used to guard malformed cyclic data. */
+  visitedNodeIds?: string[]
 }>()
 
 const emit = defineEmits<{
@@ -14,8 +21,14 @@ const emit = defineEmits<{
   (event: 'ask', node: NavTreeNode): void
 }>()
 
+const completeNodes = computed(() => props.allNodes ?? props.fullNodes ?? props.nodes)
+
 function childrenOf(nodeId: string): NavTreeNode[] {
-  return props.nodes.filter((node) => node.parentId === nodeId).sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  const visited = new Set(props.visitedNodeIds ?? [])
+  visited.add(nodeId)
+  return completeNodes.value
+    .filter((node) => node.parentId === nodeId && !visited.has(node.id))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 }
 
 function unitsOf(nodeId: string): KnowledgeUnit[] {
@@ -43,7 +56,7 @@ function unitsOf(nodeId: string): KnowledgeUnit[] {
       <div v-if="unitsOf(node.id).length" class="nav-tree-units">
         <span v-for="unit in unitsOf(node.id)" :key="unit.id" class="nav-tree-unit">{{ unit.title || '未命名阅读片段' }}</span>
       </div>
-      <NavTree v-if="childrenOf(node.id).length" :nodes="childrenOf(node.id)" :node-units="nodeUnits" :units="units" :selected-node-id="selectedNodeId" @select-node="emit('select-node', $event)" @ask="emit('ask', $event)" />
+      <NavTree v-if="childrenOf(node.id).length" :nodes="childrenOf(node.id)" :all-nodes="completeNodes" :node-units="nodeUnits" :units="units" :selected-node-id="selectedNodeId" :visited-node-ids="[...(visitedNodeIds ?? []), node.id]" @select-node="emit('select-node', $event)" @ask="emit('ask', $event)" />
     </div>
     <p v-if="!nodes.length" class="empty-inline">这个会话还没有探索节点。</p>
   </div>
