@@ -5,7 +5,7 @@ import { httpRequest } from '@/services/http'
 import { DEFAULT_TOKEN_BUDGET, normalizeTokenBudget, parseConfigText, readConfigText, writeConfig } from '@/services/config'
 import { buildGraph, graphSnapshotIsProgressiveCompatible, graphStats, graphViewFallbackIsCompatible, toggleExpandedConceptIds } from '@/services/graph'
 import { buildSearchDocuments, searchKnowledge } from '@/services/search'
-import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildOriginConceptPrompt, buildRepairPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, ensureHarnessPrompt, listedDisclosureRefIds, MAINTENANCE_ACTION_API, parseDisclosureContext, PROMPT_VERSION, renderQuickPhrase, replaceDisclosureContext } from '@/services/prompts'
+import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildOriginConceptPrompt, buildRepairPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, ensureHarnessPrompt, formatMaintenanceActionApi, listedDisclosureRefIds, MAINTENANCE_ACTION_API, parseDisclosureContext, PROMPT_VERSION, renderQuickPhrase, replaceDisclosureContext } from '@/services/prompts'
 import { conversationMessageBranchNodeId } from '@/services/conversation'
 import { importPayloadSchema, parseImportPayload, validateConceptIdList, validateConceptMemberships, validateDisclosureRequests, validateOriginConceptResult, validateSegmentationResult, validateUnitText } from '@/services/validation'
 import type { DisclosureContext } from '@/services/prompts'
@@ -1751,8 +1751,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         if (suggestion.parent_concept_id != null && !concepts.value.some((concept) => concept.id === suggestion.parent_concept_id && concept.status === 'active')) errors.push(`suggestions.${index} 的父知识主题不存在`)
         if (suggestion.name?.trim()) {
           const normalizedName = normalizeText(suggestion.name)
-          if (concepts.value.some((concept) => concept.status === 'active' && concept.normalizedName === normalizedName)
-            || aliases.value.some((alias) => alias.normalizedAlias === normalizedName)) errors.push(`suggestions.${index}.name 与现有知识主题或别名冲突；如需复用请使用 update_concept 或 alias`)
+          if (concepts.value.some((concept) => concept.normalizedName === normalizedName)
+            || aliases.value.some((alias) => alias.normalizedAlias === normalizedName)) errors.push(`suggestions.${index}.name 与现有知识主题或别名冲突；如需复用请使用 update_concept、restore_concept 或 alias`)
         }
       }
       if (suggestion.type === 'update_concept') {
@@ -3083,6 +3083,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     markTask,
     applyTaskResult,
     createMaintenanceTask,
+    maintenanceActionApi: MAINTENANCE_ACTION_API,
+    formatMaintenanceActionApi,
     maintenanceSuggestionErrors,
     applyMaintenanceSuggestion,
     retryTask,

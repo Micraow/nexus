@@ -102,6 +102,8 @@ describe('maintenance prompt', () => {
     expect(actions.get('set_relation_status')?.input_schema.properties.status).toMatchObject({ enum: ['proposed', 'confirmed', 'rejected'] })
     const serialized = JSON.parse(formatMaintenanceActionApi()) as Array<{ input_schema: { additionalProperties: boolean } }>
     expect(serialized.every((action) => action.input_schema.additionalProperties === false)).toBe(true)
+    expect(actions.get('create_concept')).toMatchObject({ name: 'nexus_maintenance_create_concept', description: expect.any(String) })
+    expect(actions.get('create_concept')?.inputSchema).toEqual(actions.get('create_concept')?.input_schema)
   })
 })
 
