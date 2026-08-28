@@ -390,6 +390,30 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.messages.filter((message) => message.sessionId === sessionId)).toHaveLength(messageCount)
   })
 
+  it('discloses the Concept paths already visited by the current Session to follow-ups', () => {
+    const sessionId = store.createConversationTask({ question: '解释响应式系统和调度器' })
+    const firstTask = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
+    const question = store.messages.find((message) => message.sessionId === sessionId && message.role === 'user')!
+    const first = store.applyTaskResult(firstTask.id, JSON.stringify({
+      answer: '响应式系统包含调度器。',
+      concepts: [
+        { client_ref: 'new:1', name: '响应式系统', summary: '状态依赖追踪。', aliases: [] },
+        { client_ref: 'new:2', name: '调度器', summary: '更新批处理。', aliases: [] },
+      ],
+      memberships: [{ target_type: 'message', target_id: question.id, concept_ids: ['new:1', 'new:2'] }],
+      relations: [{ source: 'new:1', target: 'new:2', type: 'hierarchy', status: 'proposed' }],
+      units: [{ title: '响应式系统概览', summary: '响应式系统及其调度器。', concept_ids: [], concepts: [] }],
+      disclosure_requests: [],
+    }))
+    expect(first.ok, first.errors.join('; ')).toBe(true)
+    const root = store.navNodes.find((node) => node.sessionId === sessionId && !node.parentId)!
+    const followUpTaskId = store.createFollowUpTask({ sessionId, parentNodeId: root.id, question: '继续解释调度器' })
+    const prompt = store.tasks.find((item) => item.id === followUpTaskId)!.prompt
+    const scheduler = store.concepts.find((concept) => concept.name === '调度器')!
+    expect(prompt).toContain(scheduler.id)
+    expect(prompt).toContain('知识主题：调度器')
+  })
+
   it('allows only one unfinished follow-up per Session', () => {
     const sessionId = store.createConversationTask({ question: '第一轮问题' })
     const initialTask = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!

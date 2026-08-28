@@ -53,7 +53,12 @@ describe('conversation prompt', () => {
     expect(prompt).toContain('先前回答')
     expect(prompt).toContain('本次 assistant Message ID：answer-1')
     expect(prompt).toContain('"client_ref":"new:1"')
-    expect(prompt).toContain('即使 units 为空')
+    expect(prompt).toContain('本轮绝不能返回空数组')
+    expect(prompt).toContain('units[].concepts 也必须是对象数组')
+    expect(prompt).toContain('Nexus 标记只能出现在 answer 字符串中')
+    expect(prompt).toContain('新建时必须省略 unit_id')
+    expect(prompt).not.toContain('unit-eval-1')
+    expect(prompt).not.toContain('如果回答没有稳定、可复用的证据片段，返回空数组')
     expect(prompt).toContain('黄色建议不要创建为 Concept')
     expect(prompt).toContain('语义范围最窄的已有直接父主题')
     expect(prompt).toContain('只有确无合适上位主题才允许暂作根')
@@ -86,6 +91,13 @@ describe('conversation prompt', () => {
     expect(prompt).toContain('本 Prompt 没有提供 DISCLOSURE_INDEX 目录')
     expect(prompt).toContain('disclosure_requests 必须返回空数组 []')
     expect(prompt).not.toContain('DISCLOSURE_INDEX（首层目录与已展开记录）:')
+  })
+
+  it('only shows a real current unit id in reuse examples', () => {
+    const firstTurn = buildConversationPrompt({ question: '第一轮', context: '', availableUnits: [] })
+    expect(firstTurn).not.toContain('"unit_id"')
+    const followUp = buildConversationPrompt({ question: '继续', context: '', availableUnits: [{ id: 'unit-real', title: '已有片段', summary: '摘要' }] })
+    expect(followUp).toContain('"unit_id":"unit-real"')
   })
 })
 

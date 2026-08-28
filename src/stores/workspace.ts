@@ -2432,7 +2432,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const conversationSession = sessions.value.find((item) => item.id === targetId)
       const existingSessionUnits = units.value.filter((item) => item.sessionId === targetId)
       if (typeof answer !== 'string' || !answer.trim()) errors.push('answer 必须是非空字符串')
-      if (!Array.isArray(rawUnits)) errors.push('units 必须是数组；没有稳定知识片段时可返回空数组')
+      if (!Array.isArray(rawUnits)) errors.push('units 必须是非空数组；每轮回答都要复用或创建阅读片段')
       if (Array.isArray(rawUnits) && rawUnits.length === 0) {
         errors.push(existingSessionUnits.length === 0
           ? '本 Session 尚无阅读片段，首轮回答必须创建一个阅读片段'
@@ -3223,6 +3223,22 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const assistantMessageId = createId('message')
     const context = buildConversationContext(input.sourceUnitIds ?? [], input.sourceMessageIds ?? [], input.includeFullContent ?? false)
     const topic = input.topicId ? concepts.value.find((concept) => concept.id === input.topicId)?.name : undefined
+    // A follow-up must know which Concepts this Session has already created
+    // or reused; otherwise a previously hidden child can be emitted again as
+    // a duplicate new Concept. Expand only the ancestor paths already visited
+    // by this Session, preserving the progressive disclosure contract while
+    // making existing markers and refIDs available to the next answer.
+    const sessionMessageIds = new Set(messages.value.filter((message) => message.sessionId === session.id).map((message) => message.id))
+    const sessionUnitIds = new Set(units.value.filter((unit) => unit.sessionId === session.id).map((unit) => unit.id))
+    const currentSessionConceptIds = new Set<string>()
+    sessionConcepts.value.filter((link) => link.sessionId === session.id).forEach((link) => currentSessionConceptIds.add(link.conceptId))
+    messageConcepts.value.filter((link) => sessionMessageIds.has(link.messageId)).forEach((link) => currentSessionConceptIds.add(link.conceptId))
+    unitConcepts.value.filter((link) => sessionUnitIds.has(link.unitId)).forEach((link) => currentSessionConceptIds.add(link.conceptId))
+    messages.value.filter((message) => message.sessionId === session.id).forEach((message) => {
+      const ids = message.metadata?.concept_ids
+      if (Array.isArray(ids)) ids.filter((id): id is string => typeof id === 'string').forEach((id) => currentSessionConceptIds.add(id))
+    })
+    const expandedSessionConceptPaths = [...currentSessionConceptIds].flatMap((conceptId) => conceptExpansionPath(conceptId, true))
     let taskId = ''
     mutate(() => {
       const messageId = createId('message')
@@ -3232,7 +3248,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         db.run('INSERT OR IGNORE INTO message_concepts(message_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [messageId, input.topicId, 'manual', now])
       }
       db.run('UPDATE sessions SET message_count = message_count + 1, updated_at = ? WHERE id = ?', [now, session.id])
-      taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${session.id}:${revision}`, prompt: buildConversationPrompt({ question, topic, context, navigationPath: buildNavigationPath(session.id, parentNode.id), conversationHistory: buildConversationHistory(session.id, 40, parentNode.id, messageId), sessionTitle: session.title, sessionSummary: session.summary ?? '', availableUnits: units.value.filter((unit) => unit.sessionId === session.id).map((unit) => ({ id: unit.id, title: unit.title ?? '', summary: unit.summary ?? '' })), conceptLimit: config.value.llm.conceptLimit, targetSessionId: session.id, targetMessageId: messageId, targetAssistantMessageId: assistantMessageId, disclosure: promptDisclosureContext({ unitIds: input.sourceUnitIds ?? [], messageIds: input.sourceMessageIds ?? [], includeFullContent: input.includeFullContent ?? false }) }), status: 'pending', scopeLabel: `${session.title} · 追问` })
+      taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${session.id}:${revision}`, prompt: buildConversationPrompt({ question, topic, context, navigationPath: buildNavigationPath(session.id, parentNode.id), conversationHistory: buildConversationHistory(session.id, 40, parentNode.id, messageId), sessionTitle: session.title, sessionSummary: session.summary ?? '', availableUnits: units.value.filter((unit) => unit.sessionId === session.id).map((unit) => ({ id: unit.id, title: unit.title ?? '', summary: unit.summary ?? '' })), conceptLimit: config.value.llm.conceptLimit, targetSessionId: session.id, targetMessageId: messageId, targetAssistantMessageId: assistantMessageId, disclosure: promptDisclosureContext({ unitIds: input.sourceUnitIds ?? [], messageIds: input.sourceMessageIds ?? [], includeFullContent: input.includeFullContent ?? false, expandedRefIds: expandedSessionConceptPaths }) }), status: 'pending', scopeLabel: `${session.title} · 追问` })
       db.run('UPDATE messages SET metadata = ? WHERE id = ?', [JSON.stringify({ mode: 'follow_up', topicId: input.topicId ?? null, parentNodeId: parentNode.id, taskId, answerMessageId: assistantMessageId }), messageId])
       writeSourceReferences(session.id, input.sourceUnitIds ?? [], input.sourceMessageIds ?? [], input.includeFullContent ?? false)
     })
