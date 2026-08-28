@@ -384,6 +384,7 @@ textarea { resize: vertical; }
 .maintenance-scope-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(12px * var(--app-font-scale)); }
 .maintenance-scope-copy span { color: var(--muted); font-size: calc(11px * var(--app-font-scale)); line-height: 1.45; }
 .maintenance-results { display: grid; gap: 8px; margin-top: 15px; }
+.maintenance-task-results { margin-top: 14px; padding: 17px 19px; }
 .maintenance-suggestion { display: flex; align-items: flex-start; gap: 10px; padding: 11px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 6px; }
 .maintenance-suggestion.applied { opacity: .68; }
 .maintenance-suggestion-main { min-width: 0; flex: 1; display: grid; gap: 6px; }
