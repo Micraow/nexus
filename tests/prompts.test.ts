@@ -60,7 +60,6 @@ describe('conversation prompt', () => {
     expect(prompt).toContain('严禁使用“原文”“正文”“主题名称”等占位文字')
     expect(prompt).toContain('教材的章节大标题或小标题')
     expect(prompt).toContain('多个具有独立知识含义的概念词，可以分别标记多个推荐词')
-    expect(prompt).toContain('思维导图一样表达清晰、可导航的直接上下位结构')
     expect(prompt).not.toContain(']]原文[[/nexus]]')
   })
 
@@ -229,6 +228,7 @@ describe('Session and Message Concept extraction contract', () => {
     expect(prompt).toContain('"type":"hierarchy","status":"proposed"')
     expect(prompt).not.toContain('"type":"hierarchy|related"')
     expect(prompt).toContain('不要为了把所有 Concept 连起来而补关系')
+    expect(prompt).toContain('请像绘制知识导图一样组织清晰的直接父主题→直接子主题结构')
     expect(prompt).toContain('语义范围最窄且确实包含它的已有父主题')
     expect(prompt).toContain('同批次父主题')
     expect(prompt).toContain('status 只能省略或为 proposed')
