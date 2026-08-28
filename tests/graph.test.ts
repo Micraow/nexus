@@ -38,6 +38,25 @@ describe('derived graph', () => {
     expect(graphSnapshotIsProgressiveCompatible(snapshot, { expandedConceptIds: ['root'] })).toBe(true)
   })
 
+  it('uses hierarchy parent references over stale depth values when checking snapshots', () => {
+    const snapshot = buildGraph({
+      concepts: [
+        { id: 'root', name: '根', normalizedName: '根', notes: '', status: 'active', createdAt: now, updatedAt: now },
+        { id: 'child', name: '子', normalizedName: '子', notes: '', status: 'active', createdAt: now, updatedAt: now },
+      ],
+      units: [], messages: [], unitConcepts: [],
+      relations: [{ id: 'h', parentConceptId: 'root', childConceptId: 'child', relationType: 'hierarchy', source: 'manual', status: 'confirmed', createdAt: now, updatedAt: now }],
+      revision: 1,
+      expandedConceptIds: ['root'],
+    })
+    const stale = {
+      ...snapshot,
+      nodes: snapshot.nodes.map((node) => node.type === 'concept' && node.refId === 'child' ? { ...node, depth: 0 } : node),
+    }
+    expect(graphSnapshotIsProgressiveCompatible(stale, { expandedConceptIds: [] })).toBe(false)
+    expect(graphSnapshotIsProgressiveCompatible(stale, { expandedConceptIds: ['root'] })).toBe(true)
+  })
+
   it('builds concept co-occurrence with accumulated weight', () => {
     const snapshot = buildGraph({
       concepts: [

@@ -115,4 +115,18 @@ describe('GraphCanvas progressive disclosure', () => {
     await nextTick()
     expect([...expanded.querySelectorAll<SVGGElement>('.graph-node')].map((node) => node.dataset.refId).sort()).toEqual(['child', 'root'])
   })
+
+  it('does not promote a child with a stale depth zero value to a root', async () => {
+    const snapshot: GraphSnapshot = {
+      revision: 3,
+      nodes: [
+        { id: 'concept:root', type: 'concept', refId: 'root', label: '根主题', degree: 1, unitCount: 0, depth: 0, parentIds: [], hasChildren: true },
+        { id: 'concept:child', type: 'concept', refId: 'child', label: '子主题', degree: 1, unitCount: 0, depth: 0, parentIds: ['root'], hasChildren: false },
+      ],
+      edges: [{ id: 'edge:h', source: 'concept:root', target: 'concept:child', type: 'hierarchy', weight: 1, status: 'confirmed' }],
+    }
+    const target = mountSnapshot(snapshot)
+    await nextTick()
+    expect([...target.querySelectorAll<SVGGElement>('.graph-node')].map((node) => node.dataset.refId)).toEqual(['root'])
+  })
 })

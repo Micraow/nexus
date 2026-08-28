@@ -189,10 +189,11 @@ function visibleSnapshot(): { nodes: GraphNode[]; edges: GraphEdge[] } {
   const hasHierarchyMetadata = conceptNodes.some((node) => node.depth != null || node.parentId != null || (node.parentIds?.length ?? 0) > 0)
     || edges.some((edge) => edge.type === 'hierarchy')
   if (hasHierarchyMetadata && conceptNodes.length) {
+    // Parent references are the source of truth. A stale depth value (for
+    // example `depth: 0` on an imported child) must never promote a child to
+    // the initial root projection.
     const roots = conceptNodes
-      .filter((node) => node.depth != null
-        ? node.depth === 0
-        : !(parentsByConcept.get(node.refId)?.size))
+      .filter((node) => !(parentsByConcept.get(node.refId)?.size))
       .map((node) => node.refId)
     // Keep malformed/cyclic snapshots inspectable, matching the service
     // resolver's cycle fallback instead of rendering an empty graph.

@@ -258,12 +258,30 @@ export function graphSnapshotIsProgressiveCompatible(snapshot: GraphSnapshot, op
   if (conceptNodes.some((node) => node.depth == null || !Number.isFinite(node.depth))) return false
 
   const byId = new Map(conceptNodes.map((node) => [node.refId, node]))
-  const visible = new Set(conceptNodes.filter((node) => node.depth === 0).map((node) => node.refId))
+  const parentsByConcept = new Map<string, Set<string>>()
+  conceptNodes.forEach((node) => {
+    const parentIds = (node.parentIds ?? (node.parentId ? [node.parentId] : []))
+      .map((id) => id.startsWith('concept:') ? id.slice('concept:'.length) : id)
+      .filter((id) => byId.has(id) && id !== node.refId)
+    if (parentIds.length) parentsByConcept.set(node.refId, new Set(parentIds))
+  })
+  snapshot.edges.forEach((edge) => {
+    if (edge.type !== 'hierarchy') return
+    const source = edge.source.startsWith('concept:') ? edge.source.slice('concept:'.length) : edge.source
+    const target = edge.target.startsWith('concept:') ? edge.target.slice('concept:'.length) : edge.target
+    if (!byId.has(source) || !byId.has(target) || source === target) return
+    const parents = parentsByConcept.get(target) ?? new Set<string>()
+    parents.add(source)
+    parentsByConcept.set(target, parents)
+  })
+  const visible = new Set(conceptNodes
+    .filter((node) => !(parentsByConcept.get(node.refId)?.size))
+    .map((node) => node.refId))
   const expanded = new Set(options.expandedConceptIds ?? [])
   // An explicitly expanded descendant implicitly opens the ancestor path in
   // the real resolver, so mirror that normalization before checking a
   // candidate snapshot.
-  const parentIdsByConcept = new Map(conceptNodes.map((node) => [node.refId, node.parentIds ?? []]))
+  const parentIdsByConcept = new Map([...parentsByConcept].map(([id, parentIds]) => [id, [...parentIds]]))
   ;[...(options.expandedConceptIds ?? [])].forEach((id) => {
     const pending = [id]
     const seen = new Set<string>()
@@ -284,7 +302,10 @@ export function graphSnapshotIsProgressiveCompatible(snapshot: GraphSnapshot, op
     const parent = byId.get(parentId)
     if (!parent) continue
     conceptNodes.forEach((child) => {
-      if (child.depth !== (parent.depth ?? 0) + 1 || !child.parentIds?.includes(parentId) || visible.has(child.refId)) return
+      // Parent references are authoritative. Cached depth metadata can be
+      // stale after imports or hierarchy edits, so do not reject a directly
+      // referenced child solely because its numeric depth is wrong.
+      if (!parentIdsByConcept.get(child.refId)?.includes(parentId) || visible.has(child.refId)) return
       visible.add(child.refId)
       queue.push(child.refId)
     })
