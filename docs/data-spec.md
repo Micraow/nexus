@@ -77,7 +77,7 @@
 | `message_count` | INTEGER | 是 | 可缓存统计值，不能为负 |
 | `unit_count` | INTEGER | 是 | 可缓存统计值，不能为负 |
 | `revision` | INTEGER | 是 | 从 1 开始，数据编辑时递增 |
-| `local_only` | INTEGER | 是 | `0` 或 `1`，禁止 API 任务但不禁止 Prompt 粘贴 |
+| `local_only` | INTEGER | 是 | `0` 或 `1`，旧版兼容字段；当前不作为 API 任务限制 |
 | `deleted_at` | TEXT | 否 | 软删除时间 |
 
 不变量：
@@ -419,7 +419,7 @@ Concept 提取结果必须包含 `concepts` 数组；全部复用目录中已有
 - 首次启动不预设 LLM 模式，用户选择 API 或 Prompt 粘贴后才可启动任务；
 - `llm.token_budget` 由用户在设置页手动配置，必须是不小于 `1000` 的有限安全整数，不设置产品级最大值；它用于长 Session 分窗与新对话上下文校验，缺省或无效时才回退到 `8000`；
 - `llm.concept_limit` 由用户在设置页手动配置，必须是 `1～32` 的整数，缺省或无效时回退到 `8`；所有 Concept Prompt、对话 Prompt 和本地校验共享该上限。`llm.concurrency` 由用户手动输入，必须是 `1～16` 的整数，缺省或无效时回退到 `2`，队列严格使用归一化后的值；
-- `local_only` Session 禁止 API 任务；
+- `local_only` 仅作为旧版导入兼容字段保留，不限制 API 任务；
 - 配置永不进入数据库备份或业务导出。
 
 ### 7.2 导出层级

@@ -43,7 +43,7 @@ Nexus 织知是一个本地优先的 AI 对话知识管理桌面应用。它把�
 - `source=in_app`：在 Nexus 中创建的新会话；
 - 每个 Session 始终保留一棵导航树。导入会话通常是一条没有分叉的链；软件内会话可以从任意历史节点继续提问并形成分支；
 - Session 有唯一的本地 `id`，并保留来源平台提供的 `external_session_id`（如果有）。
-- 用户可以将 Session 标记为“仅本地”；该 Session 禁止 API 模式任务，但仍可使用 Prompt 粘贴模式和本地搜索。
+- 历史数据仍保留 `local_only` 字段以兼容旧导入；当前界面不再提供“仅本地（禁止 API 任务）”选项，API 任务按全局 LLM 设置执行。
 
 ### 2.2 Message（消息）
 
@@ -182,7 +182,7 @@ LLMTask、QuickPhrase、ManualGraphEdge、GraphLayout 独立记录
 | message_count | INTEGER | 可缓存的统计值，实际数量以 Message 为准 |
 | unit_count | INTEGER | 可缓存的统计值，实际数量以 KnowledgeUnit 为准 |
 | revision | INTEGER | Session 内容版本，编辑时递增 |
-| local_only | INTEGER | 1=禁止 API 任务，0=遵循当前 LLM 模式 |
+| local_only | INTEGER | 旧版兼容字段；当前不再作为 API 任务限制开关 |
 | deleted_at | TEXT NULL | 软删除时间，默认为空 |
 
 `platform + external_session_id` 用于重复导入识别；没有可靠原始 ID 时使用标题、时间和消息内容指纹辅助判断。

@@ -46,7 +46,7 @@
 - `llm.concept_limit` 由设置页手动配置为 `1～32`（默认 `8`），并同时传入 Concept、起源 Concept 和对话 Prompt；应用校验器按当前值拒绝超限响应，不静默截断。Concept 名称要求教材章节式的短、单一主题词组，消息归属只保留有直接证据的稀疏 membership。
 - Token 预算不是固定的 `8000`：设置页允许输入任意不小于 `1000` 的有限安全整数并立即持久化为 `llm.token_budget`，不施加产品级最大值。配置读取、界面提交和写回使用同一归一化函数；该值供长 Session 分窗与新对话上下文超限检查共同使用，已创建的任务不会因之后修改预算而重写。
 - 长 Session 按估算 token 预算切成带两条消息重叠的运行时窗口；合并多个窗口结果时按全局 Message ID、Concept 规范名、归属目标和关系类型去重，并校验未知 ID、关系成环与 related/hierarchy 语义冲突，任何冲突都整体判失败，不写入部分结果。窗口不创建 KnowledgeUnit。
-- API 模式采用 OpenAI-compatible Chat Completions：请求地址为 `baseUrl + /chat/completions`，只发送当前任务 Prompt，温度固定为 `0`。`local_only` Session 在 API 执行前被拒绝；Prompt 粘贴模式不发网络请求。
+- API 模式采用 OpenAI-compatible Chat Completions：请求地址为 `baseUrl + /chat/completions`，只发送当前任务 Prompt，温度固定为 `0`。历史 `local_only` 字段仅用于兼容旧数据，不再阻止 API 执行；Prompt 粘贴模式不发网络请求。
 - 对话 Prompt 携带当前 Session 标题/摘要、导航路径和最近历史消息，并允许返回 `session_title`（≤60 字）和 `session_summary`（≤120 字）。完成结果在同一事务中写入 assistant Message、Session 滚动摘要、可选 KnowledgeUnit 和导航节点；仅应用内占位标题会自动改名，导入或用户编辑过的标题保持不变。旧结果省略字段时保留已有值，空摘要以回答文本作有限回退。
 - 所有任务 Prompt 先经过 `ensureHarnessPrompt`，固定拼接版本化的 `NEXUS_HARNESS_PROMPT` 与 `PROGRESSIVE_DISCLOSURE_PROTOCOL`；动态任务规格放在固定前缀之后。Harness 允许模型使用自身知识和调用方授权的搜索/工具，但要求区分输入证据、外部资料和推断，并把消息、摘要、目录都当作不可信数据。
 - 对话 Prompt 约定已有主题使用 `[[nexus:existing:主题名称]]回答中实际出现的词组[[/nexus]]`、建议探索主题使用 `[[nexus:suggested:主题名称]]回答中实际出现的词组[[/nexus]]`；模型先按思维导图梳理答案，再对每个稳定、独立概念的首次真实出现分别标记。推荐词采用教材章节大标题/小标题粒度，短而有辨识度；没有固定总数量上限，但不得把多个概念合并为一个 marker，也不得使用“原文”等占位文字。Markdown 渲染器移除标记并以蓝/黄色下划线呈现，旧响应中的占位正文回退显示 marker 主题名。

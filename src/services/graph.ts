@@ -31,6 +31,24 @@ export interface GraphInput extends GraphViewOptions {
 // Keep the service-level import path available for existing consumers.
 export type { GraphViewOptions } from '@/types/domain'
 
+/**
+ * Keep labels readable when a Markdown/marker string reaches a non-Markdown
+ * surface (graph nodes, compact lists, tooltips). This is intentionally a
+ * light cleanup: preserve the text while removing presentation delimiters.
+ */
+export function cleanGraphText(value: unknown, maxLength?: number): string {
+  let text = String(value ?? '')
+    .replace(/\[\[\/?nexus(?::(?:existing|suggested):[^\]]+)?\]\]/gi, '')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/[`*_~]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (maxLength != null && text.length > maxLength) text = Array.from(text).slice(0, maxLength).join('')
+  return text
+}
+
 export interface ConceptHierarchyIndex {
   parentsByChild: Map<string, Set<string>>
   childrenByParent: Map<string, Set<string>>
@@ -453,11 +471,12 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
 
   const nodes: GraphNode[] = visibleConcepts.map((concept) => {
     const parentIds = [...(hierarchy.parentsByChild.get(concept.id) ?? [])].filter((id) => conceptById.has(id))
+    const childCount = hierarchy.childrenByParent.get(concept.id)?.size ?? 0
     return {
       id: `concept:${concept.id}`,
       type: 'concept',
       refId: concept.id,
-      label: concept.name,
+      label: cleanGraphText(concept.name) || concept.name,
       subtitle: 'Concept',
       degree: 0,
       unitCount: 0,
@@ -465,7 +484,8 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
       parentIds,
       parentId: parentIds[0],
       rootIds: hierarchy.rootIdsByConcept.get(concept.id) ?? [concept.id],
-      hasChildren: (hierarchy.childrenByParent.get(concept.id)?.size ?? 0) > 0,
+      hasChildren: childCount > 0,
+      childCount,
       expanded: expandedIds.has(concept.id),
     }
   })
@@ -613,8 +633,8 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
       id: unitNodeId,
       type: 'unit',
       refId: unit.id,
-      label: unit.title || '待命名阅读片段',
-      subtitle: unit.summary || '尚未生成摘要',
+      label: cleanGraphText(unit.title) || '待命名阅读片段',
+      subtitle: cleanGraphText(unit.summary) || '尚未生成摘要',
       degree: 0,
       unitCount: 0,
     }
@@ -667,7 +687,7 @@ export function buildGraph(input: GraphInput): GraphSnapshot {
         id: messageNodeId,
         type: 'message',
         refId: message.id,
-        label: message.content.slice(0, 34) || '空消息',
+        label: cleanGraphText(message.content, 34) || '空消息',
         subtitle: message.role,
         degree: 0,
         unitCount: 0,

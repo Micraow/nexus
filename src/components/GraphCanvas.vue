@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as d3 from 'd3'
 import type { GraphEdge, GraphNode, GraphSnapshot, GraphViewport } from '@/types/domain'
+import { cleanGraphText } from '@/services/graph'
 
 /** Optional hierarchy metadata accepted by recursive graph callers. */
 export interface GraphConceptHierarchyMeta {
@@ -96,6 +97,7 @@ const nodePositions = new Map<string, { x: number; y: number }>()
 let renderGeneration = 0
 let fitTimer: number | null = null
 let resizeTimer: number | null = null
+let topologyAnchorTimer: number | null = null
 let draggingNodeId: string | null = null
 let dragStartPoint: { x: number; y: number } | null = null
 let dragMoved = false
@@ -114,22 +116,32 @@ const palette: Record<string, string> = {
 }
 
 function edgeColor(edge: GraphEdge): string {
-  if (edge.type === 'hierarchy') return '#2c6e9e'
-  if (edge.type === 'related') return '#c2cbd1'
-  if (edge.type === 'conversation') return '#c8c5bd'
-  if (edge.type === 'association') return '#d0d7dc'
-  if (edge.type === 'co_occurrence') return '#b8c2c9'
-  return '#c2cbd1'
+  // Edge strength is encoded by darkness as well as width. Keep hierarchy
+  // links in the primary blue family, while weak evidence links converge to
+  // a neutral charcoal as their weight grows.
+  const bases: Record<string, [number, number, number]> = {
+    hierarchy: [44, 110, 158],
+    related: [148, 160, 170],
+    conversation: [156, 151, 139],
+    association: [166, 174, 181],
+    co_occurrence: [122, 143, 154],
+    manual: [130, 140, 150],
+  }
+  const [r, g, b] = bases[edge.type] ?? bases.manual
+  const strength = Math.min(1, Math.log2(Math.max(1, edge.weight) + 1) / 4)
+  // Even a single occurrence remains legible; repeated evidence trends dark.
+  const darkness = 0.22 + strength * 0.58
+  return d3.rgb(Math.round(r * (1 - darkness)), Math.round(g * (1 - darkness)), Math.round(b * (1 - darkness))).formatHex()
 }
 
 function edgeWidth(edge: GraphEdge): number {
   // Hierarchy is the visual backbone. Co-occurrence still communicates its
   // Session count, but remains thinner than a parent-child edge.
-  if (edge.type === 'co_occurrence') return Math.min(1.45, 0.48 + Math.log2(edge.weight + 1) * 0.3)
-  if (edge.type === 'hierarchy') return 1.65
-  if (edge.type === 'manual') return 0.45
-  if (edge.type === 'related') return 0.4
-  return 0.42
+  if (edge.type === 'co_occurrence') return Math.min(3.2, 0.9 + Math.log2(edge.weight + 1) * 0.62)
+  if (edge.type === 'hierarchy') return Math.min(3.4, 2.05 + Math.log2(edge.weight + 1) * 0.28)
+  if (edge.type === 'manual') return 1.05
+  if (edge.type === 'related') return Math.min(2.4, 0.82 + Math.log2(edge.weight + 1) * 0.42)
+  return 0.9
 }
 
 function mapValue<T>(map: Record<string, T> | Map<string, T> | undefined, key: string): T | undefined {
@@ -288,7 +300,7 @@ function conceptHasChildren(node: GraphNode, edges: GraphEdge[]): boolean {
 
 function nodeRadius(node: GraphNode): number {
   return node.type === 'concept'
-    ? Math.min(31, 16 + Math.sqrt(node.unitCount) * 4)
+    ? Math.min(40, 15 + Math.sqrt(node.unitCount + 1) * 3.4 + Math.log2((node.childCount ?? 0) + 1) * 4.2 + Math.sqrt(node.degree) * 0.45)
     : node.type === 'unit' ? 11 : 7
 }
 
@@ -420,6 +432,20 @@ function render(): void {
       node.fy = node.y
     }
   })
+  // During the first disclosure render, hold the existing topology in place
+  // while newly revealed children settle around their parent. Without this
+  // short anchor window d3's center force can pull every root toward the
+  // canvas center, making the first click appear to fling the branch to a
+  // corner; a refresh then mysteriously produces a different layout.
+  if (topologyAnchorTimer != null) window.clearTimeout(topologyAnchorTimer)
+  topologyAnchorTimer = null
+  const anchoredNodes = topologyChanged && hasPreviousLayout
+    ? nodes.filter((node) => knownNodeIds.has(node.id) && !node.fixed && node.x != null && node.y != null)
+    : []
+  anchoredNodes.forEach((node) => {
+    node.fx = node.x
+    node.fy = node.y
+  })
   const linkLayer = viewport.append('g').attr('class', 'graph-links')
   const nodeLayer = viewport.append('g').attr('class', 'graph-nodes')
 
@@ -427,7 +453,11 @@ function render(): void {
     .selectAll<SVGLineElement, GraphEdge>('line')
     .data(links, (edge) => edge.id)
     .join('line')
-    .attr('class', 'graph-link')
+    .attr('class', (edge) => {
+      const source = typeof edge.source === 'string' ? edge.source : String(edge.source)
+      const target = typeof edge.target === 'string' ? edge.target : String(edge.target)
+      return `graph-link${source.startsWith('unit:') || target.startsWith('unit:') ? ' graph-link-unit' : ''}`
+    })
     .attr('data-edge-type', (edge) => edge.type)
     .attr('stroke', edgeColor)
     .attr('stroke-width', edgeWidth)
@@ -489,6 +519,12 @@ function render(): void {
       return `${node.label} · ${isExpanded(node) ? '收起子主题' : '展开子主题'}并打开详情`
     })
     .classed('is-expandable', (node) => node.type === 'concept' && conceptHasChildren(node, links))
+  nodeSelection.select<SVGCircleElement>('.graph-node-shape')
+    .attr('r', nodeRadius)
+    .attr('fill', (node) => palette[node.type])
+  nodeSelection.select<SVGTextElement>('.graph-node-label')
+    .attr('dy', (node) => (node.type === 'concept' ? nodeRadius(node) + 15 : nodeRadius(node) + 17))
+    .text((node) => cleanGraphText(node.label) || node.label)
   nodeSelection.classed('is-selected', (node) => node.type === 'unit' && props.selectedUnitIds.includes(node.refId))
 
   // Topology changes keep their existing coordinates, then gently reveal newly
@@ -697,6 +733,21 @@ function render(): void {
   else if (hasPreviousLayout) simulation.alphaDecay(0.04).alpha(0.24)
   else simulation.alphaDecay(0.05).alpha(0.62)
 
+  if (anchoredNodes.length) {
+    topologyAnchorTimer = window.setTimeout(() => {
+      topologyAnchorTimer = null
+      anchoredNodes.forEach((node) => {
+        // A user may have dragged a node while the anchor window was active;
+        // keep the latest pointer position in that case.
+        if (!draggingNodeId || draggingNodeId !== node.id) {
+          node.fx = null
+          node.fy = null
+        }
+      })
+      simulation?.alpha(Math.max(simulation.alpha(), 0.08)).restart()
+    }, props.reducedMotion ? 180 : 720)
+  }
+
   // 首次挂载且用户未操作时，等力向布局稳定后只适配一次画布，避免每个 tick 触发 zoom 重排。
   if (shouldFitView) {
     let fitted = false
@@ -815,6 +866,7 @@ onBeforeUnmount(() => {
   if (fitTimer != null) window.clearTimeout(fitTimer)
   if (resizeTimer != null) window.clearTimeout(resizeTimer)
   if (suppressClickTimer != null) window.clearTimeout(suppressClickTimer)
+  if (topologyAnchorTimer != null) window.clearTimeout(topologyAnchorTimer)
   simulation?.stop()
   resizeObserver?.disconnect()
 })

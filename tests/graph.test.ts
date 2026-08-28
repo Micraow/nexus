@@ -1,9 +1,28 @@
 import { describe, expect, it } from 'vitest'
-import { buildGraph, deriveConceptRelatedPairs, graphSnapshotIsProgressiveCompatible, graphViewFallbackIsCompatible, toggleExpandedConceptIds } from '@/services/graph'
+import { buildGraph, cleanGraphText, deriveConceptRelatedPairs, graphSnapshotIsProgressiveCompatible, graphViewFallbackIsCompatible, toggleExpandedConceptIds } from '@/services/graph'
 
 const now = '2026-08-24T00:00:00.000Z'
 
 describe('derived graph', () => {
+  it('cleans presentation markup from non-Markdown graph labels', () => {
+    expect(cleanGraphText('## [[nexus:existing:RoCE]]RoCE[[/nexus]] · `token`')).toBe('RoCE · token')
+  })
+
+  it('encodes direct hierarchy child count on Concept nodes', () => {
+    const snapshot = buildGraph({
+      concepts: [
+        { id: 'root', name: '根', normalizedName: '根', notes: '', status: 'active', createdAt: now, updatedAt: now },
+        { id: 'c1', name: '子一', normalizedName: '子一', notes: '', status: 'active', createdAt: now, updatedAt: now },
+        { id: 'c2', name: '子二', normalizedName: '子二', notes: '', status: 'active', createdAt: now, updatedAt: now },
+      ],
+      units: [], messages: [], unitConcepts: [], revision: 1,
+      relations: [
+        { id: 'h1', parentConceptId: 'root', childConceptId: 'c1', relationType: 'hierarchy', source: 'manual', status: 'confirmed', createdAt: now, updatedAt: now },
+        { id: 'h2', parentConceptId: 'root', childConceptId: 'c2', relationType: 'hierarchy', source: 'manual', status: 'confirmed', createdAt: now, updatedAt: now },
+      ],
+    })
+    expect(snapshot.nodes.find((node) => node.refId === 'root')?.childCount).toBe(2)
+  })
   it('never reuses a more disclosed or differently filtered Worker snapshot', () => {
     expect(graphViewFallbackIsCompatible(
       { expandedConceptIds: [] },

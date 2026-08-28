@@ -412,6 +412,17 @@ describe('direct concept extraction import pipeline', () => {
     expect(task.prompt).toContain('用户附加关注范围')
   })
 
+  it('preserves an overall maintenance reason when suggestions are empty', () => {
+    store.createConcept('无需修改主题')
+    const taskId = store.createMaintenanceTask()
+    const task = store.tasks.find((item) => item.id === taskId)!
+    const result = store.applyTaskResult(task.id, JSON.stringify({ suggestions: [], disclosure_requests: [] }))
+    expect(result.ok, result.errors.join('; ')).toBe(true)
+    const parsed = JSON.parse(store.tasks.find((item) => item.id === taskId)?.parsedResult ?? '{}') as { reason?: string; suggestions?: unknown[] }
+    expect(parsed.suggestions).toEqual([])
+    expect(parsed.reason).toBe('模型检查后未发现需要修改的地方。')
+  })
+
   it('accepts conversation hierarchy suggestions and stores them as proposed edges', () => {
     const parentId = store.createConcept('网络基础')
     const sessionId = store.createConversationTask({ question: '解释一个更具体的网络主题' })
