@@ -88,7 +88,6 @@ const graphShowMessages = ref(false)
 const graphShowProposed = ref(false)
 const graphShowRetainedSessions = ref(false)
 const graphSearch = ref('')
-const unitSearch = ref('')
 const graphControlsOpen = ref(false)
 const conceptTreeExpandedIds = ref<string[]>([])
 // Concept disclosure is kept in the view. A body activation selects the
@@ -161,7 +160,6 @@ const fullscreenPage = ref(0)
 const fullscreenPageSize = 20
 const detailDrawer = ref<HTMLElement | null>(null)
 const conceptPageDetail = ref<HTMLElement | null>(null)
-const unitPageDetail = ref<HTMLElement | null>(null)
 const storageInfo = ref<{ dataDir: string; databasePath: string; configPath: string } | null>(null)
 const databasePathDraft = ref('')
 const visibleSessionCount = ref(40)
@@ -436,19 +434,6 @@ const conceptTreeExpandedIdsForView = computed(() => {
     }
   })
   return [...expanded]
-})
-const unitSearchQuery = computed(() => unitSearch.value.trim().toLocaleLowerCase())
-const unitsForView = computed(() => {
-  const units = store.units
-    .filter((unit) => store.activeSessions.some((session) => session.id === unit.sessionId))
-    .slice()
-    .sort((left, right) => (right.updatedAt || right.createdAt).localeCompare(left.updatedAt || left.createdAt))
-  const needle = unitSearchQuery.value
-  if (!needle) return units
-  return units.filter((unit) => {
-    const session = sessionForUnit(unit)
-    return `${unit.title ?? ''} ${unit.summary ?? ''} ${session?.title ?? ''}`.toLocaleLowerCase().includes(needle)
-  })
 })
 // Legacy LLM-authored related rows are not actionable relations. Related
 // signals are derived from shared evidence; only hierarchy proposals and
@@ -2053,7 +2038,7 @@ onBeforeUnmount(() => {
               <div class="chat-composer" :class="{ focused: composerQuestion.length }">
                 <textarea v-model="composerQuestion" rows="4" placeholder="输入消息…" aria-label="新对话问题" @keydown.ctrl.enter.prevent="submitComposer" @keydown.meta.enter.prevent="submitComposer"></textarea>
                 <div class="chat-composer-topbar">
-                  <label class="chat-select"><span>主题</span><select v-model="composerTopicId" aria-label="选择知识主题"><option :value="null">不指定</option><option v-for="concept in store.activeConcepts" :key="concept.id" :value="concept.id">{{ concept.name }}</option></select><ChevronDown :size="13" /></label>
+                  <label class="chat-select"><span>主题</span><SearchSelect v-model="composerTopicId" :options="[{ value: null, label: '不指定' }, ...store.activeConcepts.map((concept) => ({ value: concept.id, label: concept.name, hint: concept.summary }))]" aria-label="选择知识主题" /></label>
                   <label class="chat-select phrase-select"><span>快捷短语</span><select v-model="composerPhraseId" aria-label="选择快捷短语" @change="applyComposerPhrase"><option value="">无</option><option v-for="phrase in store.quickPhrases" :key="phrase.id" :value="phrase.id">{{ phrase.template }}</option></select><ChevronDown :size="13" /></label>
                 </div>
                 <div class="chat-composer-footer">
