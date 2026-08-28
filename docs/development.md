@@ -43,7 +43,7 @@ pnpm install
 pnpm dev          # 打开 http://127.0.0.1:5173
 ```
 
-- 数据保存在浏览器 `localStorage`，与桌面端 `nexus.db` 互不相通；
+- 业务数据库保存在浏览器 IndexedDB，并兼容较小的 `localStorage` 镜像/旧数据；超过 Web Storage 配额时只保留 IndexedDB 副本。它与桌面端 `nexus.db` 互不相通；
 - 没有 Tauri 壳层：导出退化为浏览器下载、剪贴板走 Web API，适合纯界面与业务逻辑调试和单元验收。
 
 ### 3.2 桌面开发模式（以 Tauri 为中心）

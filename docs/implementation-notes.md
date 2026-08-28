@@ -16,7 +16,7 @@
 
 ## 运行边界
 
-- 桌面运行时由 Tauri 2 Rust 壳层提供 `nexus.db`、`config.yaml`、原子写入和数据库备份命令；直接以 Vite/Chromium 开发时仍回退到 `localStorage`，只用于开发和浏览器验收。Chrome 扩展仍需独立打包，不属于 Tauri 壳层。
+- 桌面运行时由 Tauri 2 Rust 壳层提供 `nexus.db`、`config.yaml`、原子写入和数据库备份命令；直接以 Vite/Chromium 开发时，业务数据库使用 IndexedDB 作为耐久后端，并兼容读取/镜像较小的 `localStorage` 数据，超过 Web Storage 配额时只保留 IndexedDB 副本。浏览器开发库与桌面端 `nexus.db` 仍互不相通。Chrome 扩展仍需独立打包，不属于 Tauri 壳层。
 - 网络请求统一走 `services/http.ts`：Tauri 环境切换到 `tauri-plugin-http` 的 fetch 以绕过 webview CORS，浏览器环境回落原生 fetch。插件权限作用域放开了 `https://**` 与 `http://**`，因为 Provider 端点由用户任意配置；真正的出站请求仍只发生在用户显式启动 API 任务时。
 - sql.js 当前发布的是 UMD 入口而不是原生 ESM。浏览器开发运行依赖 Vite 对 `sql.js` 的依赖预构建来提供兼容的默认导出；因此不能把它加入 `optimizeDeps.exclude`，也不应直接以未包装的 `sql-wasm*.js` 文件作为 ESM 导入。
 - 本地数据库和配置使用不同的存储键，完整知识库导出不包含配置或 API Key。恢复知识库会在一个 SQLite 事务中替换业务表，失败时由事务回滚，现有数据不被部分覆盖。
@@ -43,15 +43,15 @@
 - `segmentation`、标题和摘要任务仍作为旧数据库/按需阅读片段的兼容记录保留。旧分段结果通过完整覆盖、重复、越界和文本长度校验后才可人工审阅；活动状态的旧 `segmentation` 任务在 schema v7 统一转为 `cancelled`，不能重试或执行，也不再产生新的单元投影。按需阅读片段只影响对应 KnowledgeUnit、Message.unit_id 和 UnitConcept 下游，不得清除或阻塞 SessionConcept/MessageConcept。
 - LLM 生成的 Concept 名称、摘要和别名优先在同一结果中写入；可选 KnowledgeUnit 的标题/摘要写入时不增加其 revision。用户创建或编辑 KnowledgeUnit 只使该单元尚未完成的下游任务变为 `stale`，不使直接 Session/Message 归属失效。
 - API 任务队列按配置并发数（1～16）批量执行，单任务最多进行三次请求（含超时、429 和 5xx 的指数退避）。同一 Session 的直接 Concept 任务按输入 revision 串行，避免旧结果覆盖新归属；可选 KnowledgeUnit 元数据任务只在对应单元创建后串行。Prompt 粘贴任务保持人工逐项应用。并发数已在设置页提供手动数字输入（1～16），写回 `config.yaml`；同一 Session 的 revision 规则不受并发数影响。
-- `llm.concept_limit` 由设置页手动配置为 `1～32`（默认 `8`），并同时传入 Concept、起源 Concept 和对话 Prompt；应用校验器按当前值拒绝超限响应，不静默截断。Concept 名称要求教材章节式的短、单一主题词组，消息归属只保留有直接证据的稀疏 membership。
+- `llm.concept_limit` 由设置页手动配置为 `1～32`（默认 `8`），并同时传入 Concept、起源 Concept 和对话 Prompt；应用校验器按当前值拒绝超限响应，不静默截断。Concept 名称要求教材章节式的短、单一主题词组，最长 24 个 Unicode 字符；Prompt 输出前机械扫描“与”“和”“及”“、”“/”“／”六类分隔字符，命中时必须拆成独立 Concept，并用 hierarchy 表达共同上位主题，不能只删除连接词后继续合并。消息归属只保留有直接证据的稀疏 membership。
 - Token 预算不是固定的 `8000`：设置页允许输入任意不小于 `1000` 的有限安全整数并立即持久化为 `llm.token_budget`，不施加产品级最大值。配置读取、界面提交和写回使用同一归一化函数；该值供长 Session 分窗与新对话上下文超限检查共同使用，已创建的任务不会因之后修改预算而重写。
 - 长 Session 按估算 token 预算切成带两条消息重叠的运行时窗口；合并多个窗口结果时按全局 Message ID、Concept 规范名、归属目标和关系类型去重，并校验未知 ID、关系成环与 related/hierarchy 语义冲突，任何冲突都整体判失败，不写入部分结果。窗口不创建 KnowledgeUnit。
 - API 模式采用 OpenAI-compatible Chat Completions：请求地址为 `baseUrl + /chat/completions`，只发送当前任务 Prompt，温度固定为 `0`。历史 `local_only` 字段仅用于兼容旧数据，不再阻止 API 执行；Prompt 粘贴模式不发网络请求。
 - 知识维护结果持久化顶层 `reason`，用于解释模型为何提出或不提出变更；空 `suggestions` 也会显示该判断。维护 Prompt 同时提供未归属消息数量和阅读片段覆盖范围，要求模型显式审计遗漏；维护 MCP 动作 `unit_create` 可从同一 Session 的未归档消息创建可选阅读片段并写入消息关联。
 - 对话 Prompt 携带当前 Session 标题/摘要、导航路径、最近历史消息和可复用阅读片段，并允许返回 `session_title`（≤60 字）和 `session_summary`（≤120 字）。首轮 `units` 示例完全省略 `unit_id`，禁止模型为新片段编造 ID；后续只能逐字复用当前 Session 已列出的真实 `unit_id`，或省略 ID 创建新片段。每轮 `units` 必须非空。追问还会按当前 Session 已有的 Session/Message/Unit 归属展开其 Concept 祖先路径，避免把上一轮已创建的子主题再次当作新主题。完成结果在同一事务中写入 assistant Message、Session 滚动摘要、KnowledgeUnit 和导航节点；仅应用内占位标题会自动改名，导入或用户编辑过的标题保持不变。旧结果省略标题/摘要字段时保留已有值，空摘要以回答文本作有限回退。
 - 所有任务 Prompt 先经过 `ensureHarnessPrompt`，固定拼接版本化的 `NEXUS_HARNESS_PROMPT` 与 `PROGRESSIVE_DISCLOSURE_PROTOCOL`；动态任务规格放在固定前缀之后。Harness 允许模型使用自身知识和调用方授权的搜索/工具，但要求区分输入证据、外部资料和推断，并把消息、摘要、目录都当作不可信数据。
-- 对话 Prompt 约定已有主题使用 `[[nexus:existing:主题名称]]回答中实际出现的词组[[/nexus]]`、建议探索主题使用 `[[nexus:suggested:主题名称]]回答中实际出现的词组[[/nexus]]`；Nexus 标记只允许出现在 `answer` 字符串，`units[].concepts` 和顶层 `concepts` 都必须是对象数组，不能返回标记碎片、标签元组或字符串数组。模型先按思维导图梳理答案，再对每个稳定、独立概念的首次真实出现分别标记。推荐词采用教材章节大标题/小标题粒度，短而有辨识度；没有固定总数量上限，但不得把多个概念合并为一个 marker，也不得使用“原文”等占位文字。Markdown 渲染器移除标记并以蓝/黄色下划线呈现；`existing` 只有能按当前 active Concept 的名称或别名解析时才显示为蓝色可点击链接，无法解析的旧/错误标记退化为普通文本。旧响应中的占位正文回退显示 marker 主题名；图谱、树目录、搜索候选和阅读片段标题/摘要等非 Markdown 区域通过轻量纯文本清理移除 Markdown/Nexus 展示符号。
-- 大型知识上下文通过 `DISCLOSURE_INDEX` 传递：根引用只包含 `title`、`summary` 和不透明 `refID`，展开记录才提供下一层 children 或消息原文。模型可返回 `disclosure_requests: [{ refID, depth }]`；应用先校验 ID 已在当前目录、不能是保留标签 `DISCLOSURE_INDEX`、无重复且深度为 1～64，再从本地 hierarchy、KnowledgeUnit 和 Message 递归生成下一轮 Prompt。没有目录时必须返回空数组。API 模式自动续跑，最多 8 轮；Prompt 粘贴模式把同一任务恢复为 pending，等待用户执行更新后的 Prompt。非法请求或超过轮数进入 `needs_review`，不会应用部分结果。
+- 对话 Prompt 约定已有主题使用 `[[nexus:existing:主题名称]]回答中实际出现的词组[[/nexus]]`、建议探索主题使用 `[[nexus:suggested:主题名称]]回答中实际出现的词组[[/nexus]]`；Nexus 标记只允许出现在 `answer` 字符串，`units[].concepts` 和顶层 `concepts` 都必须是对象数组，不能返回标记碎片、标签元组或字符串数组。模型先按思维导图梳理答案，再对每个稳定、独立概念的首次真实出现分别标记。推荐词采用教材章节大标题/小标题粒度，短而有辨识度；没有固定总数量上限，但不得把多个概念合并为一个 marker，也不得使用“原文”等占位文字。Markdown 渲染器移除标记并以蓝/黄色下划线呈现；对话与阅读片段中的 `existing` 只有能按当前 active Concept 的名称或别名解析时才显示为蓝色可点击链接，并跳转到对应知识主题，无法解析的旧/错误标记退化为普通文本。旧响应中的占位正文回退显示 marker 主题名；图谱、树目录、搜索候选和阅读片段标题/摘要等非 Markdown 区域通过轻量纯文本清理移除 Markdown/Nexus 展示符号。
+- 大型知识上下文通过 `DISCLOSURE_INDEX` 传递：根引用只包含 `title`、`summary` 和不透明 `refID`，展开记录才提供下一层 children 或带实体 ID、归属和正文的结构化 content。模型可返回 `disclosure_requests: [{ refID, depth }]`；应用先校验 ID 已在当前目录、不能是保留标签 `DISCLOSURE_INDEX`、无重复且深度为 1～64，再从本地 hierarchy、KnowledgeUnit 和 Message 递归生成下一轮 Prompt。维护任务首轮只给统计、根及直接子引用、未归属消息 Session 和孤立片段；`pending_ref_ids` 非空时强制批量续轮且 `suggestions=[]`，提前结束或混合建议的响应原子拒绝。已经只有 children、没有 content 的 ref 可继续请求；完整 payload 中冗余重复的已展开请求可清空后继续校验。没有目录时必须返回空数组。API 模式自动续跑，最多 8 轮；Prompt 粘贴模式把同一任务恢复为 pending，等待用户执行更新后的 Prompt。非法请求或超过轮数进入 `needs_review`，不会应用部分结果；Prompt 版本不匹配的旧 pending 任务在联网前转为 `stale`。
 - 起源 Concept 结果写入独立的 `session_concepts` 多对多事实表；它不会复制到该 Session 的全部 KnowledgeUnit。图谱派生时会把 Session、Message 和 KnowledgeUnit 三种归属投影到可见主题，并按 Session（而不是单元数量）累计 Concept 共现权重。
 - 新对话与起源 Concept 任务共用层级约束：优先选择最窄的已有或同批次父主题，仅在没有可解释父级时保留根节点。普通 LLM 结果只能返回 `hierarchy` 并以 `proposed` 写入；`related` 由软件按共享 Session/Message 派生，只有维护动作 API 可写持久化 related。端点必须来自当前披露目录或响应内 `client_ref`；落库会去重、检测环，并保留已有 `confirmed` 关系。
 - 会话内追问（从导航树节点或会话详情发起）：用户消息以 `metadata = { mode: 'follow_up', parentNodeId, taskId }` 落库，回答分支节点挂在该节点之下（depth + 1），assistant Message 额外记录 `navNodeId` 供探索树点击定位正文。结果落库后从 Message 和 KnowledgeUnit 实际行数重算 `message_count` / `unit_count`，每个 Session 同时只允许一个 `pending` / `running` / `needs_review` 对话任务；任务完成后才可创建下一轮。早期没有 `metadata.taskId` 的对话任务按 legacy 规则回落到根节点。
@@ -62,7 +62,7 @@
 
 - 图谱共现计算运行在 Web Worker（`workers/graph.worker.ts`）中；主线程只做缓存命中与布局回填。缓存键包含 `graph_revision`、Session/Message/KnowledgeUnit/待确认/保留会话开关、`expandedConceptDepth` 和排序后的 `expandedConceptIds`，任一输入变化即重新计算，计算期间先返回最近一次快照（stale-while-revalidate 式），完成后增量刷新。Worker 不可用时退回主线程同步计算。
 - Worker 通信的数据必须先深拷贝为纯 JSON（`toPlainJson`）：Pinia 的响应式代理无法结构化克隆，直接 `postMessage` 会抛 `DataCloneError` 并中断图谱视图渲染。新增图谱输入字段时必须保持可 JSON 序列化。
-- GraphNode/GraphEdge 继续作为派生视图。`resolveVisibleConceptIds` 默认只返回没有未拒绝 hierarchy 父节点的 active 根节点；Concept 主体单击、Enter 或 Space 把节点加入/移出 `expandedConceptIds`，逐层显示直接子节点，叶节点单击只打开详情。`normalizeExpandedConceptIds` 会补齐显式后代的祖先路径；`toggleConceptExpansion` 在收起父节点时递归清除后代。hierarchy 不限制深度且允许多父节点；`related` 始终无向，完全不参与根节点、祖先、深度或展开判断。`showProposed=false` 时 proposed hierarchy/related 均被排除绘制，但 proposed hierarchy 仍参与结构父级判定。
+- GraphNode/GraphEdge 继续作为派生视图。`resolveVisibleConceptIds` 默认只返回没有未拒绝 hierarchy 父节点的 active 根节点；Concept 主体单击、Enter 或 Space 把节点加入/移出 `expandedConceptIds`，逐层显示直接子节点，叶节点单击只打开详情。`normalizeExpandedConceptIds` 会补齐显式后代的祖先路径；`toggleConceptExpansion` 在收起父节点时递归清除后代。hierarchy 不限制深度且允许多父节点；`related` 始终无向，完全不参与根节点、祖先、深度或展开判断。`showProposed=false` 时 proposed hierarchy/related 均被排除绘制，但 proposed hierarchy 仍参与结构父级判定。详情抽屉打开时图谱为其预留 365px 右侧布局空间，避免展开节点落在抽屉下方而无法再次单击收起。
 - Concept 的直接证据同时来自 SessionConcept、MessageConcept 和 UnitConcept。没有 KnowledgeUnit 的消息仍可生成图谱关联；KnowledgeUnit 只作为可选阅读片段投影。窗口化处理保留全局 Message ID，不把窗口边界写入图谱。
 - 主题详情的关联会话、消息和单元统一从三类直接归属事实推导；因此只有 MessageConcept 或 UnitConcept、没有直接 SessionConcept 的历史数据也能显示关联会话。
 - Store 传给图谱服务的 Session 集合只包含未归档 Session；当调用方提供该集合时，残留的 `session_concepts` 不得为已归档 Session 生成共现边。独立调用 `buildGraph` 未提供 Session 集合时，仍按调用方显式传入的事实计算。
@@ -91,7 +91,7 @@
 - 导航树使用 `NavTreeNode` 的父子关系递归渲染；根调用传入完整 Session 节点集合，圆点为主要可点击区域，细线表达父子关系，标签通过悬停/聚焦提示显示；会话导航隐藏每个节点的重复追问动作，只保留单击圆点切换分支。
 - 会话工作区按当前导航节点投影消息：切换主题只切换到另一条分支，不把新问题线性追加到旧分支尾部。中心渲染当前节点及其祖先路径上的实体问答卡片；只有最前面的当前卡片可交互，祖先卡片保留真实标题和消息 DOM 作为不可交互的叠放背景，层数与导航深度一致。卡片使用 `TransitionGroup`、稳定尺寸和 `transform` 做可中断的切换动画，在 `prefers-reduced-motion: reduce` 下关闭位移/旋转。Session 仍保留完整 Message 顺序供检索和导出，分支视图只是显示投影。
 - 上下文排序在界面状态中保持为用户拖拽顺序，创建 conversation 任务时按该顺序写入 `ContextReference.order_in_context`。输入 token 以字符数除以 4 估算；超过配置预算时只提示并禁止创建任务，不静默截断。
-- 长列表使用分段加载而非虚拟滚动：会话每页 40、知识主题每页 60、历史任务每页 30；主题的“包含消息”全屏查看器跨 Session 固定每页 20 条，并在每条消息头部标记来源会话，使用上一页/下一页翻页。该阈值是界面常量，后续接入虚拟滚动时可整体替换。
+- 长列表使用分段加载而非虚拟滚动：会话每页 40、知识主题每页 60、历史任务每页 30；主题的“包含消息”全屏查看器以 Session 为页，每页完整显示一个 Session 的全部相关消息，上一页/下一页只切换不同 Session，同一 Session 永远不按消息数拆页。
 - 知识主题详情的关联单元列表支持三种排序：最近更新、创建时间、名称（中文 `Intl.Collator('zh-Hans-CN')` 排序）；父/子/相关主题行按对方主题关联的单元数量降序排列，常用主体靠前。
 - 首次启动不注入演示数据。空库直接显示导入引导，避免把示例内容误认为用户自己的知识。
 - 新对话主页直接提供问题输入、知识主题、快捷短语和上下文入口；创建动作复用同一 composer，仍只创建本地任务，不在点击时隐式发出网络请求。原有导入、最近会话和图谱入口降为辅助区域，确保首次打开应用即可开始提问。首页和普通工作页使用更宽的内容列，空列表也用占满面板的空状态承接主要空间。
@@ -115,9 +115,10 @@
 
 ## 验收覆盖说明（对应设计 15.1）
 
-- 单元测试（Vitest，193 项）覆盖 Markdown 渲染与注入防护、分块切分与合并校验、图谱关系/渐进披露、中文搜索与搜索选择框、会话分支/恢复、阅读片段浏览、扩展会话发现与导出 payload、主题证据分页、任务迁移和直接对话写入。数据库耦合路径依赖 sql.js WASM；当前测试已覆盖直接导入、旧 segmentation 归一化、对话结果应用和 API 任务并发护栏，仍不替代真实桌面环境的备份恢复验收。
+- 单元测试（Vitest，229 项）覆盖 Markdown 渲染与注入防护、分块切分与合并校验、图谱关系/渐进披露、维护目录强制遍历、中文搜索与搜索选择框、会话分支/恢复、阅读片段浏览、扩展会话发现与导出 payload、主题证据分页、任务迁移和直接对话写入。数据库耦合路径依赖 sql.js WASM；当前测试已覆盖直接导入、旧 segmentation 归一化、对话结果应用和 API 任务并发护栏，仍不替代真实桌面环境的备份恢复验收。
 - 数据库耦合路径通过 headless Chromium + CDP 冒烟脚本人工验收：空态加载、图谱渲染、帮助弹窗、Provider 保存、导入 JSON → 任务中心 → Prompt 粘贴应用 Session/Message Concept 归属（旧数据另验阅读片段兼容与废弃分段任务归档）→ 图谱出现主题与直接证据节点 → 主题目录右栏跨 Session 消息分页 → 会话列表核对，全程断言无运行时异常。该脚本为临时验收工具，不随应用分发。
 - 2026-08-28 使用本机保存的真实 OpenAI-compatible Provider 验收：维护 Prompt 在 31 个 Concept、26 条关系、1 个既有阅读片段和 106 条未归属消息上返回 3 个 `unit_create`，分别覆盖 52、50、4 条消息，完整覆盖全部遗漏；API 流式对话在任务完成前显示“实时输出”，完成后将首轮问答收束为 1 张卡片、1 个探索树节点和 1 个非空阅读片段。API Key 未写入仓库或验收日志。
+- 2026-08-29 使用隔离知识库和本机 Provider 验收维护渐进披露：模型自然完成 3 个 API 轮次，`round 0` 批量请求 9 个 ref、`round 1` 请求新增 2 个 ref，两个中间轮均为 `suggestions=[]`；`round 2` 的 pending 清空，返回非空 reason，任务应用成功并进入 `success`。随后补齐 Concept/Session/KnowledgeUnit/Message 结构化 content；本地 229 项测试通过，追加真实质量复测被 Provider HTTP 429 阻断且未产生模型响应或写入。API Key 与临时脚本未进入仓库。
 
 ## 直接 Concept 流程迁移约定
 
