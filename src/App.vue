@@ -597,6 +597,7 @@ function resetGraphLayout(): void {
 }
 
 function openConcept(conceptId: string): void {
+  if (activeView.value !== 'graph' && activeView.value !== 'concepts') setView('graph')
   selectedConceptId.value = conceptId
   selectedUnitId.value = null
   selectedMessageId.value = null
@@ -610,7 +611,6 @@ function openConcept(conceptId: string): void {
   // The topic catalog owns its detail column. Keep the global drawer for
   // graph, session and message contexts so a topic is not rendered twice.
   isDetailOpen.value = activeView.value !== 'concepts'
-  if (activeView.value !== 'graph' && activeView.value !== 'concepts') setView('graph')
   void nextTick(() => {
     const detail = activeView.value === 'concepts' ? conceptPageDetail.value : detailDrawer.value
     if (!detail) return
@@ -672,7 +672,7 @@ function closeFullscreen(): void {
 
 function selectSession(sessionId: string): void {
   store.setSelectedSession(sessionId)
-  activeView.value = 'sessions'
+  setView('sessions')
   selectedUnitId.value = null
   selectedConceptId.value = null
   selectedMessageId.value = null
