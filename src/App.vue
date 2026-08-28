@@ -2282,7 +2282,7 @@ onBeforeUnmount(() => {
           <span v-else class="status-label label-success">已应用</span>
         </article>
       </div>
-      <div v-else-if="selectedTask?.type === 'maintenance' && maintenanceOverallReason" class="maintenance-results">
+      <div v-if="selectedTask?.type === 'maintenance' && maintenanceOverallReason" class="maintenance-results">
         <div class="subsection-title"><strong>模型判断</strong></div>
         <p class="maintenance-overall-reason">{{ maintenanceOverallReason }}</p>
       </div>
