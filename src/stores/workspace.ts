@@ -416,7 +416,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   function rememberGraphSnapshot(key: string, snapshot: GraphSnapshot, options: GraphViewOptions): GraphSnapshot {
-    const prepared = applyGraphLayout(snapshot)
+    // Worker responses may come from a stale bundle or a legacy projection.
+    // Never cache a snapshot that exposes descendants beyond the requested
+    // disclosure state; rebuild it synchronously from the current store data
+    // so the next render remains a valid roots/expanded projection.
+    const safeSnapshot = graphSnapshotIsProgressiveCompatible(snapshot, options)
+      ? snapshot
+      : buildGraph(graphInputFor(options))
+    const prepared = applyGraphLayout(safeSnapshot)
     graphSnapshots.set(key, prepared)
     graphSnapshotOptions.set(key, toPlainJson(options))
     return prepared

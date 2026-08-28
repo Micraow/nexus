@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useWorkspaceStore } from '@/stores/workspace'
+import type { GraphSnapshot } from '@/types/domain'
 
 const baseMessage = (role: 'user' | 'assistant', content: string, index: number) => ({
   role,
@@ -138,6 +139,32 @@ describe('direct concept extraction import pipeline', () => {
 
     const secondLevel = store.viewGraph({ expandedConceptIds: [rootId, childId] })
     expect(secondLevel.nodes.filter((node) => node.type === 'concept').map((node) => node.refId).sort()).toEqual([childId, grandchildId, rootId].sort())
+  })
+
+  it('sanitizes an over-disclosed Worker snapshot before the initial graph render', () => {
+    const rootId = store.createConcept('Worker 根主题')
+    const childId = store.createConcept('Worker 越级子主题')
+    store.createRelation(rootId, childId, 'hierarchy')
+
+    class LeakingWorker {
+      onmessage: ((event: MessageEvent<{ key: string; snapshot: GraphSnapshot }>) => void) | null = null
+
+      postMessage(request: { key: string; revision: number }): void {
+        const leaked: GraphSnapshot = {
+          nodes: [
+            { id: `concept:${rootId}`, type: 'concept', refId: rootId, label: 'Worker 根主题', subtitle: 'Concept', degree: 1, unitCount: 0, depth: 0, parentIds: [], rootIds: [rootId], hasChildren: true, expanded: false },
+            { id: `concept:${childId}`, type: 'concept', refId: childId, label: 'Worker 越级子主题', subtitle: 'Concept', degree: 1, unitCount: 0, depth: 1, parentIds: [rootId], rootIds: [rootId], hasChildren: false, expanded: false },
+          ],
+          edges: [{ id: 'edge:hierarchy:leak', source: `concept:${rootId}`, target: `concept:${childId}`, type: 'hierarchy', weight: 1, status: 'confirmed' }],
+          revision: request.revision,
+        }
+        this.onmessage?.({ data: { key: request.key, snapshot: leaked } } as MessageEvent<{ key: string; snapshot: GraphSnapshot }>)
+      }
+    }
+    vi.stubGlobal('Worker', LeakingWorker)
+
+    const initial = store.viewGraph()
+    expect(initial.nodes.filter((node) => node.type === 'concept').map((node) => node.refId)).toEqual([rootId])
   })
 
   it('accepts a conversation answer without creating a KnowledgeUnit', () => {
