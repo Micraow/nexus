@@ -43,8 +43,8 @@ function unitsOf(nodeId: string): KnowledgeUnit[] {
 <template>
   <div class="nav-tree" role="tree">
     <div v-for="node in nodes" :key="node.id" class="nav-tree-branch" role="treeitem" :aria-selected="selectedNodeId === node.id">
-      <div class="nav-tree-row">
-        <button class="nav-tree-node" :class="{ selected: selectedNodeId === node.id }" @click="emit('select-node', node)">
+      <div class="nav-tree-row" :class="{ selected: selectedNodeId === node.id }">
+        <button class="nav-tree-node" :class="{ selected: selectedNodeId === node.id }" :aria-label="node.label" :title="node.label" @click="emit('select-node', node)">
           <span class="nav-tree-marker" :class="{ root: !node.parentId }" />
           <span class="nav-tree-label">{{ node.label }}</span>
           <span v-if="unitsOf(node.id).length" class="nav-tree-count">{{ unitsOf(node.id).length }}</span>
