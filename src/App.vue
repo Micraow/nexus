@@ -308,7 +308,7 @@ const activeConversationCurrentCard = computed(() => {
 const activeConversationBranchCards = computed(() => {
   const byId = new Map(activeConversationNodes.value.map((node) => [node.id, node]))
   const messages = activeConversationMessages.value
-  return activeConversationPathNodeIds.value
+  const cards = activeConversationPathNodeIds.value
     .map((nodeId) => byId.get(nodeId))
     .filter((node): node is NavTreeNode => Boolean(node))
     .map((node) => {
@@ -326,6 +326,11 @@ const activeConversationBranchCards = computed(() => {
       if (!branchMessages.length && !node.parentId && messages.length) return { node, messages, units }
       return { node, messages: branchMessages, units }
     })
+  // A legacy answer may live on a child branch while the root card has no
+  // messages after its triggering question is moved to that answer. Do not
+  // leave an empty ancestor card in the visible stack; the current card stays
+  // mounted so its composer remains available for a new question.
+  return cards.filter((card, index) => index === cards.length - 1 || card.messages.length > 0 || card.units.length > 0)
 })
 const conversationNavTrail = computed(() => {
   const selected = activeConversationNodes.value.find((node) => node.id === selectedNavNodeId.value) ?? activeConversationRoot.value

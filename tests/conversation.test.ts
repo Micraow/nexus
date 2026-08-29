@@ -76,6 +76,7 @@ describe('conversation branch task mapping', () => {
 
     expect(conversationMessagesForNode('branch-a', messages).map((item) => item.id).sort()).toEqual(['answer-a', 'opening'])
     expect(conversationMessagesForNode('branch-b', messages).map((item) => item.id).sort()).toEqual(['answer-b', 'question-b'])
+    expect(conversationMessagesForNode('root', messages).map((item) => item.id)).not.toContain('opening')
   })
 
   it('shows an unanswered suggested follow-up only on its temporary branch card', () => {

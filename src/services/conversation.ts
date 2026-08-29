@@ -76,7 +76,29 @@ export function conversationMessageBranchNodeId(message: Message, messages: Mess
  * user message with the same task id. Sibling branches remain disjoint.
  */
 export function conversationMessagesForNode(nodeId: string, messages: Message[]): Message[] {
-  const cardMessages = messages.filter((message) => conversationMessageBranchNodeId(message, messages) === nodeId)
+  // A legacy opening question can still carry `mode=new`/parent=root while
+  // its answer was materialized on a child branch. Keep the triggering
+  // question with that answer instead of rendering it once on the root and
+  // once again through the answer-task backfill below.
+  const answerBranchByTaskId = new Map<string, string>()
+  messages.forEach((message) => {
+    if (message.role !== 'assistant') return
+    const metadata = parseMetadata(message.metadata)
+    const taskId = typeof metadata.taskId === 'string' ? metadata.taskId.trim() : ''
+    const branchId = typeof metadata.navNodeId === 'string' ? metadata.navNodeId.trim() : ''
+    if (taskId && branchId) answerBranchByTaskId.set(taskId, branchId)
+  })
+  const cardMessages = messages.filter((message) => {
+    if (conversationMessageBranchNodeId(message, messages) !== nodeId) return false
+    if (message.role !== 'user') return true
+    const metadata = parseMetadata(message.metadata)
+    const taskId = typeof metadata.taskId === 'string' ? metadata.taskId.trim() : ''
+    const answerBranchId = taskId ? answerBranchByTaskId.get(taskId) : undefined
+    // Follow-up questions are already reassigned by
+    // conversationMessageBranchNodeId once their answer exists. This branch
+    // only handles opening/legacy questions that still resolve to a parent.
+    return !answerBranchId || answerBranchId === nodeId || metadata.mode === 'follow_up'
+  })
   const answerTaskIds = new Set(cardMessages
     .filter((message) => message.role === 'assistant')
     .map((message) => parseMetadata(message.metadata).taskId)
