@@ -127,6 +127,93 @@ export interface OriginConceptValidationOptions {
   maxConcepts?: number
 }
 
+export interface ReusedConceptRecord {
+  client_ref: string
+  concept_id: string
+  name: string
+  matched_by: 'name' | 'alias'
+}
+
+export interface OriginConceptReuseResult {
+  data: Record<string, unknown>
+  reused: ReusedConceptRecord[]
+}
+
+/**
+ * Normalize an LLM response that redundantly declares an already disclosed
+ * Concept. Exact name/alias matches are safe to repair locally: the candidate
+ * is removed and every response-local reference is rewritten to the opaque
+ * catalog ID. Similar names are intentionally left untouched and continue
+ * through the normal validator, since silently merging them would lose
+ * hierarchy evidence. The returned audit records are persisted with the task
+ * result so the automatic repair remains inspectable.
+ */
+export function normalizeOriginConceptResultForReuse(
+  value: Record<string, unknown>,
+  catalog: Array<{ id: string; name: string; aliases?: string[] }>,
+): OriginConceptReuseResult {
+  if (!Array.isArray(value.concepts) || !catalog.length) return { data: value, reused: [] }
+  const labels = catalog.flatMap((concept) => [
+    { id: concept.id, label: concept.name, matchedBy: 'name' as const },
+    ...(concept.aliases ?? []).map((alias) => ({ id: concept.id, label: alias, matchedBy: 'alias' as const })),
+  ])
+    .map((item) => ({ ...item, normalized: item.label.trim().toLocaleLowerCase() }))
+    .filter((item) => item.normalized.length >= 2)
+  const byLabel = new Map(labels.map((item) => [item.normalized, item]))
+  const refMap = new Map<string, string>()
+  const reused: ReusedConceptRecord[] = []
+  const concepts = value.concepts.filter((raw) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return true
+    const candidate = raw as Record<string, unknown>
+    const clientRef = typeof candidate.client_ref === 'string' ? candidate.client_ref.trim() : ''
+    const name = typeof candidate.name === 'string' ? candidate.name.trim() : ''
+    if (!clientRef || !name) return true
+    const match = byLabel.get(name.toLocaleLowerCase())
+    if (!match) return true
+    refMap.set(clientRef, match.id)
+    reused.push({ client_ref: clientRef, concept_id: match.id, name, matched_by: match.matchedBy })
+    return false
+  })
+  if (!reused.length) return { data: value, reused }
+
+  const rewriteIds = (raw: unknown): unknown => {
+    if (!Array.isArray(raw)) return raw
+    const seen = new Set<string>()
+    return raw.filter((id) => {
+      if (typeof id !== 'string') return true
+      const resolved = refMap.get(id.trim()) ?? id.trim()
+      if (seen.has(resolved)) return false
+      seen.add(resolved)
+      return true
+    }).map((id) => typeof id === 'string' ? (refMap.get(id.trim()) ?? id.trim()) : id)
+  }
+  const memberships = Array.isArray(value.memberships)
+    ? value.memberships.map((raw) => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw
+      const item = raw as Record<string, unknown>
+      return { ...item, ...(Array.isArray(item.concept_ids) ? { concept_ids: rewriteIds(item.concept_ids) } : {}) }
+    })
+    : value.memberships
+  const relations = Array.isArray(value.relations)
+    ? value.relations.map((raw) => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw
+      const item = raw as Record<string, unknown>
+      const rewriteRef = (ref: unknown) => typeof ref === 'string' ? (refMap.get(ref.trim()) ?? ref.trim()) : ref
+      return { ...item, source: rewriteRef(item.source), target: rewriteRef(item.target) }
+    })
+    : value.relations
+  return {
+    data: {
+      ...value,
+      concepts,
+      ...(Array.isArray(value.concept_ids) ? { concept_ids: rewriteIds(value.concept_ids) } : {}),
+      ...(Array.isArray(value.memberships) ? { memberships } : {}),
+      ...(Array.isArray(value.relations) ? { relations } : {}),
+    },
+    reused,
+  }
+}
+
 /**
  * Validate the direct Session/Message Concept extraction response.
  *

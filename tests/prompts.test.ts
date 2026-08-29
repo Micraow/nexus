@@ -94,6 +94,14 @@ describe('conversation prompt', () => {
     expect(prompt).not.toContain('DISCLOSURE_INDEX（首层目录与已展开记录）:')
   })
 
+  it('requires broad technical-term coverage for answer markers', () => {
+    const prompt = buildConversationPrompt({ question: '解释 RDMA 中的 DCQCN、ECN、PFC 和 RoCEv2', context: '' })
+    expect(prompt).toContain('推荐词技术覆盖审计（硬约束）')
+    expect(prompt).toContain('协议/标准、算法、架构/拓扑、组件、数据结构、控制机制')
+    expect(prompt).toContain('英文缩写、连字符词和 CamelCase 词')
+    expect(prompt).toContain('不要因为词是英文、缩写、大小写混排或出现在代码/列表/表格中而漏标')
+  })
+
   it('only shows a real current unit id in reuse examples', () => {
     const firstTurn = buildConversationPrompt({ question: '第一轮', context: '', availableUnits: [] })
     expect(firstTurn).not.toContain('"unit_id"')

@@ -7,7 +7,7 @@ import { buildGraph, graphSnapshotIsProgressiveCompatible, graphStats, graphView
 import { buildSearchDocuments, searchKnowledge } from '@/services/search'
 import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildOriginConceptPrompt, buildRepairPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, ensureHarnessPrompt, formatMaintenanceActionApi, listMaintenanceMcpTools, listedDisclosureRefIds, MAINTENANCE_ACTION_API, maintenanceToolCallSuggestion, parseDisclosureContext, PROMPT_VERSION, renderQuickPhrase, replaceDisclosureContext } from '@/services/prompts'
 import { conversationMessageBranchNodeId } from '@/services/conversation'
-import { importPayloadSchema, parseImportPayload, validateConceptIdList, validateConceptMemberships, validateConceptName, validateDisclosureRequests, validateOriginConceptResult, validateSegmentationResult, validateUnitText } from '@/services/validation'
+import { importPayloadSchema, normalizeOriginConceptResultForReuse, parseImportPayload, validateConceptIdList, validateConceptMemberships, validateConceptName, validateDisclosureRequests, validateOriginConceptResult, validateSegmentationResult, validateUnitText } from '@/services/validation'
 import type { DisclosureContext } from '@/services/prompts'
 import { combineSegmentationChunks, splitMessageChunks } from '@/utils/chunks'
 import { wouldCreateHierarchyCycle } from '@/utils/graph-rules'
@@ -2363,7 +2363,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       markTask(taskId, 'needs_review', responseText, errors)
       return { ok: false, errors }
     }
-    const data = parsed.data
+    let data = parsed.data
+    // Providers occasionally echo an existing Concept in the response-local
+    // `concepts` array on a follow-up turn. Normalize only exact name/alias
+    // matches against the disclosed catalog, rewrite all client_ref uses to
+    // the opaque ID, and retain an audit trail in parsed_result. Near matches
+    // and compound names still go through the strict validator unchanged.
+    const reuseAudit = (task.type === 'origin_concepts' || task.type === 'conversation') && Array.isArray(data.concepts)
+      ? normalizeOriginConceptResultForReuse(data, promptConceptCatalog(task))
+      : { data, reused: [] }
+    if (reuseAudit.reused.length) data = { ...reuseAudit.data, nexus_reuse: reuseAudit.reused }
+    else data = reuseAudit.data
     const errors: string[] = []
     const conceptLimit = normalizeConceptLimit(config.value.llm.conceptLimit)
     if (task.type === 'maintenance') {

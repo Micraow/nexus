@@ -334,6 +334,35 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.viewGraph().nodes.map((node) => node.refId)).toEqual(expect.arrayContaining([created.id, existingConceptId]))
   })
 
+  it('repairs a duplicated existing Concept on a follow-up instead of creating a second row', () => {
+    const existingId = store.createConcept('网络拥塞控制')
+    const sessionId = store.createConversationTask({ question: '介绍网络拥塞控制', topicId: existingId })
+    const firstTask = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
+    const first = store.applyTaskResult(firstTask.id, JSON.stringify({
+      answer: '网络拥塞控制通过反馈调节发送速率。',
+      units: [{ title: '拥塞控制基础', summary: '反馈调节发送速率。', concept_ids: [existingId], concepts: [] }],
+      memberships: [],
+      disclosure_requests: [],
+    }))
+    expect(first.ok, first.errors.join('; ')).toBe(true)
+    const root = store.navNodes.find((node) => node.sessionId === sessionId && !node.parentId)!
+    const followUpId = store.createFollowUpTask({ sessionId, parentNodeId: root.id, question: '继续解释反馈机制' })
+    const followUp = store.tasks.find((item) => item.id === followUpId)!
+    const question = store.messages.find((message) => message.sessionId === sessionId && message.content === '继续解释反馈机制')!
+    const answerId = String(question.metadata?.answerMessageId)
+    const result = store.applyTaskResult(followUpId, JSON.stringify({
+      answer: '反馈机制根据 ECN 标记更新速率。',
+      concepts: [{ client_ref: 'new:1', name: '网络拥塞控制', summary: '重复返回的主题。', aliases: [] }],
+      memberships: [{ target_type: 'message', target_id: answerId, concept_ids: ['new:1'] }],
+      units: [{ unit_id: store.units[0].id }],
+      disclosure_requests: [],
+    }))
+    expect(result.ok, result.errors.join('; ')).toBe(true)
+    expect(store.concepts.filter((concept) => concept.name === '网络拥塞控制')).toHaveLength(1)
+    expect(store.messageConcepts).toContainEqual(expect.objectContaining({ messageId: answerId, conceptId: existingId }))
+    expect(store.tasks.find((item) => item.id === followUpId)?.parsedResult).toContain('nexus_reuse')
+  })
+
   it('persists conversation hierarchy and rejects model-authored related proposals', () => {
     const existingParentId = store.createConcept('网络协议')
     const sessionId = store.createConversationTask({ question: '解释 TCP 拥塞控制的层级关系' })

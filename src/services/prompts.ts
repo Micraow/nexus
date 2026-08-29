@@ -21,6 +21,9 @@ Concept 名称输出前机械自检（硬限制，必须逐项执行）：
 
 const CONCEPT_NAME_FINAL_GATE = '最终 JSON 门禁：输出前逐项扫描 concepts[].name；含“与”“和”“及”“、”“/”“／”任一字符就先拆成独立 Concept，不能输出后依赖软件拒绝，也不能只删连接词继续合并。'
 
+const TECHNICAL_MARKER_COVERAGE_CONTRACT = `
+推荐词技术覆盖审计（硬约束）：完成 answer 草稿后，从全文逐段扫描所有具有独立知识含义的技术实体，至少检查协议/标准、算法、架构/拓扑、组件、数据结构、控制机制、英文缩写、连字符词和 CamelCase 词。只要该实体在正文中以真实词组首次出现，就必须单独包在一个 Nexus marker 中；已有目录主题用 existing，目录没有明确证据的用 suggested。不要因为词是英文、缩写、大小写混排或出现在代码/列表/表格中而漏标，也不要把相邻技术实体合并在同一个 marker。普通连接词、泛化名词和同一实体的后续重复不必标记。输出前逐个核对正文中的技术词与 marker 数量，优先保证覆盖而不是只标记少数大主题。`
+
 function promptConceptLimit(value: unknown): number {
   return normalizeConceptLimit(value, DEFAULT_CONCEPT_LIMIT)
 }
@@ -608,6 +611,8 @@ ${originalTask ? `原任务规格（其中的字段约束、目录和 ID 白名�
 原始响应：${originalResponse}
 ${originalTask ? '' : disclosureText}
 如果原始响应包含 memberships 或 concept_ids，请保留其中合法的多归属列表；不要把多个 Concept 压缩为单个 concept_id。
+如果校验错误指出“主题已在当前目录中，必须复用 Concept ID”，这是可审计的确定性修复：从 concepts 数组移除该重复对象，并把其 client_ref 在 concept_ids、memberships.concept_ids、relations.source/target 中逐一替换为错误消息中的真实 Concept ID；不得创建同名副本，也不得把相似但不完全匹配的主题强行合并。可在最终 JSON 外记录 nexus_reuse 审计字段，但不得改变其他有效字段。
+如果校验错误指出 Concept 名称必须表示单一主题，必须把包含多个独立实体的对象拆成多个独立 concepts，并同步拆分 memberships 与 hierarchy；不能只删除“与/和/及/、/”后继续保留复合标题。此硬门禁不因技术术语、比较场景或固定搭配而豁免。
 只返回修正后的 JSON。`)
 }
 
@@ -637,6 +642,8 @@ export function buildConversationPrompt(input: {
 主题标记约定：回答正文中提到输入目录里已有的知识主题时，使用 [[nexus:existing:主题名称]]回答中实际出现的词组[[/nexus]]；你认为值得用户继续探索、但尚未确认存在的主题，使用 [[nexus:suggested:主题名称]]回答中实际出现的词组[[/nexus]]。先在脑中把回答整理成思维导图，再按概念节点逐个选择标记；不要等到回答末尾才列一串笼统推荐。每个标记都必须有成对的 [[/nexus]] 闭合标签，不能输出只有开头的简写，也不能嵌套标记。段落、标题、编号列表、项目符号和表格中的词组都适用同一规则；列表中每个独立的主题词应分别标记首次出现的真实词组。
 
 推荐词选择必须像教材的章节大标题或小标题：短、独立、凝练、能与其他词清楚区分，优先使用 1 到 4 个词的技术主题（例如分别标记 [[nexus:suggested:Clos]]Clos[[/nexus]] 和 [[nexus:existing:RoCE]]RoCE[[/nexus]]）。标记名称与正文应语义对应；标记正文必须逐字复制回答中真实出现的词组，严禁使用“原文”“正文”“主题名称”等占位文字，也不要把整句、解释句或带“与/和”的多个概念拼成一个推荐词。回答中出现多个具有独立知识含义的概念词，可以分别标记多个推荐词；其中每个具有独立知识含义且尚未在目录确认存在的概念词都可以分别作为 suggested marker。多个独立概念应分别标记，包括同一段或列表中的大主题、子主题、协议、算法、架构和关键机制；没有固定的总数量上限，但不要为了凑数量标记普通名词、连接词或同一概念的每次重复，也不要把多个概念合并成一个 marker。每个稳定概念通常只标记首次真实出现；不确定、仅作修饰或正文没有原词时不要添加。应用会把已有主题显示为蓝色下划线、建议主题显示为黄色下划线。
+
+${TECHNICAL_MARKER_COVERAGE_CONTRACT}
 
 用户问题：${input.question}
 当前 Concept：${input.topic || '未指定'}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseImportPayload, validateConceptIdList, validateConceptMemberships, validateConceptName, validateDisclosureRequests, validateOriginConceptResult, validateSegmentationResult, validateUnitText } from '@/services/validation'
+import { normalizeOriginConceptResultForReuse, parseImportPayload, validateConceptIdList, validateConceptMemberships, validateConceptName, validateDisclosureRequests, validateOriginConceptResult, validateSegmentationResult, validateUnitText } from '@/services/validation'
 
 describe('import validation', () => {
   it('accepts the documented DeepSeek payload and rejects unsupported roles', () => {
@@ -96,6 +96,26 @@ describe('direct origin Concept response validation', () => {
       relations: [],
     }, { targetIds: ['m1'], conceptIds: ['caver'], conceptCatalog: [{ id: 'caver', name: 'CAVER' }] })
     expect(issues.some((issue) => issue.message.includes('必须复用 Concept ID caver'))).toBe(true)
+  })
+
+  it('repairs exact duplicate Concepts into disclosed IDs without merging near matches', () => {
+    const repaired = normalizeOriginConceptResultForReuse({
+      concepts: [
+        { client_ref: 'new:1', name: 'CAVER', summary: '重复主题。', aliases: [] },
+        { client_ref: 'new:2', name: 'CAVER 路径选择', summary: '新的子主题。', aliases: [] },
+      ],
+      concept_ids: ['new:1', 'new:2'],
+      memberships: [{ target_type: 'message', target_id: 'm1', concept_ids: ['new:1', 'new:2'] }],
+      relations: [{ source: 'new:1', target: 'new:2', type: 'hierarchy' }],
+    }, [{ id: 'caver', name: 'CAVER', aliases: ['CAVER 网络'] }])
+    expect(repaired.reused).toEqual([{ client_ref: 'new:1', concept_id: 'caver', name: 'CAVER', matched_by: 'name' }])
+    expect(repaired.data.concepts).toEqual([{ client_ref: 'new:2', name: 'CAVER 路径选择', summary: '新的子主题。', aliases: [] }])
+    expect(repaired.data.concept_ids).toEqual(['caver', 'new:2'])
+    expect(repaired.data.memberships).toEqual([{ target_type: 'message', target_id: 'm1', concept_ids: ['caver', 'new:2'] }])
+    expect(repaired.data.relations).toEqual([{ source: 'caver', target: 'new:2', type: 'hierarchy' }])
+    const near = normalizeOriginConceptResultForReuse({ concepts: [{ client_ref: 'new:1', name: 'CAVERX', summary: '', aliases: [] }] }, [{ id: 'caver', name: 'CAVER' }])
+    expect(near.reused).toHaveLength(0)
+    expect(near.data.concepts).toHaveLength(1)
   })
 
   it('validates response-local refs and Session/Message-only memberships', () => {
