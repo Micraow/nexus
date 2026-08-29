@@ -128,10 +128,10 @@
 
 ## 验收覆盖说明（对应设计 15.1）
 
-- 单元测试（Vitest，229 项）覆盖 Markdown 渲染与注入防护、分块切分与合并校验、图谱关系/渐进披露、维护目录强制遍历、中文搜索与搜索选择框、会话分支/恢复、阅读片段浏览、扩展会话发现与导出 payload、主题证据分页、任务迁移和直接对话写入。数据库耦合路径依赖 sql.js WASM；当前测试已覆盖直接导入、旧 segmentation 归一化、对话结果应用和 API 任务并发护栏，仍不替代真实桌面环境的备份恢复验收。
+- 单元测试（Vitest，当前 274 项）覆盖 Markdown 渲染与注入防护、分块切分与合并校验、图谱关系/渐进披露、维护目录强制遍历、中文搜索与搜索选择框、会话分支/恢复、阅读片段浏览、扩展会话发现与导出 payload、主题证据分页、任务迁移和直接对话写入。数据库耦合路径依赖 sql.js WASM；当前测试已覆盖直接导入、旧 segmentation 归一化、对话结果应用和 API 任务并发护栏，仍不替代真实桌面环境的备份恢复验收。
 - 数据库耦合路径通过 headless Chromium + CDP 冒烟脚本人工验收：空态加载、图谱渲染、帮助弹窗、Provider 保存、导入 JSON → 任务中心 → Prompt 粘贴应用 Session/Message Concept 归属（旧数据另验阅读片段兼容与废弃分段任务归档）→ 图谱出现主题与直接证据节点 → 主题目录右栏跨 Session 消息分页 → 会话列表核对，全程断言无运行时异常。该脚本为临时验收工具，不随应用分发。
 - 2026-08-28 使用本机保存的真实 OpenAI-compatible Provider 验收：维护 Prompt 在 31 个 Concept、26 条关系、1 个既有阅读片段和 106 条未归属消息上返回 3 个 `unit_create`，分别覆盖 52、50、4 条消息，完整覆盖全部遗漏；API 流式对话在任务完成前显示“实时输出”，完成后将首轮问答收束为 1 张卡片、1 个探索树节点和 1 个非空阅读片段。API Key 未写入仓库或验收日志。
-- 2026-08-29 使用隔离知识库和本机 Provider 验收维护渐进披露：模型自然完成 3 个 API 轮次，`round 0` 批量请求 9 个 ref、`round 1` 请求新增 2 个 ref，两个中间轮均为 `suggestions=[]`；`round 2` 的 pending 清空，返回非空 reason，任务应用成功并进入 `success`。随后补齐 Concept/Session/KnowledgeUnit/Message 结构化 content；本地 229 项测试通过，追加真实质量复测被 Provider HTTP 429 阻断且未产生模型响应或写入。API Key 与临时脚本未进入仓库。
+- 2026-08-29 使用隔离知识库和本机 Provider 验收维护渐进披露：模型自然完成 3 个 API 轮次，`round 0` 批量请求 9 个 ref、`round 1` 请求新增 2 个 ref，两个中间轮均为 `suggestions=[]`；`round 2` 的 pending 清空，返回非空 reason，任务应用成功并进入 `success`。随后补齐 Concept/Session/KnowledgeUnit/Message 结构化 content；本地 274 项测试通过，追加真实质量复测被 Provider HTTP 429 阻断且未产生模型响应或写入。API Key 与临时脚本未进入仓库。
 
 ## 直接 Concept 流程迁移约定
 

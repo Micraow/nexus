@@ -13,7 +13,7 @@ import { combineSegmentationChunks, splitMessageChunks } from '@/utils/chunks'
 import { wouldCreateHierarchyCycle } from '@/utils/graph-rules'
 import { createId, isoNow, normalizeText, parseIsoTimestamp, stableHash } from '@/utils/id'
 import { parseMetadata } from '@/utils/metadata'
-import { canTransitionTask, canTransitionTaskStatus, isActiveTaskStatus, LEGACY_SEGMENTATION_RETIRED_REASON, normalizeTaskStatus, taskPhaseForStatus, taskPhaseForTransition, taskStatusForTransition, transitionTaskState, type TaskTransitionEvent } from '@/services/task-state'
+import { canTransitionTask, canTransitionTaskStatus, isActiveTaskStatus, LEGACY_SEGMENTATION_RETIRED_REASON, normalizeTaskStatus, taskPhaseForStatus, transitionTaskState, type TaskTransitionEvent } from '@/services/task-state'
 import type {
   AppConfig,
   Concept,

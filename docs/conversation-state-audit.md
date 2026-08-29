@@ -70,7 +70,7 @@ sequenceDiagram
   end
 ```
 
-维护入口的关注主题只是排序提示，任务范围始终是整个 active 图谱。动作参数中的 Concept、Session、Message 和 Unit ID 必须来自已披露的 `content`；越界结果整体进入 `needs_review`，不执行部分写入。`unit_create.title` 统一限制为最多 30 个 Unicode 字符。
+维护入口的关注主题只是排序提示，任务范围始终是整个 active 图谱。顶栏入口在所有模块稳定显示，浮层在切换模块时关闭但不改变 scope。动作参数中的 Concept、Session、Message 和 Unit ID 必须来自已披露的 `content`；越界结果整体进入 `needs_review`，不执行部分写入。`unit_create.title` 统一限制为最多 30 个 Unicode 字符。人工提交有效披露请求后，API 任务自动重新排队并发起下一轮；Prompt 粘贴任务保留 pending 等待下一次手动响应。
 
 ## 对话状态机
 

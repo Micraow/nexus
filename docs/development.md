@@ -159,6 +159,8 @@ pnpm build:extension      # 产物在 extension/dist/
 
 完整的状态图、维护/对话时序和模块边界见 [`docs/conversation-state-audit.md`](conversation-state-audit.md)。
 
+状态机改动检查清单：新增任务事件时，同时更新 `services/task-state.ts` 的来源/目标/phase 映射、`tests/task-state.test.ts` 和状态审计文档；业务事实必须与 `accept_validated_result` 位于同一事务。不要直接写 `LLMTask.status`，不要以 `queueRunning`、按钮可见性或流式文本是否为空判断完成。涉及披露续轮时，确认 `pending_ref_ids`、`suggestions=[]`、非空 `reason` 和 API 自动再次排队均有覆盖；涉及对话时，确认 `taskId`、消息和导航节点恢复后分支仍不可误关。
+
 1. 以 API 模式模拟维护任务首轮返回 `reason`、空 `suggestions` 和有效 `disclosure_requests`。点击“校验并应用”后，任务必须保持 pending/running 并用更新后的 Prompt 自动发起下一轮；最终轮才允许显示成功或“无建议变更”。以 Prompt 粘贴模式重复该操作，确认不发网络请求、Prompt 已替换且任务仍为 pending。
 2. 分别模拟无效 Concept ID、越界 membership target 和重复披露引用。三种情况均应保留原始响应、进入 `needs_review`，不写 assistant Message、Concept 关系或维护建议；修复后只能通过 retry 回到 pending。
    维护任务还要验证动作 ID 必须来自已展开 `content` 的实体白名单；只出现在根目录或 children 摘要中的 Concept、Session、Message 或 Unit 均应被拒绝。API 维护响应缺少总体 `reason` 时同样进入 `needs_review`，不能显示为“无建议变更”。
