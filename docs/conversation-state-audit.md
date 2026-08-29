@@ -193,7 +193,7 @@ sequenceDiagram
 
 当前实现已经把大部分隐式状态收拢到命名事件，但仍有以下需要后续明确或重构的地方：
 
-- `canTransitionTaskStatus(from, to)` 是兼容查询，允许的目标集合比事件来源更宽（例如它允许 `pending → failed`，而 `fail_transport` 只接受 `running`）。任何写入必须走 `canTransitionTask`/`transitionTask*`；应在后续删除或改名这个容易误用的兼容 API。
+- `transitionTaskState(from, event)` 现在是唯一的事件解析源，`canTransitionTask` 与 `canTransitionTaskStatus` 都从它派生；后者仍是仅供兼容调用方的目标状态查询。任何写入必须走 `transitionTask*`，不要在业务层复制来源/目标映射。
 - `markTask(status)` 通过目标状态反推事件；对 `pending` 目标会选择 `retry`，因此对已经 pending 的任务是刻意 no-op。调用方不应把它当作通用状态设置器，必要时应直接表达 `continue_disclosure` 或 `retry` 事件。
 - 同一 Session 的 conversation 输入锁目前是 store 内对 `tasks.value` 的检查，不是数据库唯一约束或事务租约。两个并发调用可能在刷新前同时创建追问；后续应增加 Session 级 lease/唯一活动任务约束，并让恢复流程处理过期 lease。
 - `runQueue` 会在存在任意 `session_triage` 时暂停其他类型任务，因此导入分类优先级是全局的，不是按 Session 的局部依赖。该策略符合“分类先于起始主题”，但可能阻塞一个无关的新对话；后续应决定是否改为每个 Session 独立依赖队列。
