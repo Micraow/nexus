@@ -151,6 +151,48 @@ function edgeWidth(edge: GraphEdge): number {
   return 0.9
 }
 
+// Weak evidence/association links should remain visible, but must not make
+// otherwise separate hierarchy clusters behave as one draggable component.
+function isStructuralDragEdge(edge: GraphEdge): boolean {
+  return edge.type === 'hierarchy'
+    || edge.type === 'manual'
+    || (edge.type === 'related' && edge.weight >= 2)
+}
+
+function graphEndpointId(endpoint: string | GraphNode | d3.SimulationNodeDatum): string {
+  return typeof endpoint === 'string' ? endpoint : (endpoint as GraphNode).id
+}
+
+function structuralAdjacency(links: GraphEdge[]): Map<string, Set<string>> {
+  const adjacency = new Map<string, Set<string>>()
+  links.forEach((link) => {
+    if (!isStructuralDragEdge(link)) return
+    const source = graphEndpointId(link.source)
+    const target = graphEndpointId(link.target)
+    const sourceNeighbors = adjacency.get(source) ?? new Set<string>()
+    const targetNeighbors = adjacency.get(target) ?? new Set<string>()
+    sourceNeighbors.add(target)
+    targetNeighbors.add(source)
+    adjacency.set(source, sourceNeighbors)
+    adjacency.set(target, targetNeighbors)
+  })
+  return adjacency
+}
+
+function structuralComponent(startId: string, adjacency: Map<string, Set<string>>): Set<string> {
+  const component = new Set<string>()
+  const queue = [startId]
+  for (let index = 0; index < queue.length; index += 1) {
+    const current = queue[index]
+    if (component.has(current)) continue
+    component.add(current)
+    ;(adjacency.get(current) ?? []).forEach((neighbor) => {
+      if (!component.has(neighbor)) queue.push(neighbor)
+    })
+  }
+  return component
+}
+
 function mapValue<T>(map: Record<string, T> | Map<string, T> | undefined, key: string): T | undefined {
   if (!map) return undefined
   return map instanceof Map ? map.get(key) : map[key]
@@ -599,10 +641,16 @@ function render(): void {
   // lifetime of this simulation while newly revealed children settle around
   // their parent. Releasing and reheating these nodes on a timer produces a
   // delayed second movement that users perceive as graph flicker.
-  const anchoredNodes = (topologyChanged || viewportInsetChanged) && hasPreviousLayout
-    ? nodes.filter((node) => knownNodeIds.has(node.id) && !node.fixed && node.x != null && node.y != null)
+  const newlyVisibleNodeIds = new Set(nodes.filter((node) => !knownNodeIds.has(node.id)).map((node) => node.id))
+  const expansionComponentIds = new Set<string>()
+  const structuralLinks = structuralAdjacency(links)
+  newlyVisibleNodeIds.forEach((nodeId) => {
+    structuralComponent(nodeId, structuralLinks).forEach((componentNodeId) => expansionComponentIds.add(componentNodeId))
+  })
+  const temporarilyAnchoredNodes = topologyExpanded && hasPreviousLayout && expansionComponentIds.size
+    ? nodes.filter((node) => !expansionComponentIds.has(node.id) && !node.fixed && node.x != null && node.y != null)
     : []
-  anchoredNodes.forEach((node) => {
+  temporarilyAnchoredNodes.forEach((node) => {
     node.fx = node.x
     node.fy = node.y
   })
@@ -684,6 +732,25 @@ function render(): void {
       y2: ty - (dy / distance) * targetRadius,
     }
   }
+
+  // ForceAtlas2 applies gravity per connected component instead of pulling
+  // every component toward one global centroid. D3's forceX/forceY accessors
+  // give us the same isolation while retaining the existing SVG simulation.
+  // The target is the component centroid at simulation start, so adding a
+  // child shifts only its own component and never drags a disconnected group.
+  const gravityTargets = new Map<string, { x: number; y: number }>()
+  const gravityVisited = new Set<string>()
+  nodes.forEach((node) => {
+    if (gravityVisited.has(node.id)) return
+    const component = structuralComponent(node.id, structuralLinks)
+    component.forEach((id) => gravityVisited.add(id))
+    const componentNodes = nodes.filter((candidate) => component.has(candidate.id))
+    const target = {
+      x: componentNodes.reduce((sum, candidate) => sum + (candidate.x ?? layoutWidth / 2), 0) / Math.max(componentNodes.length, 1),
+      y: componentNodes.reduce((sum, candidate) => sum + (candidate.y ?? height / 2), 0) / Math.max(componentNodes.length, 1),
+    }
+    component.forEach((id) => gravityTargets.set(id, target))
+  })
 
   const expanded = expandedConceptSet()
   const hasAuthoritativeExpansionState = props.expandedConceptIds !== undefined
@@ -860,22 +927,7 @@ function render(): void {
       // The center force acts on every component. Pin nodes outside the
       // dragged component for the duration of the gesture so an unrelated
       // cluster remains visually stationary while this component is moved.
-      const componentIds = new Set<string>([node.id])
-      const componentQueue = [node.id]
-      const componentEdges = new Map<string, string[]>()
-      links.forEach((link) => {
-        const source = typeof link.source === 'string' ? link.source : (link.source as unknown as GraphNode).id
-        const target = typeof link.target === 'string' ? link.target : (link.target as unknown as GraphNode).id
-        componentEdges.set(source, [...(componentEdges.get(source) ?? []), target])
-        componentEdges.set(target, [...(componentEdges.get(target) ?? []), source])
-      })
-      for (let index = 0; index < componentQueue.length; index += 1) {
-        ;(componentEdges.get(componentQueue[index]) ?? []).forEach((neighbor) => {
-          if (componentIds.has(neighbor)) return
-          componentIds.add(neighbor)
-          componentQueue.push(neighbor)
-        })
-      }
+      const componentIds = structuralComponent(node.id, structuralLinks)
       nodes.forEach((candidate) => {
         if (componentIds.has(candidate.id) || candidate.fixed || candidate.x == null || candidate.y == null) return
         dragPinnedNodes.set(candidate.id, { x: candidate.x, y: candidate.y })
@@ -976,15 +1028,11 @@ function render(): void {
     // without letting dense sessions collapse into one pile.
     .force('link', linkForce)
     .force('charge', chargeForce)
-    // Do not use d3.forceCenter here: it translates every node by the same
-    // aggregate-centroid correction, so dragging one disconnected component
-    // makes every other component follow. Per-node recentering keeps the
-    // canvas bounded without coupling unrelated components.
-    .force('x', d3.forceX<GraphNode & d3.SimulationNodeDatum>(layoutWidth / 2).strength(largeGraph ? 0.006 : 0.009))
-    .force('y', d3.forceY<GraphNode & d3.SimulationNodeDatum>(height / 2).strength(largeGraph ? 0.006 : 0.009))
+    .force('x', d3.forceX<GraphNode & d3.SimulationNodeDatum>((node) => gravityTargets.get(node.id)?.x ?? layoutWidth / 2).strength(largeGraph ? 0.012 : 0.018))
+    .force('y', d3.forceY<GraphNode & d3.SimulationNodeDatum>((node) => gravityTargets.get(node.id)?.y ?? height / 2).strength(largeGraph ? 0.012 : 0.018))
     .force('collide', d3.forceCollide<GraphNode & d3.SimulationNodeDatum>().radius((node) => (node as GraphNode).type === 'concept' ? 50 : 28).strength(0.86).iterations(largeGraph ? 1 : 2))
     .velocityDecay(largeGraph ? 0.68 : 0.64)
-  if (newlySeededNodes.length && !props.reducedMotion) {
+  if ((newlySeededNodes.length || temporarilyAnchoredNodes.length) && !props.reducedMotion) {
     window.setTimeout(() => {
       if (generation !== renderGeneration) return
       newlySeededNodes.forEach((node) => {
@@ -993,8 +1041,14 @@ function render(): void {
           node.fy = null
         }
       })
+      temporarilyAnchoredNodes.forEach((node) => {
+        if (!node.fixed) {
+          node.fx = null
+          node.fy = null
+        }
+      })
       simulation?.alpha(Math.max(simulation.alpha(), 0.18)).restart()
-    }, 280)
+    }, 220)
   }
   let paintPending = false
   const paint = (): void => {
@@ -1032,8 +1086,8 @@ function render(): void {
       if (node.x != null && node.y != null) nodePositions.set(node.id, { x: node.x, y: node.y })
     })
     paint()
-  } else if (largeGraph) simulation.alphaDecay(0.045).alpha(0.3)
-  else if (hasPreviousLayout) simulation.alphaDecay(0.04).alpha(0.24)
+  } else if (largeGraph) simulation.alphaDecay(topologyExpanded ? 0.035 : 0.045).alpha(topologyExpanded ? 0.52 : 0.3)
+  else if (hasPreviousLayout) simulation.alphaDecay(topologyExpanded ? 0.032 : 0.04).alpha(topologyExpanded ? 0.5 : 0.24)
   else simulation.alphaDecay(0.05).alpha(0.62)
 
   // 首次挂载且用户未操作时，等力向布局稳定后只适配一次画布，避免每个 tick 触发 zoom 重排。

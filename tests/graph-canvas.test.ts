@@ -465,7 +465,7 @@ describe('GraphCanvas progressive disclosure', () => {
     expect(translateX(insetTransform)).toBeLessThan(translateX(initialTransform))
   })
 
-  it('keeps existing nodes stable through progressive expand and recursive collapse', async () => {
+  it('lets the affected component settle through progressive expand and recursive collapse', async () => {
     const snapshot: GraphSnapshot = {
       revision: 11,
       nodes: [
@@ -485,7 +485,7 @@ describe('GraphCanvas progressive disclosure', () => {
     state.expandedConceptIds = ['root']
     await nextTick()
     expect([...target.querySelectorAll<SVGGElement>('.graph-node')].map((node) => node.dataset.refId).sort()).toEqual(['child', 'root'])
-    expect(target.querySelector('[data-ref-id="root"]')?.getAttribute('transform')).toBe(rootTransform)
+    expect(target.querySelector('[data-ref-id="root"]')?.getAttribute('transform')).not.toBe(rootTransform)
 
     state.expandedConceptIds = ['root', 'child']
     await nextTick()
