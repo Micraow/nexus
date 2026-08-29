@@ -105,6 +105,7 @@ let renderedSize: { width: number; height: number } | null = null
 let draggingNodeId: string | null = null
 let dragStartPoint: { x: number; y: number } | null = null
 let dragMoved = false
+let draggedDescendants = new Map<string, { x: number; y: number }>()
 let suppressClickNodeId: string | null = null
 let suppressClickTimer: number | null = null
 let lastNodeSignature = ''
@@ -597,6 +598,17 @@ function render(): void {
     node.fx = node.x
     node.fy = node.y
   })
+  // Keep newly disclosed hierarchy children at their deterministic radial
+  // seeds for a short settling window. Releasing them immediately lets the
+  // charge/center forces fling a first-click expansion toward a corner before
+  // the parent-child spring has had a chance to act.
+  const newlySeededNodes = topologyChanged && hasPreviousLayout
+    ? nodes.filter((node) => !knownNodeIds.has(node.id) && node.x != null && node.y != null && !node.fixed)
+    : []
+  newlySeededNodes.forEach((node) => {
+    node.fx = node.x
+    node.fy = node.y
+  })
   const linkLayer = viewport.append('g').attr('class', 'graph-links')
   const nodeLayer = viewport.append('g').attr('class', 'graph-nodes')
 
@@ -807,6 +819,7 @@ function render(): void {
       draggingNodeId = node.id
       dragStartPoint = { x: event.x, y: event.y }
       dragMoved = false
+      draggedDescendants = new Map<string, { x: number; y: number }>()
       highlightNode(node.id)
       // Reheat the springs while dragging so connected nodes follow the
       // pointer instead of feeling pinned in place. Keep the target finite;
@@ -814,11 +827,42 @@ function render(): void {
       if (!event.active) simulation?.alphaTarget(0.18).restart()
       node.fx = node.x
       node.fy = node.y
+      if (node.type === 'concept') {
+        const childrenByParent = new Map<string, string[]>()
+        links.forEach((link) => {
+          if (link.type !== 'hierarchy') return
+          const source = typeof link.source === 'string' ? link.source : (link.source as unknown as GraphNode).id
+          const target = typeof link.target === 'string' ? link.target : (link.target as unknown as GraphNode).id
+          childrenByParent.set(source, [...(childrenByParent.get(source) ?? []), target])
+        })
+        const queue = [node.id]
+        const seen = new Set(queue)
+        for (let index = 0; index < queue.length; index += 1) {
+          const parentId = queue[index]
+          ;(childrenByParent.get(parentId) ?? []).forEach((childId) => {
+            if (seen.has(childId)) return
+            seen.add(childId)
+            queue.push(childId)
+            const child = nodeById.get(childId)
+            if (child?.x != null && child.y != null) draggedDescendants.set(childId, { x: child.x, y: child.y })
+          })
+        }
+      }
     })
     .on('drag', (event, node) => {
       if (dragStartPoint && (Math.abs(event.x - dragStartPoint.x) > 4 || Math.abs(event.y - dragStartPoint.y) > 4)) dragMoved = true
       node.fx = event.x
       node.fy = event.y
+      const dx = dragStartPoint ? event.x - dragStartPoint.x : 0
+      const dy = dragStartPoint ? event.y - dragStartPoint.y : 0
+      draggedDescendants.forEach((position, childId) => {
+        const child = nodeById.get(childId)
+        if (!child || child.fixed) return
+        child.fx = position.x + dx
+        child.fy = position.y + dy
+        child.x = position.x + dx
+        child.y = position.y + dy
+      })
     })
     .on('end', (event, node) => {
       if (!event.active) {
@@ -830,6 +874,14 @@ function render(): void {
       }
       node.fx = event.x
       node.fy = event.y
+      draggedDescendants.forEach((_position, childId) => {
+        const child = nodeById.get(childId)
+        if (!child || child.fixed) return
+        if (child.x != null && child.y != null) nodePositions.set(child.id, { x: child.x, y: child.y })
+        child.fx = null
+        child.fy = null
+      })
+      draggedDescendants.clear()
       // Keep the in-memory seed in sync with the persisted layout immediately;
       // a disclosure render can happen before the next simulation tick.
       nodePositions.set(node.id, { x: event.x, y: event.y })
@@ -888,6 +940,18 @@ function render(): void {
     .force('y', d3.forceY<GraphNode & d3.SimulationNodeDatum>(height / 2).strength(largeGraph ? 0.014 : 0.02))
     .force('collide', d3.forceCollide<GraphNode & d3.SimulationNodeDatum>().radius((node) => (node as GraphNode).type === 'concept' ? 50 : 28).strength(0.86).iterations(largeGraph ? 1 : 2))
     .velocityDecay(largeGraph ? 0.68 : 0.64)
+  if (newlySeededNodes.length && !props.reducedMotion) {
+    window.setTimeout(() => {
+      if (generation !== renderGeneration) return
+      newlySeededNodes.forEach((node) => {
+        if (!node.fixed) {
+          node.fx = null
+          node.fy = null
+        }
+      })
+      simulation?.alpha(Math.max(simulation.alpha(), 0.18)).restart()
+    }, 280)
+  }
   let paintPending = false
   const paint = (): void => {
       linkSelection
