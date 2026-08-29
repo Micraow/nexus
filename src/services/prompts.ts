@@ -11,15 +11,15 @@ export const PROMPT_VERSION = '2026-08-v9-maintenance-disclosure-audit'
 const CONCEPT_NAME_QUALITY_CONTRACT = `
 Concept 名称输出前机械自检（硬限制，必须逐项执行）：
 1. 草拟最终 JSON 后，逐个扫描 concepts[i].name 的全部 Unicode 字符。
-2. 只要 name 中出现“与”“和”“及”“、”“/”“／”任一字符，该名称就无条件不合格；这条字符检查没有技术术语、固定搭配或比较场景例外，必须在输出前改正。
+2. 只要 name 中出现“与”“和”“及”“、”“/”“／”任一字符并用于连接两段非空文本，该名称就无条件不合格；对确认作为连接词的情况没有技术术语、固定搭配或比较场景例外，必须在输出前改正。若“与/和/及”只是词内部组成部分或位于名称首尾，不属于拼接，不要误报。
 3. 如果不合格名称实际包含多个独立主题，必须拆成多个 concepts 对象，各自使用短而独立的名称；禁止仅删除连接词后仍把多个主题塞在同一个 name 中。
 4. 拆分出的主题若有共同的稳定上位主题，应创建或复用该单一父主题，并用 hierarchy 组织父→子；比较、并列或共同出现本身不能冒充 hierarchy。若拆分后会超过 Concept 数量上限，只保留证据最充分的单一主题，绝不能重新合并。
-5. 输出前再次逐项检查：每个 name 最长 24 个 Unicode 字符，只表达一个主题，并且不含上述六种禁用字符；任一项失败都不得输出该 JSON。
+5. 输出前再次逐项检查：每个 name 最长 24 个 Unicode 字符，只表达一个主题，并且不含作为拼接分隔符使用的上述六种字符；任一项失败都不得输出该 JSON。
 反例（禁止）："DCQCN 与 PFC"、"PathTable/FlowTable 设计"、"CONGA、MP-RDMA 方案对比"。
 正例：把共同上位主题和独立子主题分别声明为 {"client_ref":"new:1","name":"RDMA 网络控制","summary":"RDMA 网络中的流量调节主题。","aliases":[]}、{"client_ref":"new:2","name":"DCQCN 拥塞控制","summary":"基于 ECN 反馈的端到端拥塞控制。","aliases":[]}、{"client_ref":"new:3","name":"PFC 逐跳反压","summary":"按优先级暂停链路流量的逐跳机制。","aliases":[]}，再返回 new:1→new:2、new:1→new:3 的 hierarchy；不得把三个名称重新拼成一个 Concept。
 `
 
-const CONCEPT_NAME_FINAL_GATE = '最终 JSON 门禁：输出前逐项扫描 concepts[].name；含“与”“和”“及”“、”“/”“／”任一字符就先拆成独立 Concept，不能输出后依赖软件拒绝，也不能只删连接词继续合并。'
+const CONCEPT_NAME_FINAL_GATE = '最终 JSON 门禁：输出前逐项扫描 concepts[].name；含作为拼接分隔符使用的“与”“和”“及”“、”“/”“／”就先拆成独立 Concept，不能输出后依赖软件拒绝，也不能只删连接词继续合并。词内部或名称首尾的“与/和/及”不算拼接分隔符。'
 
 const TECHNICAL_MARKER_COVERAGE_CONTRACT = `
 推荐词技术覆盖审计（硬约束）：完成 answer 草稿后，从全文逐段扫描所有具有独立知识含义的技术实体，至少检查协议/标准、算法、架构/拓扑、组件、数据结构、控制机制、英文缩写、连字符词和 CamelCase 词。只要该实体在正文中以真实词组首次出现，就必须单独包在一个 Nexus marker 中；已有目录主题用 existing，目录没有明确证据的用 suggested。不要因为词是英文、缩写、大小写混排或出现在代码/列表/表格中而漏标，也不要把相邻技术实体合并在同一个 marker。普通连接词、泛化名词和同一实体的后续重复不必标记。输出前逐个核对正文中的技术词与 marker 数量，优先保证覆盖而不是只标记少数大主题。`
