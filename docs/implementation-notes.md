@@ -4,12 +4,14 @@
 
 ## 2026-08-29 任务与会话状态基线
 
-- `LLMTask` 是任务队列、人工校验与页面动作的唯一完成状态；组件不得以图标、当前页或本地 `started` 布尔值判断任务已完成。状态转换集中在 `services/task-state.ts`，store 通过命名事件执行条件更新：`start`、`continue_disclosure`、`accept_validated_result`、`reject_validation`、`fail_transport`、`retry`、`cancel`、`invalidate`。
+- `LLMTask` 是任务队列、人工校验与页面动作的唯一完成状态；组件不得以图标、当前页或本地 `started` 布尔值判断任务已完成。状态转换集中在 `services/task-state.ts`，`transitionTaskState(from, event)` 是唯一的纯解析入口，返回成对的目标 `status` 与 `phase`；store 通过命名事件执行条件更新：`start`、`continue_disclosure`、`accept_validated_result`、`reject_validation`、`fail_transport`、`retry`、`cancel`、`invalidate`。
 - 任务状态转换事务与图谱事实事务分离：队列开始/失败/重试/续轮只更新 `llm_tasks`，不递增 `graph_revision`；只有概念、关系、归属、阅读片段和消息等事实变化才使图谱投影缓存失效，避免任务轮询造成画布闪烁。
 - 人工“校验并应用”不是终态动作。响应要求进一步披露时，store 将下一轮 Prompt 和任务一起恢复为 `pending`。API 任务必须立即执行这一轮；Prompt 粘贴任务保持 pending，界面明确显示更新后的 Prompt，不能显示绿色成功或“无建议变更”。
 - 对话推荐词的分支只有在未提交前是组件内可删除草稿；创建 conversation task 时，user Message、taskId、预留 assistant ID 与导航节点构成持久事实，之后不允许关闭。流式文本按 taskId 只渲染在这条持久分支的卡片内，最终 JSON 校验成功才在同一事务写 assistant Message、阅读片段、归属、导航节点和 `success`。
 - Prompt 与验证器的 ID 范围一致：既有 Concept 只从当前已披露目录引用，新增 Concept 只用响应内 `client_ref`；对话 membership 只写本轮目标 Session、planned user/assistant Message 和已授权的本 Session 阅读片段；维护动作只能使用已披露 content 的 ID。越界结果整体进入 `needs_review`，不会留下部分关系或空分支。
 - 维护任务覆盖整个 active 图谱。入口对象仅作为关注提示；`reason` 无论 suggestions 是否为空都保留并展示。维护的 `pending_ref_ids` 未清空前仍处于披露阶段，禁止把空 suggestions 当成最终判断。
+
+状态机审计补充：任务状态（`status + phase`）、队列运行态、披露目录、对话分支和流式预览是五个独立层。只有 `transitionTask*` 能写任务状态；`runQueue → executeTask → applyTaskResult` 是 API 主链，续轮必须释放执行锁并重新排队。当前 `runQueue` 的 triage 优先级是全局的，且同一 Session 的输入锁仍是 store 检查而非数据库 lease；这两点分别记录为调度策略和并发重构事项，不能由 UI 本地布尔值补偿。完整状态图和审计发现见 [`docs/conversation-state-audit.md`](conversation-state-audit.md)。
 
 ## 2026-08-28 图谱与主题页实现状态
 

@@ -17,6 +17,13 @@ export type TaskTransitionEvent =
   | 'cancel'
   | 'invalidate'
 
+export interface TaskTransition {
+  from: TaskStatus
+  event: TaskTransitionEvent
+  to: TaskStatus
+  phase: TaskPhase
+}
+
 const TASK_TRANSITION_EVENT_PHASE: Readonly<Record<TaskTransitionEvent, TaskPhase>> = {
   start: 'executing',
   continue_disclosure: 'awaiting_disclosure',
@@ -51,18 +58,12 @@ const TASK_TRANSITION_EVENT_SOURCES: Readonly<Record<TaskTransitionEvent, readon
 }
 
 /**
- * The persisted task status is the source of truth for queue and UI state.
- * Keep the legal transitions here instead of letting individual callers infer
- * them from display state or an API request's lifecycle.
+ * Resolve one legal domain transition. This is the only source of truth for
+ * both the compact queue status and its explanatory lifecycle phase.
  */
-const TASK_STATUS_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
-  pending: ['running', 'success', 'failed', 'needs_review', 'stale', 'cancelled'],
-  running: ['pending', 'success', 'failed', 'needs_review', 'stale', 'cancelled'],
-  success: [],
-  failed: ['pending'],
-  needs_review: ['pending', 'success', 'stale', 'cancelled'],
-  stale: ['pending', 'cancelled'],
-  cancelled: ['pending'],
+export function transitionTaskState(from: TaskStatus, event: TaskTransitionEvent): TaskTransition | null {
+  if (!TASK_TRANSITION_EVENT_SOURCES[event].includes(from)) return null
+  return { from, event, to: TASK_TRANSITION_EVENT_TARGET[event], phase: TASK_TRANSITION_EVENT_PHASE[event] }
 }
 
 export function isActiveTaskStatus(status: TaskStatus): boolean {
@@ -104,12 +105,14 @@ export function taskPhaseForStatus(status: TaskStatus, awaitingDisclosure = fals
 }
 
 export function canTransitionTask(status: TaskStatus, event: TaskTransitionEvent): boolean {
-  return TASK_TRANSITION_EVENT_SOURCES[event].includes(status)
+  return transitionTaskState(status, event) !== null
 }
 
 /** Retained for callers that only have source/target statuses. */
 export function canTransitionTaskStatus(from: TaskStatus, to: TaskStatus): boolean {
-  return from === to || TASK_STATUS_TRANSITIONS[from].includes(to)
+  if (from === to) return true
+  return (Object.keys(TASK_TRANSITION_EVENT_TARGET) as TaskTransitionEvent[])
+    .some((event) => TASK_TRANSITION_EVENT_TARGET[event] === to && canTransitionTask(from, event))
 }
 
 export function normalizeTaskStatus(type: TaskType, status: TaskStatus): TaskStatus {
