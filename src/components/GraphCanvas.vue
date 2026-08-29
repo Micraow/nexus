@@ -106,6 +106,7 @@ let draggingNodeId: string | null = null
 let dragStartPoint: { x: number; y: number } | null = null
 let dragMoved = false
 let draggedDescendants = new Map<string, { x: number; y: number }>()
+let dragPinnedNodes = new Map<string, { x: number; y: number }>()
 let suppressClickNodeId: string | null = null
 let suppressClickTimer: number | null = null
 let lastNodeSignature = ''
@@ -496,6 +497,15 @@ function render(): void {
   // layout because deterministic seeds were already painted synchronously.
   const hasPreviousLayout = previousVisibleNodeIds.size > 0
   const seedPositions = new Map(nodePositions)
+  // A newly disclosed child may carry a stale persisted coordinate from the
+  // full-graph layout. Ignore that coordinate and reseed it around its now
+  // visible parent; otherwise the first expansion renders a large jump before
+  // the force simulation can correct it.
+  if (hasPreviousLayout) {
+    snapshot.nodes.forEach((node) => {
+      if (!previousVisibleNodeIds.has(node.id) && anchorByNode.has(node.id)) seedPositions.delete(node.id)
+    })
+  }
   snapshot.nodes.forEach((node) => {
     if (!seedPositions.has(node.id) && node.x != null && node.y != null) {
       seedPositions.set(node.id, { x: node.x, y: node.y })
@@ -820,6 +830,7 @@ function render(): void {
       dragStartPoint = { x: event.x, y: event.y }
       dragMoved = false
       draggedDescendants = new Map<string, { x: number; y: number }>()
+      dragPinnedNodes = new Map<string, { x: number; y: number }>()
       highlightNode(node.id)
       // Reheat the springs while dragging so connected nodes follow the
       // pointer instead of feeling pinned in place. Keep the target finite;
@@ -848,6 +859,31 @@ function render(): void {
           })
         }
       }
+      // The center force acts on every component. Pin nodes outside the
+      // dragged component for the duration of the gesture so an unrelated
+      // cluster remains visually stationary while this component is moved.
+      const componentIds = new Set<string>([node.id])
+      const componentQueue = [node.id]
+      const componentEdges = new Map<string, string[]>()
+      links.forEach((link) => {
+        const source = typeof link.source === 'string' ? link.source : (link.source as unknown as GraphNode).id
+        const target = typeof link.target === 'string' ? link.target : (link.target as unknown as GraphNode).id
+        componentEdges.set(source, [...(componentEdges.get(source) ?? []), target])
+        componentEdges.set(target, [...(componentEdges.get(target) ?? []), source])
+      })
+      for (let index = 0; index < componentQueue.length; index += 1) {
+        ;(componentEdges.get(componentQueue[index]) ?? []).forEach((neighbor) => {
+          if (componentIds.has(neighbor)) return
+          componentIds.add(neighbor)
+          componentQueue.push(neighbor)
+        })
+      }
+      nodes.forEach((candidate) => {
+        if (componentIds.has(candidate.id) || candidate.fixed || candidate.x == null || candidate.y == null) return
+        dragPinnedNodes.set(candidate.id, { x: candidate.x, y: candidate.y })
+        candidate.fx = candidate.x
+        candidate.fy = candidate.y
+      })
     })
     .on('drag', (event, node) => {
       if (dragStartPoint && (Math.abs(event.x - dragStartPoint.x) > 4 || Math.abs(event.y - dragStartPoint.y) > 4)) dragMoved = true
@@ -882,6 +918,13 @@ function render(): void {
         child.fy = null
       })
       draggedDescendants.clear()
+      dragPinnedNodes.forEach((_position, pinnedId) => {
+        const pinned = nodeById.get(pinnedId)
+        if (!pinned || pinned.fixed) return
+        pinned.fx = null
+        pinned.fy = null
+      })
+      dragPinnedNodes.clear()
       // Keep the in-memory seed in sync with the persisted layout immediately;
       // a disclosure render can happen before the next simulation tick.
       nodePositions.set(node.id, { x: event.x, y: event.y })

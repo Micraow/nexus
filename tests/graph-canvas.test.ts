@@ -516,6 +516,26 @@ describe('GraphCanvas progressive disclosure', () => {
     expect(target.querySelector('[data-ref-id="child"]')).toBeTruthy()
   })
 
+  it('reseeds a newly disclosed child near its parent instead of using stale layout coordinates', async () => {
+    const snapshot: GraphSnapshot = {
+      revision: 131,
+      nodes: [
+        { id: 'concept:root', type: 'concept', refId: 'root', label: '根', degree: 1, unitCount: 0, parentIds: [], hasChildren: true, x: 400, y: 300 },
+        { id: 'concept:child', type: 'concept', refId: 'child', label: '子', degree: 1, unitCount: 0, parentIds: ['root'], x: 8, y: 8 },
+      ],
+      edges: [{ id: 'edge:root-child', source: 'concept:root', target: 'concept:child', type: 'hierarchy', weight: 1, status: 'confirmed' }],
+    }
+    const { target, state } = mountReactiveSnapshot(snapshot, { expandedConceptIds: [], reducedMotion: true })
+    await nextTick()
+    state.expandedConceptIds = ['root']
+    await nextTick()
+
+    const parent = translationOf(target.querySelector('[data-ref-id="root"]'))
+    const child = translationOf(target.querySelector('[data-ref-id="child"]'))
+    expect(Math.hypot(child.x - parent.x, child.y - parent.y)).toBeGreaterThan(70)
+    expect(Math.hypot(child.x - parent.x, child.y - parent.y)).toBeLessThan(360)
+  })
+
   it('seeds direct children around their parent instead of clustering in one direction', async () => {
     const childIds = ['alpha', 'beta', 'gamma', 'delta']
     const snapshot: GraphSnapshot = {
