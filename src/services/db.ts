@@ -15,7 +15,7 @@ const STORAGE_KEY = 'nexus:sqlite:v1'
 const BROWSER_STORAGE_DB = 'nexus:storage'
 const BROWSER_STORAGE_STORE = 'kv'
 const BACKUP_STORAGE_PREFIX = 'nexus:sqlite:backup:'
-const CURRENT_SCHEMA_VERSION = 7
+const CURRENT_SCHEMA_VERSION = 8
 
 export interface DatabaseIntegrityReport {
   ok: boolean
@@ -185,6 +185,7 @@ CREATE TABLE IF NOT EXISTS llm_tasks (
   parsed_result TEXT,
   validation_errors TEXT,
   status TEXT NOT NULL,
+  phase TEXT NOT NULL DEFAULT 'queued',
   retry_count INTEGER NOT NULL DEFAULT 0,
   error_message TEXT,
   created_at TEXT NOT NULL,
@@ -322,6 +323,17 @@ const migrations: Array<{ version: number; apply: (database: Database) => void }
         "UPDATE llm_tasks SET status = 'cancelled', error_message = COALESCE(NULLIF(error_message, ''), ?) WHERE type = 'segmentation' AND status IN ('pending', 'running', 'needs_review')",
         [LEGACY_SEGMENTATION_RETIRED_REASON],
       )
+    },
+  },
+  {
+    version: 8,
+    apply(database) {
+      const columns = database.exec('PRAGMA table_info(llm_tasks)')[0]?.values.map((row) => String(row[1])) ?? []
+      if (!columns.includes('phase')) database.run("ALTER TABLE llm_tasks ADD COLUMN phase TEXT NOT NULL DEFAULT 'queued'")
+      // Backfill a meaningful phase for old rows. A pending response carrying
+      // disclosure_requests is waiting for another evidence round, while all
+      // other pending rows are ordinary queue work.
+      database.run("UPDATE llm_tasks SET phase = CASE WHEN status = 'running' THEN 'executing' WHEN status = 'success' THEN 'committed' WHEN status = 'needs_review' THEN 'awaiting_review' WHEN status = 'failed' THEN 'failed' WHEN status = 'stale' THEN 'stale' WHEN status = 'cancelled' THEN 'cancelled' WHEN response LIKE '%\"disclosure_requests\"%' AND response LIKE '%\"refID\"%' THEN 'awaiting_disclosure' ELSE 'queued' END")
     },
   },
 ]
@@ -494,6 +506,8 @@ export class SqliteStore {
     if (!columns.includes('summary')) this.requireDb().run("ALTER TABLE sessions ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
     const conceptColumns = this.requireDb().exec('PRAGMA table_info(concepts)')[0]?.values.map((row) => String(row[1])) ?? []
     if (!conceptColumns.includes('summary')) this.requireDb().run("ALTER TABLE concepts ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
+    const taskColumns = this.requireDb().exec('PRAGMA table_info(llm_tasks)')[0]?.values.map((row) => String(row[1])) ?? []
+    if (!taskColumns.includes('phase')) this.requireDb().run("ALTER TABLE llm_tasks ADD COLUMN phase TEXT NOT NULL DEFAULT 'queued'")
     this.requireDb().run(`
       CREATE TABLE IF NOT EXISTS session_concepts (
         session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,

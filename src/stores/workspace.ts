@@ -13,7 +13,7 @@ import { combineSegmentationChunks, splitMessageChunks } from '@/utils/chunks'
 import { wouldCreateHierarchyCycle } from '@/utils/graph-rules'
 import { createId, isoNow, normalizeText, parseIsoTimestamp, stableHash } from '@/utils/id'
 import { parseMetadata } from '@/utils/metadata'
-import { canTransitionTask, canTransitionTaskStatus, isActiveTaskStatus, LEGACY_SEGMENTATION_RETIRED_REASON, normalizeTaskStatus, taskStatusForTransition, type TaskTransitionEvent } from '@/services/task-state'
+import { canTransitionTask, canTransitionTaskStatus, isActiveTaskStatus, LEGACY_SEGMENTATION_RETIRED_REASON, normalizeTaskStatus, taskPhaseForStatus, taskPhaseForTransition, taskStatusForTransition, type TaskTransitionEvent } from '@/services/task-state'
 import type {
   AppConfig,
   Concept,
@@ -153,6 +153,10 @@ function conceptFromRow(row: Row): Concept {
 }
 
 function taskFromRow(row: Row): LLMTask {
+  const status = text(row.status) as LLMTask['status']
+  const response = row.response == null ? null : text(row.response)
+  const parsedResult = row.parsed_result == null ? null : text(row.parsed_result)
+  const awaitingDisclosure = status === 'pending' && !parsedResult && Boolean(response && /"disclosure_requests"\s*:\s*\[[^\]]*"refID"/u.test(response))
   return {
     id: text(row.id),
     type: text(row.type) as LLMTask['type'],
@@ -162,10 +166,11 @@ function taskFromRow(row: Row): LLMTask {
     promptVersion: text(row.prompt_version),
     inputRevision: text(row.input_revision),
     prompt: ensureHarnessPrompt(text(row.prompt)),
-    response: row.response == null ? null : text(row.response),
-    parsedResult: row.parsed_result == null ? null : text(row.parsed_result),
+    response,
+    parsedResult,
     validationErrors: row.validation_errors == null ? null : text(row.validation_errors),
-    status: text(row.status) as LLMTask['status'],
+    status,
+    phase: row.phase == null ? taskPhaseForStatus(status, awaitingDisclosure) : text(row.phase) as LLMTask['phase'],
     retryCount: number(row.retry_count),
     errorMessage: row.error_message == null ? null : text(row.error_message),
     createdAt: text(row.created_at),
@@ -448,8 +453,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const currentStatus = text(row.status) as LLMTask['status']
     if (!canTransitionTask(currentStatus, event)) return false
     const status = taskStatusForTransition(event)
-    const assignments = ['status = ?']
-    const values: unknown[] = [status]
+    const phase = taskPhaseForTransition(event)
+    const assignments = ['status = ?', 'phase = ?']
+    const values: unknown[] = [status, phase]
     if (Object.prototype.hasOwnProperty.call(patch, 'response')) {
       assignments.push('response = ?')
       values.push(patch.response ?? null)
@@ -984,10 +990,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const now = isoNow()
     const status = normalizeTaskStatus(task.type, task.status)
     const errorMessage = status !== task.status ? LEGACY_SEGMENTATION_RETIRED_REASON : task.errorMessage ?? null
+    const phase = task.phase ?? taskPhaseForStatus(status)
     db.run(
-      `INSERT INTO llm_tasks(id, type, mode, provider_id, model, prompt_version, input_revision, prompt, response, parsed_result, validation_errors, status, retry_count, error_message, created_at, updated_at, scope_label)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
-      [id, task.type, task.mode, task.providerId ?? null, task.model ?? null, task.promptVersion, task.inputRevision, ensureHarnessPrompt(task.prompt), task.response ?? null, task.parsedResult ?? null, task.validationErrors ?? null, status, errorMessage, now, now, task.scopeLabel ?? null],
+      `INSERT INTO llm_tasks(id, type, mode, provider_id, model, prompt_version, input_revision, prompt, response, parsed_result, validation_errors, status, phase, retry_count, error_message, created_at, updated_at, scope_label)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+      [id, task.type, task.mode, task.providerId ?? null, task.model ?? null, task.promptVersion, task.inputRevision, ensureHarnessPrompt(task.prompt), task.response ?? null, task.parsedResult ?? null, task.validationErrors ?? null, status, phase, errorMessage, now, now, task.scopeLabel ?? null],
     )
     return id
   }
@@ -1088,7 +1095,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       records.tasks.forEach((item: LLMTask) => {
         const status = normalizeTaskStatus(item.type, item.status)
         const errorMessage = status !== item.status ? LEGACY_SEGMENTATION_RETIRED_REASON : item.errorMessage ?? null
-        db.run('INSERT INTO llm_tasks(id, type, mode, provider_id, model, prompt_version, input_revision, prompt, response, parsed_result, validation_errors, status, retry_count, error_message, created_at, updated_at, scope_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.type, item.mode, item.providerId ?? null, item.model ?? null, item.promptVersion, item.inputRevision, ensureHarnessPrompt(item.prompt), item.response ?? null, item.parsedResult ?? null, item.validationErrors ?? null, status, item.retryCount, errorMessage, item.createdAt, item.updatedAt, item.scopeLabel ?? null])
+        db.run('INSERT INTO llm_tasks(id, type, mode, provider_id, model, prompt_version, input_revision, prompt, response, parsed_result, validation_errors, status, phase, retry_count, error_message, created_at, updated_at, scope_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.type, item.mode, item.providerId ?? null, item.model ?? null, item.promptVersion, item.inputRevision, ensureHarnessPrompt(item.prompt), item.response ?? null, item.parsedResult ?? null, item.validationErrors ?? null, status, item.phase ?? taskPhaseForStatus(status), item.retryCount, errorMessage, item.createdAt, item.updatedAt, item.scopeLabel ?? null])
       })
       records.manual_edges.forEach((item: ManualGraphEdge) => db.run('INSERT INTO manual_graph_edges(id, source_type, source_ref_id, target_type, target_ref_id, label, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [item.id, item.sourceType, item.sourceRefId, item.targetType, item.targetRefId, item.label ?? null, item.createdAt]))
       if (Array.isArray(records.graph_layout)) records.graph_layout.forEach((item: GraphLayoutEntry) => db.run('INSERT INTO graph_layout(node_type, ref_id, x, y, fixed, layout_version) VALUES (?, ?, ?, ?, ?, ?)', [item.nodeType, item.refId, item.x, item.y, item.fixed ? 1 : 0, item.layoutVersion ?? 1]))

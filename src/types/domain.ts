@@ -27,6 +27,21 @@ export type TaskStatus =
   | 'stale'
   | 'cancelled'
 
+/**
+ * The durable lifecycle phase explains why a task has its status. Status is
+ * retained as the compact queue/filter value; phase distinguishes an ordinary
+ * queued task from one waiting for the next progressive-disclosure round.
+ */
+export type TaskPhase =
+  | 'queued'
+  | 'executing'
+  | 'awaiting_disclosure'
+  | 'awaiting_review'
+  | 'committed'
+  | 'failed'
+  | 'stale'
+  | 'cancelled'
+
 export interface Session {
   id: string
   source: SessionSource
@@ -195,6 +210,8 @@ export interface LLMTask {
   parsedResult?: string | null
   validationErrors?: string | null
   status: TaskStatus
+  /** Optional for compatibility with task objects created by older clients. */
+  phase?: TaskPhase
   retryCount: number
   errorMessage?: string | null
   createdAt: string

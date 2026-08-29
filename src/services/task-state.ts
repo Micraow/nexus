@@ -1,4 +1,4 @@
-import type { TaskStatus, TaskType } from '@/types/domain'
+import type { TaskPhase, TaskStatus, TaskType } from '@/types/domain'
 
 export const ACTIVE_TASK_STATUSES: readonly TaskStatus[] = ['pending', 'running', 'needs_review']
 export const LEGACY_SEGMENTATION_RETIRED_REASON = '旧版对话分组已停用；原始消息和已有阅读片段均已保留，当前知识主题流程不再等待分组。'
@@ -16,6 +16,17 @@ export type TaskTransitionEvent =
   | 'retry'
   | 'cancel'
   | 'invalidate'
+
+const TASK_TRANSITION_EVENT_PHASE: Readonly<Record<TaskTransitionEvent, TaskPhase>> = {
+  start: 'executing',
+  continue_disclosure: 'awaiting_disclosure',
+  accept_validated_result: 'committed',
+  reject_validation: 'awaiting_review',
+  fail_transport: 'failed',
+  retry: 'queued',
+  cancel: 'cancelled',
+  invalidate: 'stale',
+}
 
 const TASK_TRANSITION_EVENT_TARGET: Readonly<Record<TaskTransitionEvent, TaskStatus>> = {
   start: 'running',
@@ -75,6 +86,21 @@ export function canRetryTask(status: TaskStatus): boolean {
 
 export function taskStatusForTransition(event: TaskTransitionEvent): TaskStatus {
   return TASK_TRANSITION_EVENT_TARGET[event]
+}
+
+export function taskPhaseForTransition(event: TaskTransitionEvent): TaskPhase {
+  return TASK_TRANSITION_EVENT_PHASE[event]
+}
+
+/** Derive a phase for rows created before the explicit phase column existed. */
+export function taskPhaseForStatus(status: TaskStatus, awaitingDisclosure = false): TaskPhase {
+  if (status === 'pending') return awaitingDisclosure ? 'awaiting_disclosure' : 'queued'
+  if (status === 'running') return 'executing'
+  if (status === 'needs_review') return 'awaiting_review'
+  if (status === 'success') return 'committed'
+  if (status === 'failed') return 'failed'
+  if (status === 'stale') return 'stale'
+  return 'cancelled'
 }
 
 export function canTransitionTask(status: TaskStatus, event: TaskTransitionEvent): boolean {

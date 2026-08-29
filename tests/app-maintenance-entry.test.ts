@@ -173,6 +173,46 @@ describe('full-graph maintenance entry', () => {
     expect(target.querySelector<HTMLTextAreaElement>('#task-response')?.value).toBe('')
   })
 
+  it('shows the intermediate maintenance reason without presenting it as a completed no-op', async () => {
+    const target = document.createElement('div')
+    document.body.appendChild(target)
+    const pinia = createPinia()
+    const store = useWorkspaceStore(pinia)
+    store.init = async () => undefined
+    const now = '2026-08-29T00:00:00.000Z'
+    store.tasks = [{
+      id: 'maintenance-awaiting-disclosure',
+      type: 'maintenance',
+      mode: 'api',
+      promptVersion: 'test',
+      inputRevision: 'maintenance:state:full',
+      prompt: '{}',
+      status: 'pending',
+      phase: 'awaiting_disclosure',
+      retryCount: 0,
+      response: JSON.stringify({ reason: '首轮需要展开根主题后再审计。', suggestions: [], disclosure_requests: [{ refID: 'root', depth: 1 }] }),
+      parsedResult: null,
+      createdAt: now,
+      updatedAt: now,
+    }] satisfies LLMTask[]
+
+    const app = createApp(App)
+    app.use(pinia)
+    mounted.push(app)
+    app.mount(target)
+    await nextTick()
+    ;[...target.querySelectorAll<HTMLButtonElement>('.nav-item')]
+      .find((button) => button.textContent?.includes('任务中心'))?.click()
+    await nextTick()
+    target.querySelector<HTMLButtonElement>('.task-row')!.click()
+    await nextTick()
+
+    const results = target.querySelector('.maintenance-task-results')
+    expect(results?.textContent).toContain('首轮需要展开根主题后再审计')
+    expect(results?.textContent).toContain('等待继续披露')
+    expect(results?.textContent).not.toContain('无建议变更')
+  })
+
   it('continues an API maintenance task after a manually corrected disclosure request', async () => {
     const pinia = createPinia()
     const store = useWorkspaceStore(pinia)
