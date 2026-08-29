@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { conversationMessageBranchNodeId, conversationMessagesForNode, conversationTaskForNode, suggestedExplorationQuestion, unfinishedConversationTask } from '@/services/conversation'
+import { canCloseConversationBranch, conversationBranchState, conversationMessageBranchNodeId, conversationMessagesForNode, conversationTaskForNode, suggestedExplorationQuestion, unfinishedConversationTask } from '@/services/conversation'
 import { conversationCardMessages, createPendingConversationTask } from '@/components/conversation-card-messages'
 import type { LLMTask, Message } from '@/types/domain'
 
@@ -99,5 +99,28 @@ describe('conversation branch task mapping', () => {
     const created = createPendingConversationTask(pending, 'root', () => 'task-created')
     expect(created.taskId).toBe('task-created')
     expect(created.pending).toEqual({ ...pending, started: true, taskId: 'task-created' })
+  })
+
+  it('treats every durable task outcome as a locked branch', () => {
+    const branch = { id: 'pending-nav', started: true, taskId: 'task-a' }
+    for (const status of ['pending', 'running', 'needs_review', 'success', 'failed', 'cancelled'] as LLMTask['status'][]) {
+      const current = task('task-a', status, '2026-08-28T01:00:00.000Z')
+      expect(conversationBranchState(branch, [current])).toBe(status)
+      expect(canCloseConversationBranch(branch, [current])).toBe(false)
+    }
+  })
+
+  it('keeps a branch locked when its task snapshot is temporarily missing', () => {
+    const branch = { id: 'pending-nav', started: false, taskId: 'task-a' }
+    const question = message('question-a', 'user', { taskId: 'task-a' })
+    const answer = message('answer-a', 'assistant', { taskId: 'task-a', navNodeId: 'pending-nav' })
+    expect(conversationBranchState(branch, [], [question, answer])).toBe('pending')
+    expect(canCloseConversationBranch(branch, [], [question, answer])).toBe(false)
+  })
+
+  it('allows closing only an unsubmitted recommendation draft', () => {
+    const branch = { id: 'pending-nav', started: false }
+    expect(conversationBranchState(branch, [])).toBe('draft')
+    expect(canCloseConversationBranch(branch, [])).toBe(true)
   })
 })

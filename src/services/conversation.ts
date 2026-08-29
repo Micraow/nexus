@@ -3,6 +3,67 @@ import { parseMetadata } from '@/utils/metadata'
 
 const unfinishedStatuses = new Set<LLMTask['status']>(['pending', 'running', 'needs_review'])
 
+/**
+ * A branch starts as a UI-only draft, then becomes durable as soon as its
+ * question/task is created.  The durable task status is the source of truth
+ * after that point; `started` is only a rendering hint for the temporary
+ * branch object and must never make a started branch closable again.
+ */
+export type ConversationBranchState =
+  | 'draft'
+  | 'pending'
+  | 'running'
+  | 'needs_review'
+  | 'success'
+  | 'failed'
+  | 'stale'
+  | 'cancelled'
+
+export interface ConversationBranchTarget {
+  id: string
+  started?: boolean
+  taskId?: string
+}
+
+const taskStateByStatus: Partial<Record<LLMTask['status'], ConversationBranchState>> = {
+  pending: 'pending',
+  running: 'running',
+  needs_review: 'needs_review',
+  success: 'success',
+  failed: 'failed',
+  stale: 'stale',
+  cancelled: 'cancelled',
+}
+
+/** Resolve the durable lifecycle state for a temporary or persisted branch. */
+export function conversationBranchState(
+  branch: ConversationBranchTarget | null | undefined,
+  tasks: LLMTask[],
+  messages: Message[] = [],
+): ConversationBranchState {
+  if (!branch) return 'draft'
+  const task = branch.taskId ? tasks.find((candidate) => candidate.id === branch.taskId) : undefined
+  if (task) return taskStateByStatus[task.status] ?? 'pending'
+
+  // A task can be refreshed out of the in-memory list while its message is
+  // still present.  Such a branch has started and must remain locked until it
+  // is explicitly recovered by the session/task loader.
+  const hasDurableMessage = messages.some((message) => {
+    const metadata = parseMetadata(message.metadata)
+    return (branch.taskId && metadata.taskId === branch.taskId) || metadata.navNodeId === branch.id
+  })
+  return branch.started || branch.taskId || hasDurableMessage ? 'pending' : 'draft'
+}
+
+/** A recommendation branch is closable only before durable work begins. */
+export function canCloseConversationBranch(
+  branch: ConversationBranchTarget | null | undefined,
+  tasks: LLMTask[],
+  messages: Message[] = [],
+): boolean {
+  return Boolean(branch) && conversationBranchState(branch, tasks, messages) === 'draft'
+}
+
 function conversationTasks(tasks: LLMTask[], sessionId: string): LLMTask[] {
   return tasks
     .filter((task) => task.type === 'conversation' && task.inputRevision.startsWith(`${sessionId}:`))

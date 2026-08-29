@@ -72,6 +72,46 @@ sequenceDiagram
 
 维护入口的关注主题只是排序提示，任务范围始终是整个 active 图谱。动作参数中的 Concept、Session、Message 和 Unit ID 必须来自已披露的 `content`；越界结果整体进入 `needs_review`，不执行部分写入。`unit_create.title` 统一限制为最多 30 个 Unicode 字符。
 
+## 对话状态机
+
+对话分支和 LLM 任务是两个有关联、但不能互相代替的状态机。`NavTreeNode` 只在回答通过校验后持久化；推荐词点击产生的临时节点只存在于 `App.vue`，其 `taskId` 一旦写入就代表分支已经开始。
+
+| 分支状态 | 事实依据 | 可见操作 | 合法后继状态 |
+|---|---|---|---|
+| `draft` | 临时节点没有 `taskId`，没有用户消息 | 修改预填问题、关闭分支、提交问题 | `pending` |
+| `pending` | 已写入用户消息和 conversation task | 等待 API/粘贴 Prompt；禁止关闭和切换到其他分支 | `running`、`needs_review`、`failed`、`cancelled` |
+| `running` | task 已取得执行租约 | 显示对应卡片的流式预览；禁止关闭和切换 | `success`、`needs_review`、`failed`、`cancelled`、`pending`（披露续轮） |
+| `needs_review` | 响应已保存但本地校验失败 | 在原卡片/任务详情修正并重新提交；禁止关闭 | `pending`、`success`、`cancelled`、`stale` |
+| `failed` | 传输或响应不可用，原始响应/错误已保存 | 重试；仍不可关闭，避免丢失用户已开始的分支 | `pending` |
+| `success` | assistant、阅读片段、归属和导航节点已在同一事务提交 | 继续追问、切换分支 | 新的子分支 `draft` |
+| `cancelled` / `stale` | 任务被取消或输入版本失效 | 重新排队；分支记录保留 | `pending` |
+
+```mermaid
+stateDiagram-v2
+  [*] --> draft: 点击推荐词
+  draft --> pending: 写入 user Message + task
+  pending --> running: API 取得租约
+  pending --> needs_review: 粘贴响应校验失败
+  running --> pending: DISCLOSURE_INDEX 续轮
+  running --> success: 校验通过并原子提交
+  running --> needs_review: 校验失败，保留响应
+  running --> failed: 传输失败，保留错误
+  pending --> cancelled: 用户取消任务
+  needs_review --> pending: 修正/重新排队
+  failed --> pending: 重试
+  stale --> pending: 重新生成 Prompt
+  cancelled --> pending: 重新排队
+  success --> [*]
+```
+
+核心不变量：
+
+1. 同一 Session 同时最多一个 `pending`、`running` 或 `needs_review` 的 conversation task；创建追问必须先取得 Session 输入锁。
+2. `taskId`、持久化 user Message 或 assistant Message 任意一个存在，都表示分支已经开始；只有 `draft` 可以关闭。页面的 `started` 字段不能覆盖这个事实。
+3. 流式预览按 `taskId` 索引，并且只渲染在该任务所属的当前卡片；成功、失败和 `needs_review` 都不能把回答移到父卡片或清空。
+4. 点击推荐词先创建独立临时卡片，提交时以其父节点创建独立 conversation task；回答成功后才把临时节点替换为持久 `NavTreeNode`。
+5. 一个任务的 assistant Message 只允许由 `applyTaskResult` 写入一次；重复提交必须被终态任务拒绝。
+
 ## 对话时序
 
 ```mermaid
@@ -84,12 +124,18 @@ sequenceDiagram
   UI->>UI: 创建可关闭草稿分支并预填问题
   User->>UI: 提交问题
   UI->>Store: createFollowUpTask()
-  Store->>Store: user Message + task + assistant ID + NavTreeNode
+  Store->>Store: 取得 Session 输入锁
+  Store->>Store: 原子写 user Message + task + assistant ID
+  UI->>UI: 草稿分支锁定，不允许关闭/切换
   Store->>Provider: executeTask(task)
-  Provider-->>UI: SSE 增量（按 taskId）
+  Provider-->>UI: SSE 增量（按 taskId，留在所属卡片）
   Provider-->>Store: 最终 JSON
-  Store->>Store: 校验并原子写 assistant、Unit、归属、NavTreeNode
-  Store-->>UI: success；草稿分支变为持久分支
+  alt 校验失败/传输失败
+    Store-->>UI: needs_review/failed；保留原卡片预览和错误
+  else 校验通过
+    Store->>Store: 原子写 assistant、Unit、归属、NavTreeNode
+    Store-->>UI: success；草稿分支变为持久分支
+  end
 ```
 
 提交前草稿可以关闭；只要 user Message 或 task 已创建，关闭入口必须消失或禁用。流式文本只属于对应 `taskId` 的卡片，校验失败时保留在该卡片供修复，不能落到父卡片或在最终刷新时消失。全屏查看按 Session 分页，同一个 Session 的所有消息必须在同一页。
