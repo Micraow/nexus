@@ -5,7 +5,7 @@ import { createPinia } from 'pinia'
 import { createApp, nextTick } from 'vue'
 import App from '@/App.vue'
 import { useWorkspaceStore } from '@/stores/workspace'
-import type { Concept, ConceptRelation } from '@/types/domain'
+import type { Concept, ConceptRelation, LLMTask } from '@/types/domain'
 
 const mounted: Array<ReturnType<typeof createApp>> = []
 
@@ -92,5 +92,43 @@ describe('full-graph maintenance entry', () => {
     await nextTick()
     expect(store.relations.every((relation) => relation.status === 'confirmed')).toBe(true)
     expect(target.querySelector('.pending-relation-inbox')).toBeNull()
+  })
+
+  it('keeps the maintenance panel open after creating a task from the global scope', async () => {
+    const target = document.createElement('div')
+    document.body.appendChild(target)
+    const pinia = createPinia()
+    const store = useWorkspaceStore(pinia)
+    store.init = async () => undefined
+    const now = '2026-08-29T00:00:00.000Z'
+    store.tasks = [{
+      id: 'maintenance-1',
+      type: 'maintenance',
+      mode: 'prompt_paste',
+      promptVersion: 'test',
+      inputRevision: 'maintenance:state:focus',
+      prompt: '{}',
+      status: 'pending',
+      retryCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    }] satisfies LLMTask[]
+    store.createMaintenanceTask = () => 'maintenance-1'
+
+    const app = createApp(App)
+    app.use(pinia)
+    mounted.push(app)
+    app.mount(target)
+    await nextTick()
+
+    ;[...target.querySelectorAll<HTMLButtonElement>('.nav-item')].find((button) => button.textContent?.includes('知识主题'))?.click()
+    await nextTick()
+    target.querySelector<HTMLButtonElement>('.concepts-view .maintenance-entry-button')!.click()
+    await nextTick()
+    target.querySelector<HTMLButtonElement>('.maintenance-global-scope .primary-button')!.click()
+    await nextTick()
+
+    expect(target.querySelector('.tasks-view')).not.toBeNull()
+    expect(target.querySelector('.maintenance-panel')).not.toBeNull()
   })
 })

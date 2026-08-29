@@ -995,9 +995,9 @@ function mergeSelectedConcept(): void {
 function createMaintenanceTask(input: { conceptIds?: string[]; unitIds?: string[]; includeFullContent?: boolean }, label: string): void {
   try {
     const taskId = store.createMaintenanceTask(input)
+    setView('tasks')
     selectedTaskId.value = taskId
     maintenancePanelOpen.value = true
-    setView('tasks')
     notify(`${label}已创建，等待生成维护建议`)
   } catch (error) {
     notify(error instanceof Error ? error.message : '维护任务创建失败')
