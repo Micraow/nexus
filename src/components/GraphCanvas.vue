@@ -381,7 +381,11 @@ function render(): void {
   renderedSize = { width, height }
   const root = d3.select(element)
   const snapshot = visibleSnapshot()
-  const nodeSignature = snapshot.nodes.map((node) => node.id).join('|')
+  // Worker responses are allowed to arrive with a different insertion order
+  // (for example after a promoted Concept becomes a root).  Topology is a set
+  // of ids, not an array order; sorting prevents a harmless ordering change
+  // from starting a disclosure transition and rebuilding the layout.
+  const nodeSignature = snapshot.nodes.map((node) => node.id).sort().join('|')
   const topologyChanged = nodeSignature !== lastNodeSignature
   const previousVisibleNodeIds = lastVisibleNodeIds
 
@@ -967,12 +971,22 @@ onMounted(() => {
 // 视口以 liveTransform 为准；展开状态/层级窗口变化也需要更新控件，
 // 但不会因为选中状态变化而重建力向布局。
 watch(() => {
-  const nodes = props.snapshot.nodes.map((node) => `${node.id}:${node.label}:${node.subtitle ?? ''}:${node.childCount ?? ''}:${node.descendantCount ?? ''}:${node.hasChildren ? 1 : 0}`).join('|')
-  const edges = props.snapshot.edges.map((edge) => `${edge.id}:${edge.source}:${edge.target}:${edge.type}:${edge.status ?? ''}:${edge.weight}`).join('|')
+  const nodes = props.snapshot.nodes
+    .map((node) => `${node.id}:${node.label}:${node.subtitle ?? ''}:${node.childCount ?? ''}:${node.descendantCount ?? ''}:${node.hasChildren ? 1 : 0}`)
+    .sort()
+    .join('|')
+  const edges = props.snapshot.edges
+    .map((edge) => `${edge.id}:${edge.source}:${edge.target}:${edge.type}:${edge.status ?? ''}:${edge.weight}`)
+    .sort()
+    .join('|')
   const expanded = (props.expandedConceptIds ?? []).slice().sort().join(',')
   const expandable = (props.expandableConceptIds ?? []).slice().sort().join(',')
   const hierarchy = props.hierarchyRelations?.map((relation) => `${relation.parentConceptId}:${relation.childConceptId}:${relation.relationType}:${relation.status ?? ''}`).sort().join('|') ?? 'unspecified'
-  return `${props.snapshot.revision}|${nodes}|${edges}|${expanded}|${expandable}|${hierarchy}|${props.showProposed ? 1 : 0}|${props.reducedMotion ? 1 : 0}|${props.maxVisibleLevel ?? ''}|${props.expandedConceptDepth ?? ''}|${props.visibleNodeDepth ?? ''}|${typeof props.visibleNodeLevels === 'number' ? props.visibleNodeLevels : mapSignature(props.visibleNodeLevels)}|${mapSignature(props.conceptHierarchy)}|${mapSignature(props.conceptChildren)}|${props.fitOnTopologyChange ? 1 : 0}|${props.viewportRightInset}`
+  // A graph revision can advance for unrelated store work while the rendered
+  // topology and labels remain identical.  Rebuilding D3 in that case causes
+  // visible flashing and resets the force simulation, so the revision itself
+  // is deliberately omitted from this visual identity.
+  return `${nodes}|${edges}|${expanded}|${expandable}|${hierarchy}|${props.showProposed ? 1 : 0}|${props.reducedMotion ? 1 : 0}|${props.maxVisibleLevel ?? ''}|${props.expandedConceptDepth ?? ''}|${props.visibleNodeDepth ?? ''}|${typeof props.visibleNodeLevels === 'number' ? props.visibleNodeLevels : mapSignature(props.visibleNodeLevels)}|${mapSignature(props.conceptHierarchy)}|${mapSignature(props.conceptChildren)}|${props.fitOnTopologyChange ? 1 : 0}|${props.viewportRightInset}`
 }, render)
 
 watch(() => props.selectedUnitIds.slice(), (selectedIds) => {

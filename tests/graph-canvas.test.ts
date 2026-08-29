@@ -321,6 +321,32 @@ describe('GraphCanvas progressive disclosure', () => {
     expect(target.querySelector('[data-ref-id="root"]')).toBe(node)
   })
 
+  it('does not rebuild the SVG when a worker changes only revision or insertion order', async () => {
+    const snapshot: GraphSnapshot = {
+      revision: 1,
+      nodes: [
+        { id: 'concept:a', type: 'concept', refId: 'a', label: '甲', degree: 0, unitCount: 0 },
+        { id: 'concept:b', type: 'concept', refId: 'b', label: '乙', degree: 0, unitCount: 0 },
+      ],
+      edges: [],
+    }
+    const { target, state } = mountReactiveSnapshot(snapshot, { reducedMotion: false })
+    await nextTick()
+    const viewport = target.querySelector('.graph-viewport')
+    const transforms = [...target.querySelectorAll<SVGGElement>('.graph-node')].map((node) => node.getAttribute('transform'))
+
+    state.snapshot = {
+      ...snapshot,
+      revision: 2,
+      nodes: snapshot.nodes.slice().reverse(),
+    }
+    await nextTick()
+
+    expect(target.querySelector('.graph-viewport')).toBe(viewport)
+    expect(target.querySelector('.graph-transition-old')).toBeNull()
+    expect([...target.querySelectorAll<SVGGElement>('.graph-node')].map((node) => node.getAttribute('transform'))).toEqual(transforms)
+  })
+
   it('reflows on a real resize while preserving a fixed dragged node position', async () => {
     const target = mountSnapshot({
       revision: 10,
