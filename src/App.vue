@@ -1463,17 +1463,47 @@ async function copyText(value: string, message = '已复制到剪贴板'): Promi
   notify(copied ? message : '复制失败，请手动选择文本')
 }
 
+function markdownConceptsForTask(taskId?: string): Array<{ id: string; name: string; aliases: string[]; kind?: 'existing' | 'suggested' }> {
+  const task = taskId ? store.tasks.find((item) => item.id === taskId) : null
+  const createdNames = new Set<string>()
+  if (task?.parsedResult) {
+    try {
+      const parsed = JSON.parse(task.parsedResult) as { concepts?: unknown; units?: unknown }
+      const collect = (value: unknown): void => {
+        if (!Array.isArray(value)) return
+        value.forEach((item) => {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) return
+          const name = (item as Record<string, unknown>).name
+          if (typeof name === 'string' && name.trim()) createdNames.add(name.trim().normalize('NFKC').replace(/\s+/g, ' ').toLocaleUpperCase())
+        })
+      }
+      collect(parsed.concepts)
+      if (Array.isArray(parsed.units)) parsed.units.forEach((unit) => {
+        if (unit && typeof unit === 'object' && !Array.isArray(unit)) collect((unit as Record<string, unknown>).concepts)
+      })
+    } catch {
+      // Invalid/in-flight task responses do not contribute response-local names.
+    }
+  }
+  return store.activeConcepts.map((concept) => ({
+    id: concept.id,
+    name: concept.name,
+    aliases: store.aliases.filter((alias) => alias.conceptId === concept.id).map((alias) => alias.alias),
+    kind: createdNames.has(concept.name.trim().normalize('NFKC').replace(/\s+/g, ' ').toLocaleUpperCase()) ? 'suggested' : 'existing',
+  }))
+}
+
 function renderedMessageContent(content: string, message?: Message, autoLinkConcepts = true): string {
-  let concepts = store.activeConcepts
-  if (message) {
+  const inConversation = Boolean(activeConversationSession.value && message?.sessionId === activeConversationSession.value.id)
+  let concepts = markdownConceptsForTask(typeof parseMetadata(message?.metadata).taskId === 'string' ? parseMetadata(message?.metadata).taskId as string : undefined)
+  if (message && autoLinkConcepts && !inConversation) {
     const allowed = new Set<string>()
     store.sessionConcepts.filter((link) => link.sessionId === message.sessionId).forEach((link) => allowed.add(link.conceptId))
     store.messageConcepts.filter((link) => link.messageId === message.id).forEach((link) => allowed.add(link.conceptId))
     if (message.unitId) store.unitConcepts.filter((link) => link.unitId === message.unitId).forEach((link) => allowed.add(link.conceptId))
     concepts = concepts.filter((concept) => allowed.has(concept.id))
   }
-  const inConversation = Boolean(activeConversationSession.value && message?.sessionId === activeConversationSession.value.id)
-  return renderMarkdown(content, { concepts: concepts.map((concept) => ({ id: concept.id, name: concept.name })), autoLinkConcepts: autoLinkConcepts && !inConversation })
+  return renderMarkdown(content, { concepts, autoLinkConcepts: inConversation ? 'suggested' : autoLinkConcepts })
 }
 
 function handleRenderedClick(event: Event, message?: Message): void {
@@ -2136,7 +2166,7 @@ onBeforeUnmount(() => {
                         <div v-else class="conversation-branch-card-title" aria-hidden="true"><span class="branch-card-dot" aria-hidden="true" /><strong>{{ displayText(card.node.label, '未命名探索节点') }}</strong><span class="branch-card-depth">第 {{ card.node.depth + 1 }} 层</span></div>
                         <div v-if="card.units.length" class="conversation-card-units" aria-label="当前阅读片段"><BookOpen :size="13" /><span>阅读片段：</span><button v-for="unit in card.units" :key="unit.id" type="button" class="conversation-unit-link" @click="openUnit(unit.id)">{{ displayText(unit.title, '未命名阅读片段') }}</button></div>
                         <article v-for="message in card.messages" :key="message.id" :data-conversation-message="message.id" class="conversation-message" :class="message.role"><div class="conversation-message-meta"><strong>{{ message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : '系统' }}</strong><span>消息 #{{ message.orderInSession + 1 }}</span></div><div class="md-body" v-html="renderedMessageContent(message.content, message)" @click="handleRenderedClick($event, message)" @keydown.enter.prevent="handleRenderedClick($event, message)" /></article>
-                        <article v-if="cardIndex === activeConversationBranchCards.length - 1 && activeConversationStreamingPreview" class="conversation-message assistant streaming-message" :class="{ 'needs-review-answer': activeConversationTask?.status === 'needs_review' || activeConversationTask?.status === 'failed' }" aria-live="polite"><div class="conversation-message-meta"><strong>AI</strong><span>{{ activeConversationTask?.status === 'needs_review' ? '待检查回答' : activeConversationTask?.status === 'failed' ? '任务错误 · 已保留回答' : '实时输出' }}</span></div><div class="md-body" v-html="renderMarkdown(activeConversationStreamingPreview)" /></article>
+                        <article v-if="cardIndex === activeConversationBranchCards.length - 1 && activeConversationStreamingPreview" class="conversation-message assistant streaming-message" :class="{ 'needs-review-answer': activeConversationTask?.status === 'needs_review' || activeConversationTask?.status === 'failed' }" aria-live="polite"><div class="conversation-message-meta"><strong>AI</strong><span>{{ activeConversationTask?.status === 'needs_review' ? '待检查回答' : activeConversationTask?.status === 'failed' ? '任务错误 · 已保留回答' : '实时输出' }}</span></div><div class="md-body" v-html="renderMarkdown(activeConversationStreamingPreview, { concepts: markdownConceptsForTask(activeConversationTask?.id), autoLinkConcepts: 'suggested' })" @click="handleRenderedClick" @keydown.enter.prevent="handleRenderedClick" /></article>
                       </section>
                     </TransitionGroup>
                   </div>

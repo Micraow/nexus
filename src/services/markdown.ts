@@ -14,9 +14,11 @@ export interface MarkdownConcept {
 export interface RenderMarkdownOptions {
   /** Existing knowledge topics rendered as clickable mentions inside answers. */
   concepts?: MarkdownConcept[]
-  /** Disable implicit plain-text linking when explicit Nexus markers are authoritative. */
-  autoLinkConcepts?: boolean
+  /** Control implicit plain-text linking; explicit Nexus markers always parse. */
+  autoLinkConcepts?: boolean | 'suggested'
 }
+
+type AutoLinkMode = 'all' | 'suggested' | 'none'
 
 function escapeHtml(value: string): string {
   return value
@@ -54,15 +56,13 @@ interface ConceptMatcher {
   pattern: RegExp
   /** Maps a matched, unescaped name back to the concept id and presentation kind. */
   entries: Map<string, { id: string; kind: 'existing' | 'suggested' }>
-  /** Streaming previews still parse explicit markers but avoid broad auto-linking. */
-  linkifyPlain: boolean
 }
 
 function conceptKey(value: string): string {
   return value.normalize('NFKC').trim().replace(/[\s\u3000]+/g, ' ').toLocaleUpperCase()
 }
 
-function buildConceptMatcher(concepts: MarkdownConcept[], linkifyPlain = true): ConceptMatcher | null {
+function buildConceptMatcher(concepts: MarkdownConcept[]): ConceptMatcher | null {
   const usable = concepts.filter((concept) => concept.name.trim())
   if (!usable.length) return null
   const entries = new Map<string, { id: string; kind: 'existing' | 'suggested' }>()
@@ -83,7 +83,7 @@ function buildConceptMatcher(concepts: MarkdownConcept[], linkifyPlain = true): 
   // Longest-first prevents a short acronym from stealing a longer technical
   // phrase (for example RDMA from “RDMA congestion control”).
   sources.sort((left, right) => right.length - left.length)
-  return { pattern: new RegExp(sources.join('|')), entries, linkifyPlain }
+  return { pattern: new RegExp(sources.join('|'), 'iu'), entries }
 }
 
 function anchorHtml(url: string, label: string): string {
@@ -122,8 +122,8 @@ function conceptMentionHtml(label: string, id: string, kind: 'existing' | 'sugge
   return `<span class="md-concept md-concept-existing"${id ? ` role="link" tabindex="0" data-concept-id="${escapeHtml(id)}"` : ''}>${escapedLabel}</span>`
 }
 
-function linkifyConcepts(raw: string, matcher: ConceptMatcher | null): InlineToken[] {
-  if (!matcher || !matcher.linkifyPlain) return raw ? [{ type: 'text', value: escapeHtml(raw) }] : []
+function linkifyConcepts(raw: string, matcher: ConceptMatcher | null, mode: AutoLinkMode = 'all'): InlineToken[] {
+  if (!matcher || mode === 'none') return raw ? [{ type: 'text', value: escapeHtml(raw) }] : []
   const tokens: InlineToken[] = []
   let rest = raw
   for (;;) {
@@ -132,7 +132,8 @@ function linkifyConcepts(raw: string, matcher: ConceptMatcher | null): InlineTok
     if (found.index > 0) tokens.push({ type: 'text', value: escapeHtml(rest.slice(0, found.index)) })
     const entry = matcher.entries.get(conceptKey(found[0]))
     const id = entry?.id ?? ''
-    tokens.push({ type: 'mention', value: conceptMentionHtml(found[0], id, entry?.kind ?? 'existing', found[0]) })
+    if (mode === 'suggested' && entry?.kind !== 'suggested') tokens.push({ type: 'text', value: escapeHtml(found[0]) })
+    else tokens.push({ type: 'mention', value: conceptMentionHtml(found[0], id, entry?.kind ?? 'existing', found[0]) })
     rest = rest.slice(found.index + found[0].length)
   }
   if (rest) tokens.push({ type: 'text', value: escapeHtml(rest) })
@@ -191,14 +192,14 @@ function markerHeaderEnd(raw: string, start: number): number {
  * worth exploring. The delimiters are presentation-only and are removed from
  * the rendered output; unknown suggested names remain non-interactive.
  */
-function linkifyMarkedConcepts(raw: string, matcher: ConceptMatcher | null, autoLinkConcepts = true): InlineToken[] {
+function linkifyMarkedConcepts(raw: string, matcher: ConceptMatcher | null, autoLinkMode: AutoLinkMode = 'all'): InlineToken[] {
   const tokens: InlineToken[] = []
   let cursor = 0
   const pushPlain = (value: string): void => {
     // A response may contain a stray closing marker after a malformed opener.
     // It is presentation syntax, so never expose it as answer text.
     const plain = value.replace(/\[\[\/nexus\s*\]\]/gi, '')
-    tokens.push(...(autoLinkConcepts ? linkifyConcepts(plain, matcher) : (plain ? [{ type: 'text', value: escapeHtml(plain) }] : [])))
+    tokens.push(...linkifyConcepts(plain, matcher, autoLinkMode))
   }
   const findOpening = (from: number): { index: number; kind: 'existing' | 'suggested'; name: string; headerEnd: number } | null => {
     const opening = /\[\[nexus:(existing|suggested):/gi
@@ -247,10 +248,10 @@ function linkifyMarkedConcepts(raw: string, matcher: ConceptMatcher | null, auto
 }
 
 /** Split raw Markdown text into protected spans and plain text. */
-function tokenizeInline(line: string, matcher: ConceptMatcher | null, autoLinkConcepts = true): InlineToken[] {
+function tokenizeInline(line: string, matcher: ConceptMatcher | null, autoLinkMode: AutoLinkMode = 'all'): InlineToken[] {
   const tokens: InlineToken[] = []
   const pushText = (value: string): void => {
-    tokens.push(...linkifyMarkedConcepts(value, matcher, autoLinkConcepts))
+    tokens.push(...linkifyMarkedConcepts(value, matcher, autoLinkMode))
   }
   // Protect strong spans before concept linkification so `**bold Concept**`
   // keeps both markers in one token.
@@ -260,7 +261,7 @@ function tokenizeInline(line: string, matcher: ConceptMatcher | null, autoLinkCo
   while ((match = pattern.exec(line))) {
     if (match.index > cursor) pushText(line.slice(cursor, match.index))
     if (match[1] != null) tokens.push({ type: 'code', value: `<code>${escapeHtml(match[1])}</code>` })
-    else if (match[2] != null) tokens.push({ type: 'strong', value: `<strong>${renderInline(tokenizeInline(match[2], matcher, autoLinkConcepts))}</strong>` })
+    else if (match[2] != null) tokens.push({ type: 'strong', value: `<strong>${renderInline(tokenizeInline(match[2], matcher, autoLinkMode))}</strong>` })
     else if (match[3] != null && match[4]) tokens.push({ type: 'anchor', value: anchorHtml(match[4], match[3]) })
     else if (match[5]) tokens.push({ type: 'anchor', value: anchorHtml(match[5], match[5]) })
     else if (match[6] != null) tokens.push({ type: 'math', value: renderMath(match[6], true) })
@@ -315,22 +316,25 @@ function isTableSeparator(line: string): boolean {
  * never inject HTML, scripts or event handlers.
  */
 export function renderMarkdown(source: string, options: RenderMarkdownOptions = {}): string {
-  const matcher = buildConceptMatcher(options.concepts ?? [], options.linkifyPlainConcepts ?? true)
+  const matcher = buildConceptMatcher(options.concepts ?? [])
+  const autoLinkMode: AutoLinkMode = options.autoLinkConcepts === false
+    ? 'none'
+    : options.autoLinkConcepts === 'suggested' ? 'suggested' : 'all'
   const normalized = source.replace(/\r\n?/g, '\n')
   const fence = /```([A-Za-z0-9_+#.-]*)[ \t]*\n([\s\S]*?)```/g
   let cursor = 0
   let output = ''
   let match: RegExpExecArray | null
   while ((match = fence.exec(normalized))) {
-    output += renderBlocks(normalized.slice(cursor, match.index), matcher, options.autoLinkConcepts !== false)
+    output += renderBlocks(normalized.slice(cursor, match.index), matcher, autoLinkMode)
     output += fencedCodeHtml(match[1], match[2].replace(/\n$/, ''))
     cursor = match.index + match[0].length
   }
-  output += renderBlocks(normalized.slice(cursor), matcher, options.autoLinkConcepts !== false)
+  output += renderBlocks(normalized.slice(cursor), matcher, autoLinkMode)
   return output
 }
 
-function renderBlocks(text: string, matcher: ConceptMatcher | null, autoLinkConcepts = true): string {
+function renderBlocks(text: string, matcher: ConceptMatcher | null, autoLinkMode: AutoLinkMode = 'all'): string {
   const displayMath: Array<{ placeholder: string; html: string }> = []
   const withDisplayPlaceholders = text.replace(/(^|\n)[ \t]*(\$\$|\\\[)([\s\S]*?)(\$\$|\\\])[ \t]*(?=\n|$)/g, (match, prefix: string, opening: string, body: string, closing: string) => {
     if ((opening === '$$' && closing !== '$$') || (opening === '\\[' && closing !== '\\]')) return match
@@ -347,7 +351,7 @@ function renderBlocks(text: string, matcher: ConceptMatcher | null, autoLinkConc
 
   const flushParagraph = () => {
     if (paragraph.length) {
-      const inline = renderInline(tokenizeInline(paragraph.join('\n'), matcher, autoLinkConcepts)).replace(/\n/g, '<br />')
+      const inline = renderInline(tokenizeInline(paragraph.join('\n'), matcher, autoLinkMode)).replace(/\n/g, '<br />')
       blocks.push(`<p>${inline}</p>`)
       paragraph = []
     }
@@ -355,13 +359,13 @@ function renderBlocks(text: string, matcher: ConceptMatcher | null, autoLinkConc
   const flushList = () => {
     if (list) {
       const tag = list.ordered ? 'ol' : 'ul'
-      blocks.push(`<${tag}>${list.items.map((item) => `<li>${renderInline(tokenizeInline(item, matcher, autoLinkConcepts))}</li>`).join('')}</${tag}>`)
+      blocks.push(`<${tag}>${list.items.map((item) => `<li>${renderInline(tokenizeInline(item, matcher, autoLinkMode))}</li>`).join('')}</${tag}>`)
       list = null
     }
   }
   const flushQuote = () => {
     if (quote.length) {
-      blocks.push(`<blockquote><p>${renderInline(tokenizeInline(quote.join('\n'), matcher, autoLinkConcepts)).replace(/\n/g, '<br />')}</p></blockquote>`)
+      blocks.push(`<blockquote><p>${renderInline(tokenizeInline(quote.join('\n'), matcher, autoLinkMode)).replace(/\n/g, '<br />')}</p></blockquote>`)
       quote = []
     }
   }
@@ -404,10 +408,10 @@ function renderBlocks(text: string, matcher: ConceptMatcher | null, autoLinkConc
         rows.push(tableCells(candidate))
         nextIndex += 1
       }
-      const headerHtml = headers.map((cell) => `<th>${renderInline(tokenizeInline(cell, matcher, autoLinkConcepts))}</th>`).join('')
+      const headerHtml = headers.map((cell) => `<th>${renderInline(tokenizeInline(cell, matcher, autoLinkMode))}</th>`).join('')
       const rowHtml = rows.map((row) => {
         const cells = headers.map((_, index) => row[index] ?? '')
-        return `<tr>${cells.map((cell) => `<td>${renderInline(tokenizeInline(cell, matcher, autoLinkConcepts))}</td>`).join('')}</tr>`
+        return `<tr>${cells.map((cell) => `<td>${renderInline(tokenizeInline(cell, matcher, autoLinkMode))}</td>`).join('')}</tr>`
       }).join('')
       blocks.push(`<table><thead><tr>${headerHtml}</tr></thead><tbody>${rowHtml}</tbody></table>`)
       skippedTableLines = nextIndex - lineIndex - 1
@@ -417,7 +421,7 @@ function renderBlocks(text: string, matcher: ConceptMatcher | null, autoLinkConc
     if (heading) {
       flushAll()
       const level = heading[1].length
-      blocks.push(`<h${level}>${renderInline(tokenizeInline(heading[2], matcher, autoLinkConcepts))}</h${level}>`)
+      blocks.push(`<h${level}>${renderInline(tokenizeInline(heading[2], matcher, autoLinkMode))}</h${level}>`)
       return
     }
     const quoteMatch = rawLine.match(/^\s{0,3}>\s?(.*)$/)

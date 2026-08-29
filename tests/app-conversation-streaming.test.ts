@@ -5,7 +5,7 @@ import { createPinia } from 'pinia'
 import { createApp, nextTick } from 'vue'
 import App from '@/App.vue'
 import { useWorkspaceStore } from '@/stores/workspace'
-import type { LLMTask, Message, NavTreeNode, Session } from '@/types/domain'
+import type { Concept, LLMTask, Message, NavTreeNode, Session } from '@/types/domain'
 
 const mounted: Array<ReturnType<typeof createApp>> = []
 const now = '2026-08-29T00:00:00.000Z'
@@ -45,6 +45,16 @@ describe('conversation answer preview', () => {
       localOnly: false,
     }] satisfies Session[]
     store.navNodes = [{ id: 'root-1', sessionId: 'session-1', parentId: null, label: '根问题', depth: 0, createdAt: now }] satisfies NavTreeNode[]
+    store.concepts = [{
+      id: 'known-topic',
+      name: 'RoCE',
+      normalizedName: 'ROCE',
+      summary: '',
+      notes: '',
+      status: 'active',
+      createdAt: now,
+      updatedAt: now,
+    }] satisfies Concept[]
     store.messages = [{
       id: 'question-1',
       sessionId: 'session-1',
@@ -61,7 +71,7 @@ describe('conversation answer preview', () => {
       promptVersion: 'test',
       inputRevision: 'session-1:1',
       prompt: '{}',
-      response: JSON.stringify({ answer: '这是已保留的待检查回答。' }),
+      response: JSON.stringify({ answer: '已知 [[nexus:existing:RoCE]]RoCE[[/nexus]]，未知 [[nexus:existing:幽灵主题]]幽灵主题[[/nexus]]，建议 [[nexus:suggested:ECN]]ECN[[/nexus]]。' }),
       status: 'needs_review',
       retryCount: 0,
       createdAt: now,
@@ -80,7 +90,10 @@ describe('conversation answer preview', () => {
     const card = target.querySelector<HTMLElement>('.conversation-branch-card.current')!
     const retainedAnswer = card.querySelector<HTMLElement>('.streaming-message.needs-review-answer')
     expect(retainedAnswer?.textContent).toContain('待检查回答')
-    expect(retainedAnswer?.textContent).toContain('这是已保留的待检查回答。')
+    expect(retainedAnswer?.querySelector('[data-concept-id="known-topic"]')?.textContent).toBe('RoCE')
+    expect(retainedAnswer?.querySelector('[data-suggested-concept="ECN"]')?.textContent).toBe('ECN')
+    expect(retainedAnswer?.textContent).toContain('幽灵主题')
+    expect(retainedAnswer?.querySelector('[data-concept-id="幽灵主题"]')).toBeNull()
     expect(target.querySelector('.conversation-scroll > .streaming-message')).toBeNull()
   })
 
@@ -94,10 +107,16 @@ describe('conversation answer preview', () => {
 
     const sessionId = store.createConversationTask({ question: '首轮问题' })
     const openingTask = store.tasks.find((task) => task.type === 'conversation' && task.inputRevision.startsWith(`${sessionId}:`))!
+    const openingQuestion = store.messages.find((message) => message.metadata?.taskId === openingTask.id)!
+    const openingAnswerId = openingQuestion.metadata?.answerMessageId as string
     const openingResult = store.applyTaskResult(openingTask.id, JSON.stringify({
-      answer: '可以继续研究 [[nexus:suggested:调度器]]调度器[[/nexus]]。',
+      // The provider incorrectly calls its response-local Concept existing.
+      // The UI must keep it yellow/explorable instead of immediately blue.
+      answer: '可以继续研究 [[nexus:existing:调度器]]调度器[[/nexus]]，调度器还有更多细节。',
+      concepts: [{ client_ref: 'new:1', name: '调度器', summary: '组织系统中的任务更新。', aliases: [] }],
       units: [{ title: '首轮片段', summary: '首轮回答证据。', concept_ids: [], concepts: [] }],
-      memberships: [],
+      memberships: [{ target_type: 'message', target_id: openingAnswerId, concept_ids: ['new:1'] }],
+      relations: [],
       disclosure_requests: [],
     }))
     expect(openingResult.ok, openingResult.errors.join('; ')).toBe(true)

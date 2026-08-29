@@ -91,6 +91,31 @@ describe('renderMarkdown', () => {
     expect(html).not.toContain('role="link"')
   })
 
+  it('resolves existing markers through local aliases without trusting unknown names', () => {
+    const html = renderMarkdown('已知 [[nexus:existing:DCQCN]]dcqcn[[/nexus]]，未知 [[nexus:existing:HPCC]]HPCC[[/nexus]]。', {
+      concepts: [{ id: 'c1', name: '数据中心量化拥塞通知', aliases: ['DCQCN'] }],
+      autoLinkConcepts: false,
+    })
+    expect(html).toContain('data-concept-id="c1"')
+    expect(html).toContain('>dcqcn</span>')
+    expect(html).not.toContain('data-concept-id="HPCC"')
+    expect((html.match(/md-concept-existing/g) ?? [])).toHaveLength(1)
+  })
+
+  it('keeps response-local concepts yellow and backfills missed plain-text recommendations', () => {
+    const html = renderMarkdown('已有 [[nexus:existing:RoCE]]RoCE[[/nexus]]；模型误标 [[nexus:existing:ECN]]ECN[[/nexus]]，并再次讨论 ECN 和 RoCE。', {
+      concepts: [
+        { id: 'existing', name: 'RoCE' },
+        { id: 'new', name: 'ECN', kind: 'suggested' },
+      ],
+      autoLinkConcepts: 'suggested',
+    })
+    expect(html).toContain('data-concept-id="existing"')
+    expect(html).toContain('data-suggested-concept="ECN"')
+    expect((html.match(/data-suggested-concept="ECN"/g) ?? [])).toHaveLength(2)
+    expect((html.match(/data-concept-id="existing"/g) ?? [])).toHaveLength(1)
+  })
+
   it('renders markers embedded in a paragraph without leaking delimiters', () => {
     const html = renderMarkdown('前缀 [[nexus:suggested:量子纠错]]量子纠错[[/nexus]] 后缀。')
     expect(html).toContain('<p>前缀 <span class="md-concept md-concept-suggested"')
