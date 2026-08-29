@@ -1684,6 +1684,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (task.type !== 'conversation') return ids
     const sessionId = task.inputRevision.split(':')[0]
     const activeIds = new Set(activeConcepts.value.map((concept) => concept.id))
+    // Conversation follow-ups may intentionally reuse a Concept introduced
+    // by a sibling branch or another Session. IDs are global facts, so the
+    // validator must not reject a real active Concept merely because it was
+    // absent from the currently selected disclosure path.
+    activeIds.forEach((id) => ids.add(id))
     sessionConcepts.value
       .filter((link) => link.sessionId === sessionId && activeIds.has(link.conceptId))
       .forEach((link) => ids.add(link.conceptId))
@@ -3188,7 +3193,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         // apparently duplicated cards in the conversation view.
         const branchNodeId = followUp ? createId('nav') : parentNodeId
         if (followUp) {
-          db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [branchNodeId, targetId, parentNodeId, meta.topicId ?? null, normalizedUnits[0]?.title || '对话回答', parentDepth + 1, now])
+          const branchLabel = (meta.topicId ? concepts.value.find((concept) => concept.id === meta.topicId)?.name : null)
+            || normalizedUnits[0]?.title
+            || '新的探索分支'
+          db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [branchNodeId, targetId, parentNodeId, meta.topicId ?? null, branchLabel, parentDepth + 1, now])
         }
         const sessionMessages = messages.value.filter((message) => message.sessionId === targetId).sort((left, right) => left.orderInSession - right.orderInSession)
         const assistantOrder = sessionMessages.length ? sessionMessages[sessionMessages.length - 1].orderInSession + 1 : 1

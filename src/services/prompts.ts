@@ -22,6 +22,8 @@ Concept 名称输出前机械自检（硬限制，必须逐项执行）：
 
 const CONCEPT_NAME_FINAL_GATE = '最终 JSON 门禁：输出前逐项扫描 concepts[].name；含作为拼接分隔符使用的“与”“和”“及”“、”“/”“／”时，默认拆成独立 Concept；只有确属不可拆分固定技术名称时，才在该对象提供 0～1 的 confidence 和非空 reason。不能只删连接词继续合并，不能输出后依赖软件拒绝。词内部或名称首尾的“与/和/及”不算拼接分隔符。'
 
+const PREFIX_HIERARCHY_GATE = '前缀层级门禁：若新 Concept 名称以目录中已有主题开头（例如已有“CAVER”，候选为“CAVER 路径信息交换”），必须优先改成短子主题“路径信息交换”，并在 relations 返回 {"source":"已有 CAVER 的真实 refID","target":"new:1","type":"hierarchy","status":"proposed"}。只有证据证明完整前缀名称本身是不可拆分的正式专名时，才保留原名，并在同一 Concept 对象同时返回 confidence 与 reason；不能只省略 relations，也不能把它作为新的一级根。'
+
 const TECHNICAL_MARKER_COVERAGE_CONTRACT = `
 推荐词技术覆盖审计（硬约束）：完成 answer 草稿后，从全文逐段扫描所有具有独立知识含义的技术实体，至少检查协议/标准、算法、架构/拓扑、组件、数据结构、控制机制、英文缩写、连字符词和 CamelCase 词。只要该实体在正文中以真实词组首次出现，就必须单独包在一个 Nexus marker 中；已有目录主题用 existing，目录没有明确证据的用 suggested。不要因为词是英文、缩写、大小写混排或出现在代码/列表/表格中而漏标，也不要把相邻技术实体合并在同一个 marker。普通连接词、泛化名词和同一实体的后续重复不必标记。输出前逐个核对正文中的技术词与 marker 数量，优先保证覆盖而不是只标记少数大主题。`
 
@@ -541,6 +543,7 @@ ${disclosureAvailability(disclosure)}
 输出中的 memberships 是可选的细粒度归属声明；同一目标可以列出多个 Concept，必须使用 concept_ids 数组。只标记有直接证据的消息，不要为了覆盖全部消息、凑满数量或重复同一主题而逐条复制 membership。只能引用 DISCLOSURE_INDEX 中已经出现的 Concept refID；新提取的 Concept 由 concepts 数组定义，应用会按本 KnowledgeUnit 的范围建立多对多关联。如果全部复用现有 Concept，concepts 可以返回空数组，但 concept_ids 不能同时为空。
 
 ${CONCEPT_NAME_FINAL_GATE}
+${PREFIX_HIERARCHY_GATE}
  固定名称 one-shot 示例：{"concepts":[{"client_ref":"new:1","name":"喜羊羊与灰太狼","summary":"一部完整动画作品的正式名称。","aliases":[],"confidence":0.99,"reason":"这是不可拆分的正式作品名，整体指向同一部动画。"}],"concept_ids":[],"memberships":[{"target_type":"message","target_id":"原始消息 ID","concept_ids":["new:1"]}],"relations":[],"disclosure_requests":[]}
 只返回 JSON：{"concepts":[{"name":"...","summary":"不超过 120 个中文字符的主题摘要","aliases":[],"confidence":0.0,"reason":"仅在名称含连接分隔符且确属固定单一名称时填写"}],"concept_ids":["已列出的 Concept refID"],"memberships":[{"target_type":"unit|message|session","target_id":"原始 ID","concept_ids":["Concept refID", "另一个 Concept refID"]}],"relations":[{"source":"直接父 Concept 名称或 refID","target":"直接子 Concept 名称或 refID","type":"hierarchy","status":"proposed"}],"disclosure_requests":[]}`)
 }
@@ -593,6 +596,7 @@ Concept 与归属：
 - 关系端点使用已披露的 Concept refID 或本次 concepts 的 client_ref。普通提取只能返回 hierarchy 建议，status 只能省略或为 proposed，绝不能写 confirmed/rejected；应用会在本地去重、做 DAG 环检测，用户确认后才会改变状态。不要为了把所有 Concept 连起来而补关系。
 
 ${CONCEPT_NAME_FINAL_GATE}
+${PREFIX_HIERARCHY_GATE}
 固定名称 one-shot 示例（必须一次性提供证据字段）：{"concepts":[{"client_ref":"new:1","name":"喜羊羊与灰太狼","summary":"一部完整动画作品的正式名称。","aliases":[],"confidence":0.99,"reason":"这是不可拆分的正式作品名，整体指向同一部动画。"}],"memberships":[{"target_type":"message","target_id":"上面列出的 Message ID","concept_ids":["new:1"]}],"relations":[],"disclosure_requests":[]}
 只返回 JSON：{"concepts":[{"client_ref":"new:1","name":"...","summary":"不超过 120 个中文字符的主题摘要","aliases":[],"confidence":0.0,"reason":"仅在名称含连接分隔符且确属固定单一名称时填写"}],"memberships":[{"target_type":"message","target_id":"上面列出的 Message ID","concept_ids":["已披露的 Concept refID 或 new:1","另一个 Concept refID 或 client_ref"]}],"relations":[{"source":"Concept refID 或 client_ref","target":"Concept refID 或 client_ref","type":"hierarchy","status":"proposed"}],"disclosure_requests":[]}`)
 }
@@ -683,6 +687,7 @@ ${CONCEPT_NAME_QUALITY_CONTRACT}
 - 推荐词选择与主题层级保持同样的粒度：使用类似教材章节大标题/小标题的短词组；回答中出现多个清晰的概念词时可以分别标记它们，但不要把整句或多个概念拼成一个推荐词。
 
 ${CONCEPT_NAME_FINAL_GATE}
+${PREFIX_HIERARCHY_GATE}
 结构化响应硬约束：最外层只能返回一个 JSON 对象，禁止 Markdown 围栏；answer 的值可以包含普通 Markdown，但不得把整个 JSON 或另一份 JSON 嵌套在代码围栏中。Nexus 标记只能出现在 answer 字符串中，绝不能出现在 session_title、session_summary、concepts、memberships、relations、units 或 disclosure_requests 的任何字段。顶层 concepts 必须是对象数组（每项含 client_ref、name、summary、aliases），units[].concepts 也必须是对象数组（每项含 name、summary、aliases）；这两个 concepts 字段都严禁返回字符串数组、Nexus 标记碎片、标签元组或其他数组。memberships 必须是含 target_type、target_id、concept_ids 的对象数组，relations 必须是含 source、target、type、status 的对象数组，禁止用字符串数组或 parent/child 替代字段。只有 DISCLOSURE_INDEX 或当前 Concept 明确列出的主题才能使用 existing；没有目录证据的独立概念一律使用 suggested，不要把未确认概念标成蓝色。
 
 请只返回 JSON，格式如下：

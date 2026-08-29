@@ -78,7 +78,7 @@ input::placeholder, textarea::placeholder { color: var(--faint); }
 textarea { resize: vertical; }
 
 .app-shell { min-height: 100dvh; display: flex; overflow: visible; background: var(--bg); }
-.sidebar { position: relative; z-index: 30; width: 232px; min-width: 232px; display: flex; flex-direction: column; overflow: hidden; padding: 22px 14px 16px; background: var(--surface); border-right: 1px solid var(--line); transition: width var(--motion) ease, min-width var(--motion) ease; }
+.sidebar { position: sticky; top: 0; z-index: 30; width: 232px; min-width: 232px; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; padding: 22px 14px 16px; background: var(--surface); border-right: 1px solid var(--line); transition: width var(--motion) ease, min-width var(--motion) ease; }
 .sidebar.collapsed { width: 72px; min-width: 72px; }
 .brand-lockup { height: 68px; min-height: 68px; display: flex; align-items: center; gap: 11px; padding: 0 10px 24px; }
 .brand-mark { width: 34px; height: 34px; display: grid; place-items: center; flex: 0 0 auto; overflow: hidden; color: #fff; background: var(--primary); border-radius: 9px; box-shadow: var(--shadow-sm); }

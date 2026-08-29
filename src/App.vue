@@ -268,7 +268,12 @@ const activeConversationMessages = computed(() => activeConversationSessionId.va
   : [])
 const activeConversationNodes = computed(() => activeConversationSessionId.value
   ? [
-      ...store.navNodes.filter((node) => node.sessionId === activeConversationSessionId.value),
+      ...store.navNodes.filter((node) => node.sessionId === activeConversationSessionId.value).map((node) => ({
+        ...node,
+        label: node.label === '对话回答' && node.triggerConceptId
+          ? (store.concepts.find((concept) => concept.id === node.triggerConceptId)?.name ?? node.label)
+          : node.label,
+      })),
       ...(pendingConversationBranch.value && pendingConversationBranch.value.sessionId === activeConversationSessionId.value
         ? [pendingConversationBranch.value]
         : []),
@@ -2247,7 +2252,7 @@ onBeforeUnmount(() => {
                   </div>
                   <div v-if="activeConversationTask?.status === 'running'" class="conversation-thinking"><LoaderCircle class="spin" :size="16" />AI 正在处理这次提问…</div>
                   <div v-if="!activeConversationCurrentCard?.messages.length" class="empty-state compact"><MessageSquare :size="26" /><strong>{{ activeConversationCurrentCard ? '这一分支还没有回答' : '等待第一条回答' }}</strong><span>{{ activeConversationCurrentCard ? '提交问题后，回答会留在当前分支。' : '回答完成后会显示在这里。' }}</span></div>
-                  <div class="conversation-composer"><textarea v-model="composerQuestion" rows="3" aria-label="继续当前对话" placeholder="继续追问…" :disabled="Boolean(activeConversationUnfinishedTask)" @keydown.ctrl.enter.prevent="startConversationFollowUp" @keydown.meta.enter.prevent="startConversationFollowUp" /><div class="conversation-composer-footer"><span>{{ activeConversationUnfinishedTask ? '请先完成上一轮回答' : store.config.llm.mode === 'api' ? 'API 会直接执行' : 'Prompt 会在右侧浮层中处理' }}</span><button class="send-button" aria-label="发送追问" :disabled="!composerQuestion.trim() || Boolean(activeConversationUnfinishedTask)" @click="startConversationFollowUp"><Send :size="17" /></button></div></div>
+                  <div class="conversation-composer"><textarea v-model="composerQuestion" rows="3" aria-label="继续当前对话" placeholder="继续追问…" :disabled="Boolean(activeConversationTask && ['pending', 'running', 'needs_review'].includes(activeConversationTask.status))" @keydown.ctrl.enter.prevent="startConversationFollowUp" @keydown.meta.enter.prevent="startConversationFollowUp" /><div class="conversation-composer-footer"><span>{{ activeConversationTask && ['pending', 'running', 'needs_review'].includes(activeConversationTask.status) ? '请先完成当前分支回答' : store.config.llm.mode === 'api' ? 'API 会直接执行' : 'Prompt 会在右侧浮层中处理' }}</span><button class="send-button" aria-label="发送追问" :disabled="!composerQuestion.trim() || Boolean(activeConversationTask && ['pending', 'running', 'needs_review'].includes(activeConversationTask.status))" @click="startConversationFollowUp"><Send :size="17" /></button></div></div>
                 </div>
               </div>
             </div>
