@@ -1804,6 +1804,7 @@ async function executeApiTask(task: LLMTask): Promise<void> {
   taskFeedback.value = null
   const result = await store.executeTask(task.id)
   if (result.ok) {
+    store.refreshFromDb()
     if (task.type === 'conversation') selectTaskAnswerNode(task.id)
     notify('API 任务已完成')
   }
