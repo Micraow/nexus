@@ -13,7 +13,7 @@ import { combineSegmentationChunks, splitMessageChunks } from '@/utils/chunks'
 import { wouldCreateHierarchyCycle } from '@/utils/graph-rules'
 import { createId, isoNow, normalizeText, parseIsoTimestamp, stableHash } from '@/utils/id'
 import { parseMetadata } from '@/utils/metadata'
-import { canTransitionTask, canTransitionTaskStatus, isActiveTaskStatus, LEGACY_SEGMENTATION_RETIRED_REASON, normalizeTaskStatus, taskPhaseForStatus, taskPhaseForTransition, taskStatusForTransition, type TaskTransitionEvent } from '@/services/task-state'
+import { canTransitionTask, canTransitionTaskStatus, isActiveTaskStatus, LEGACY_SEGMENTATION_RETIRED_REASON, normalizeTaskStatus, taskPhaseForStatus, taskPhaseForTransition, taskStatusForTransition, transitionTaskState, type TaskTransitionEvent } from '@/services/task-state'
 import type {
   AppConfig,
   Concept,
@@ -451,9 +451,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const row = db.query<Row>('SELECT status, prompt FROM llm_tasks WHERE id = ?', [taskId])[0]
     if (!row) return false
     const currentStatus = text(row.status) as LLMTask['status']
-    if (!canTransitionTask(currentStatus, event)) return false
-    const status = taskStatusForTransition(event)
-    const phase = taskPhaseForTransition(event)
+    const transition = transitionTaskState(currentStatus, event)
+    if (!transition) return false
+    const { to: status, phase } = transition
     const assignments = ['status = ?', 'phase = ?']
     const values: unknown[] = [status, phase]
     if (Object.prototype.hasOwnProperty.call(patch, 'response')) {
@@ -3829,7 +3829,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const rootId = createId('nav')
       db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [rootId, targetSessionId, null, primaryTopicId ?? null, topic ? `围绕 ${topic}` : '新的知识对话', 0, now])
       const selectedTopicPath = topicIds.flatMap((topicId) => conceptExpansionPath(topicId, true))
-      const taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${targetSessionId}:1`, prompt: buildConversationPrompt({ question, topic, context, targetSessionId, targetMessageId: messageId, targetAssistantMessageId: assistantMessageId, navigationPath: `1. ${topic ? `围绕 ${topic}` : '新的知识对话'}`, conversationHistory: '', sessionTitle: topic ? `围绕 ${topic} 的新对话` : '新的知识对话', sessionSummary: '', availableUnits: [], conceptLimit: config.value.llm.conceptLimit, disclosure: promptDisclosureContext({ unitIds: sourceUnitIds, messageIds: sourceMessageIds, expandedRefIds: selectedTopicPath, includeFullContent: input.includeFullContent ?? false }) }), status: 'pending', scopeLabel: `新对话 · ${topic || '知识探索'}` })
+      const taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${targetSessionId}:1`, prompt: buildConversationPrompt({ question, topic, context, targetSessionId, targetMessageId: messageId, targetAssistantMessageId: assistantMessageId, navigationPath: `1. ${topic ? `围绕 ${topic}` : '新的知识对话'}`, conversationHistory: '', sessionTitle: topic ? `围绕 ${topic} 的新对话` : '新的知识对话', sessionSummary: '', availableUnits: [], conceptLimit: config.value.llm.conceptLimit, disclosure: promptDisclosureContext({ unitIds: sourceUnitIds, messageIds: sourceMessageIds, expandedRefIds: selectedTopicPath, includeFullContent: input.includeFullContent ?? false, includeConceptDetails: true }) }), status: 'pending', scopeLabel: `新对话 · ${topic || '知识探索'}` })
       db.run('UPDATE messages SET metadata = ? WHERE id = ?', [JSON.stringify({ mode: 'new', topicId: primaryTopicId ?? null, topicIds, parentNodeId: rootId, taskId, answerMessageId: assistantMessageId, sourceSessionId: sourceSession ?? null }), messageId])
       writeSourceReferences(targetSessionId, sourceUnitIds, sourceMessageIds, input.includeFullContent ?? false)
     })
@@ -3909,7 +3909,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         db.run('INSERT OR IGNORE INTO message_concepts(message_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [messageId, topicId, 'manual', now])
       })
       db.run('UPDATE sessions SET message_count = message_count + 1, updated_at = ? WHERE id = ?', [now, session.id])
-      taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${session.id}:${revision}`, prompt: buildConversationPrompt({ question, topic, context: contextWithTopics, navigationPath: buildNavigationPath(session.id, parentNode.id), conversationHistory: buildConversationHistory(session.id, 40, parentNode.id, messageId), sessionTitle: session.title, sessionSummary: session.summary ?? '', availableUnits: units.value.filter((unit) => unit.sessionId === session.id).map((unit) => ({ id: unit.id, title: unit.title ?? '', summary: unit.summary ?? '' })), conceptLimit: config.value.llm.conceptLimit, targetSessionId: session.id, targetMessageId: messageId, targetAssistantMessageId: assistantMessageId, disclosure: promptDisclosureContext({ unitIds: input.sourceUnitIds ?? [], messageIds: input.sourceMessageIds ?? [], includeFullContent: input.includeFullContent ?? false, expandedRefIds: expandedSessionConceptPaths }) }), status: 'pending', scopeLabel: `${session.title} · 追问` })
+      taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${session.id}:${revision}`, prompt: buildConversationPrompt({ question, topic, context: contextWithTopics, navigationPath: buildNavigationPath(session.id, parentNode.id), conversationHistory: buildConversationHistory(session.id, 40, parentNode.id, messageId), sessionTitle: session.title, sessionSummary: session.summary ?? '', availableUnits: units.value.filter((unit) => unit.sessionId === session.id).map((unit) => ({ id: unit.id, title: unit.title ?? '', summary: unit.summary ?? '' })), conceptLimit: config.value.llm.conceptLimit, targetSessionId: session.id, targetMessageId: messageId, targetAssistantMessageId: assistantMessageId, disclosure: promptDisclosureContext({ unitIds: input.sourceUnitIds ?? [], messageIds: input.sourceMessageIds ?? [], includeFullContent: input.includeFullContent ?? false, includeConceptDetails: true, expandedRefIds: expandedSessionConceptPaths }) }), status: 'pending', scopeLabel: `${session.title} · 追问` })
       db.run('UPDATE messages SET metadata = ? WHERE id = ?', [JSON.stringify({ mode: 'follow_up', topicId: primaryTopicId ?? null, topicIds, parentNodeId: parentNode.id, taskId, answerMessageId: assistantMessageId }), messageId])
       writeSourceReferences(session.id, input.sourceUnitIds ?? [], input.sourceMessageIds ?? [], input.includeFullContent ?? false)
     })

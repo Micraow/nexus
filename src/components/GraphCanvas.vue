@@ -385,7 +385,8 @@ function render(): void {
   const { width, height } = canvasSize()
   const viewportRightInset = Math.max(0, Math.min(props.viewportRightInset, width - 240))
   const layoutWidth = width - viewportRightInset
-  const viewportInsetChanged = viewportRightInset !== lastViewportRightInset
+  const previousViewportRightInset = lastViewportRightInset
+  const viewportInsetChanged = viewportRightInset !== previousViewportRightInset
   lastViewportRightInset = viewportRightInset
   renderedSize = { width, height }
   const root = d3.select(element)
@@ -557,7 +558,7 @@ function render(): void {
   // lifetime of this simulation while newly revealed children settle around
   // their parent. Releasing and reheating these nodes on a timer produces a
   // delayed second movement that users perceive as graph flicker.
-  const anchoredNodes = topologyChanged && hasPreviousLayout
+  const anchoredNodes = (topologyChanged || viewportInsetChanged) && hasPreviousLayout
     ? nodes.filter((node) => knownNodeIds.has(node.id) && !node.fixed && node.x != null && node.y != null)
     : []
   anchoredNodes.forEach((node) => {
@@ -900,6 +901,17 @@ function render(): void {
     let fitted = false
     const fitView = (freeze = false): void => {
       if (fitted || (!viewportInsetChanged && userMovedViewport) || generation !== renderGeneration) return
+      // Opening a detail panel changes the available width, but must not
+      // re-run the force fit over an already stable graph. Translate the
+      // existing viewport by half of the inset delta and keep every node at
+      // its previous coordinate; this avoids a visible jump/flicker.
+      if (viewportInsetChanged && hasFittedData && liveTransform) {
+        fitted = true
+        fittingProgrammatically = true
+        root.call(zoom.transform, liveTransform.translate((previousViewportRightInset - viewportRightInset) / 2, 0))
+        fittingProgrammatically = false
+        return
+      }
       const xs = nodes.map((node) => node.x).filter((value) => value != null) as number[]
       const ys = nodes.map((node) => node.y).filter((value) => value != null) as number[]
       if (!xs.length) return
