@@ -12,6 +12,7 @@
 - 知识主题目录采用左侧 hierarchy 树、右侧完整详情列；未拒绝的待确认父子关系也保留在树结构中，并以状态标记提示。左侧目录不建立视口高度受限的嵌套滚动区，长树随页面主滚动容器自然延伸；工具栏仍保持页面滚动时的可见性。主题详情包含父/子/相关关系、来源与确认状态、关联 Session、可选 KnowledgeUnit、消息预览和一个顶部的跨 Session 分页全屏入口；点击父/子/相关主题后详情滚回顶部。旧的 LLM `related` 提议不进入关系审核区，避免把已由共享证据派生的信号误当成待确认动作。主题目录不再额外弹出全局 Concept 抽屉。
 - “待确认”关系可能来自历史导入、整理结果或维护任务，并不表示打开主题时一定存在 API 请求；主题详情读取本地事实，不会隐式创建任务。KnowledgeUnit 继续作为可选的证据包和上下文来源，不是 Concept 提取或图谱展示的前置条件。
 - 知识维护任务始终扫描整个 active Concept 图谱；从主题、会话或阅读片段入口触发时，这些对象只作为 Prompt 中的附加关注范围。Prompt 提供全部一级主题及直接子主题引用，并明确根节点是例外、新主题优先匹配最窄父主题、related 不能代替 hierarchy。`MAINTENANCE_ACTION_API` 同时作为 Prompt 和应用校验的机器可读工具目录，使用 MCP 标准 `inputSchema`（并保留 `input_schema` 兼容字段，均为 `additionalProperties=false`），另由 `listMaintenanceMcpTools()` 与 `maintenanceMcpToolsList()` 暴露纯 `{name, description, inputSchema}` 及 `{tools:[...]}` 的 `tools/list` 视图；API 模式把这些 schema 作为 OpenAI-compatible function tools 提供，tool call 按注册工具名转换为 suggestion，Prompt 粘贴模式仍使用同一 schema。动作覆盖 Concept CRUD、别名、关系增删改与审核、多父层级整体替换/解除、归属迁移和阅读片段修订。创建 Concept 可在同一动作中提交别名与多父级；应用前做 DAG、字段白名单、重复别名和长度检测，并通过快照事务记录，可撤销，未知动作/字段不落库。
+- 全图维护入口仅在知识图谱、知识主题、会话以及维护任务详情中显示；打开面板后切换到其他模块会自动收起。创建维护任务先切换到任务中心，再选中任务并保持面板打开，避免页面切换状态清除刚创建的维护上下文。
 - 当前规模和已有 D3 力向布局、拖拽、键盘/ARIA、高亮及位置持久化已覆盖验收目标；在缺少性能基准和交互回归证据前不迁移 Sigma.js。若未来迁移，必须先以同一 fixture 对比初始布局稳定性、拖拽阈值、框选、无障碍和大图谱帧耗时。
 
 ## 运行边界
