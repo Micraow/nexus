@@ -196,6 +196,40 @@ describe('GraphCanvas progressive disclosure', () => {
     expect(target.querySelectorAll('.graph-node')).toHaveLength(0)
   })
 
+  it('keeps an undisclosed root expandable from authoritative active relations', async () => {
+    const toggleConcept = vi.fn()
+    const target = mountSnapshot({
+      revision: 51,
+      nodes: [{ id: 'concept:root', type: 'concept', refId: 'root', label: '根主题', degree: 0, unitCount: 0 }],
+      edges: [],
+    }, { onToggleConcept: toggleConcept }, {
+      activeConceptIds: ['root', 'child'],
+      hierarchyRelations: [{ parentConceptId: 'root', childConceptId: 'child', relationType: 'hierarchy', status: 'confirmed' }],
+      expandedConceptIds: [],
+    })
+    await nextTick()
+
+    const root = target.querySelector<SVGGElement>('[data-ref-id="root"]')!
+    expect(root.getAttribute('aria-expanded')).toBe('false')
+    root.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(toggleConcept).toHaveBeenCalledWith('root', true)
+  })
+
+  it('ignores hierarchy relations whose endpoints are not active', async () => {
+    const target = mountSnapshot({
+      revision: 52,
+      nodes: [{ id: 'concept:child', type: 'concept', refId: 'child', label: '活动主题', degree: 0, unitCount: 0 }],
+      edges: [],
+    }, {}, {
+      activeConceptIds: ['child'],
+      hierarchyRelations: [{ parentConceptId: 'archived-parent', childConceptId: 'child', relationType: 'hierarchy', status: 'confirmed' }],
+      expandedConceptIds: [],
+    })
+    await nextTick()
+
+    expect([...target.querySelectorAll<SVGGElement>('.graph-node')].map((node) => node.dataset.refId)).toEqual(['child'])
+  })
+
   it('does not disclose a proposed child while proposed edges are hidden', async () => {
     const target = mountSnapshot({
       revision: 6,

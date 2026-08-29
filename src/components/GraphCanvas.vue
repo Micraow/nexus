@@ -45,6 +45,8 @@ const props = withDefaults(
     conceptChildren?: ChildrenMap
     /** Full relation set used as the authoritative hierarchy source. */
     hierarchyRelations?: HierarchyRelationInput[]
+    /** Active Concept ids used to ignore stale relations to archived records. */
+    activeConceptIds?: string[]
     /** Whether proposed hierarchy edges may disclose their children. */
     showProposed?: boolean
     expandableConceptIds?: string[]
@@ -197,10 +199,23 @@ function visibleSnapshot(): { nodes: GraphNode[]; edges: GraphEdge[] } {
   // with older callers and are left untouched.
   const conceptNodes = nodes.filter((node) => node.type === 'concept')
   const conceptIds = new Set(conceptNodes.map((node) => node.refId))
+  // The snapshot is progressive and can omit undisclosed active children, so
+  // callers may provide the complete active Concept id set. Without it,
+  // retain the conservative legacy behavior and only trust ids in the
+  // current snapshot.
+  const activeConceptIds = props.activeConceptIds === undefined
+    ? conceptIds
+    : new Set(props.activeConceptIds)
   const parentsByConcept = new Map<string, Set<string>>()
   const visibleChildrenByParent = new Map<string, Set<string>>()
   const externalHierarchyProvided = props.hierarchyRelations !== undefined
-  const externalHierarchy = (props.hierarchyRelations ?? []).filter((relation) => relation.relationType === 'hierarchy' && relation.status !== 'rejected')
+  const externalHierarchy = (props.hierarchyRelations ?? []).filter((relation) => relation.relationType === 'hierarchy'
+    && relation.status !== 'rejected'
+    // A supplied active-id list is authoritative. Legacy callers that omit it
+    // still rely on the relation list to reconstruct a stale progressive
+    // snapshot, so do not discard those references here.
+    && (props.activeConceptIds === undefined
+      || (activeConceptIds.has(relation.parentConceptId) && activeConceptIds.has(relation.childConceptId))))
   const visibleExternalHierarchy = externalHierarchy.filter((relation) => relation.status === 'confirmed' || (props.showProposed && relation.status === 'proposed') || relation.status == null)
   const externalHierarchyEdgeKeys = new Set(visibleExternalHierarchy.map((relation) => `concept:${relation.parentConceptId}|concept:${relation.childConceptId}`))
   externalHierarchy.forEach((relation) => {
@@ -306,7 +321,20 @@ function conceptHasChildren(node: GraphNode, edges: GraphEdge[]): boolean {
   if (dynamicNode.hasChildren || (dynamicNode.childCount ?? 0) > 0) return true
   if ((props.expandableConceptIds ?? []).includes(conceptId)) return true
   const conceptNodeId = `concept:${conceptId}`
-  return edges.some((edge) => edge.type === 'hierarchy' && (edge.source === conceptNodeId || edge.source === conceptId))
+  if (edges.some((edge) => edge.type === 'hierarchy' && (edge.source === conceptNodeId || edge.source === conceptId))) return true
+  // Hierarchy edges are progressively disclosed and therefore may not exist
+  // in the current `edges` projection. Use the authoritative relation list so
+  // a root remains expandable while its direct children are still hidden.
+  const activeIds = props.activeConceptIds === undefined
+    ? new Set(props.snapshot.nodes.filter((candidate) => candidate.type === 'concept').map((candidate) => candidate.refId))
+    : new Set(props.activeConceptIds)
+  return (props.hierarchyRelations ?? []).some((relation) => relation.relationType === 'hierarchy'
+    && relation.status !== 'rejected'
+    && (relation.status === 'confirmed' || (props.showProposed && relation.status === 'proposed') || relation.status == null)
+    && relation.parentConceptId === conceptId
+    && relation.childConceptId !== conceptId
+    && activeIds.has(relation.parentConceptId)
+    && activeIds.has(relation.childConceptId))
 }
 
 function nodeRadius(node: GraphNode, fallbackChildCount = 0): number {
@@ -487,8 +515,9 @@ function render(): void {
       .filter((node) => node.type === 'concept' && (node.parentIds?.length || node.parentId))
       .forEach((node) => hierarchyChildNodeIds.add(node.id))
   }
-  const rootConcepts = snapshot.nodes.filter((node) => node.type === 'concept'
-    && !hierarchyChildNodeIds.has(node.id))
+  const rootConcepts = snapshot.nodes
+    .filter((node) => node.type === 'concept' && !hierarchyChildNodeIds.has(node.id))
+    .sort((left, right) => left.id.localeCompare(right.id))
   const rootCount = rootConcepts.length
   rootConcepts.forEach((node, rootIndex) => {
     if (seedPositions.has(node.id)) return
@@ -497,6 +526,9 @@ function render(): void {
     seedPositions.set(node.id, { x: layoutWidth / 2 + Math.cos(angle) * radius, y: height / 2 + Math.sin(angle) * radius })
   })
   const snapshotNodeById = new Map(snapshot.nodes.map((node) => [node.id, node]))
+  // Worker insertion order is not a layout input. Keep fallback seeds stable
+  // for unanchored units/messages as well as roots.
+  const stableNodeIndex = new Map(snapshot.nodes.slice().sort((left, right) => left.id.localeCompare(right.id)).map((node, index) => [node.id, index]))
   const ensureSeedPosition = (nodeId: string, visiting = new Set<string>()): { x: number; y: number } | undefined => {
     const existing = seedPositions.get(nodeId)
     if (existing) return existing
@@ -506,7 +538,7 @@ function render(): void {
     const anchor = anchorId ? ensureSeedPosition(anchorId, visiting) : undefined
     const node = snapshotNodeById.get(nodeId)
     if (!node) return anchor
-    const index = snapshot.nodes.findIndex((candidate) => candidate.id === nodeId)
+    const index = stableNodeIndex.get(nodeId) ?? 0
     const siblings = anchorId ? (childrenByAnchor.get(anchorId) ?? []) : []
     const siblingIndex = siblings.indexOf(nodeId)
     const ringCapacity = node.type === 'concept' ? 8 : 12
@@ -534,7 +566,7 @@ function render(): void {
       // deterministic spiral avoids D3's random jump for legacy snapshots.
       const anchorId = anchorByNode.get(node.id)
       const anchor = anchorId ? seedPositions.get(anchorId) : undefined
-      const angle = (stableHash(node.id) % 6283) / 1000 + index * 0.17
+      const angle = (stableHash(node.id) % 6283) / 1000 + (stableNodeIndex.get(node.id) ?? index) * 0.17
       const radius = node.type === 'concept' ? 76 : node.type === 'unit' ? 48 : 34
       copy.x = (anchor?.x ?? layoutWidth / 2) + Math.cos(angle) * radius
       copy.y = (anchor?.y ?? height / 2) + Math.sin(angle) * radius
@@ -1018,12 +1050,13 @@ watch(() => {
     .join('|')
   const expanded = (props.expandedConceptIds ?? []).slice().sort().join(',')
   const expandable = (props.expandableConceptIds ?? []).slice().sort().join(',')
+  const activeConceptIds = props.activeConceptIds?.slice().sort().join(',') ?? 'unspecified'
   const hierarchy = props.hierarchyRelations?.map((relation) => `${relation.parentConceptId}:${relation.childConceptId}:${relation.relationType}:${relation.status ?? ''}`).sort().join('|') ?? 'unspecified'
   // A graph revision can advance for unrelated store work while the rendered
   // topology and labels remain identical.  Rebuilding D3 in that case causes
   // visible flashing and resets the force simulation, so the revision itself
   // is deliberately omitted from this visual identity.
-  return `${nodes}|${edges}|${expanded}|${expandable}|${hierarchy}|${props.showProposed ? 1 : 0}|${props.reducedMotion ? 1 : 0}|${props.maxVisibleLevel ?? ''}|${props.expandedConceptDepth ?? ''}|${props.visibleNodeDepth ?? ''}|${typeof props.visibleNodeLevels === 'number' ? props.visibleNodeLevels : mapSignature(props.visibleNodeLevels)}|${mapSignature(props.conceptHierarchy)}|${mapSignature(props.conceptChildren)}|${props.fitOnTopologyChange ? 1 : 0}|${props.viewportRightInset}`
+  return `${nodes}|${edges}|${expanded}|${expandable}|${activeConceptIds}|${hierarchy}|${props.showProposed ? 1 : 0}|${props.reducedMotion ? 1 : 0}|${props.maxVisibleLevel ?? ''}|${props.expandedConceptDepth ?? ''}|${props.visibleNodeDepth ?? ''}|${typeof props.visibleNodeLevels === 'number' ? props.visibleNodeLevels : mapSignature(props.visibleNodeLevels)}|${mapSignature(props.conceptHierarchy)}|${mapSignature(props.conceptChildren)}|${props.fitOnTopologyChange ? 1 : 0}|${props.viewportRightInset}`
 }, render)
 
 watch(() => props.selectedUnitIds.slice(), (selectedIds) => {
