@@ -1904,6 +1904,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       try { parsed = JSON.parse(expansion.content) } catch { return }
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return
       const value = parsed as Record<string, unknown>
+      const addStringIds = (raw: unknown, target: Set<string>): void => {
+        if (!Array.isArray(raw)) return
+        raw.forEach((id) => {
+          if (typeof id === 'string' && id.trim()) target.add(id.trim())
+        })
+      }
+      // Every structured expansion is an authorization boundary. Preserve
+      // entity IDs that are nested in evidence records too: a model may
+      // legitimately relink a Message/Unit/Session to a Concept mentioned by
+      // that same disclosed evidence, or edit a relation endpoint shown in a
+      // Concept's relation list.
       const concept = value.concept
       if (concept && typeof concept === 'object' && !Array.isArray(concept)) {
         const item = concept as Record<string, unknown>
@@ -1918,45 +1929,64 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const memberships = value.memberships
       if (memberships && typeof memberships === 'object' && !Array.isArray(memberships)) {
         const membershipValue = memberships as Record<string, unknown>
-        const addIds = (field: string, target: Set<string>): void => {
-          if (!Array.isArray(membershipValue[field])) return
-          membershipValue[field].forEach((id) => {
-            if (typeof id === 'string' && id.trim()) target.add(id.trim())
-          })
-        }
-        addIds('session_ids', scope.sessionIds)
-        addIds('unit_ids', scope.unitIds)
-        addIds('message_ids', scope.messageIds)
+        addStringIds(membershipValue.session_ids, scope.sessionIds)
+        addStringIds(membershipValue.unit_ids, scope.unitIds)
+        addStringIds(membershipValue.message_ids, scope.messageIds)
+        addStringIds(membershipValue.concept_ids, scope.conceptIds)
       }
       const session = value.session
-      if (session && typeof session === 'object' && !Array.isArray(session) && typeof (session as Record<string, unknown>).id === 'string') scope.sessionIds.add((session as Record<string, unknown>).id as string)
+      if (session && typeof session === 'object' && !Array.isArray(session)) {
+        const item = session as Record<string, unknown>
+        if (typeof item.id === 'string') scope.sessionIds.add(item.id)
+        addStringIds(item.concept_ids, scope.conceptIds)
+      }
       const unit = value.unit
-      if (unit && typeof unit === 'object' && !Array.isArray(unit) && typeof (unit as Record<string, unknown>).id === 'string') scope.unitIds.add((unit as Record<string, unknown>).id as string)
+      if (unit && typeof unit === 'object' && !Array.isArray(unit)) {
+        const item = unit as Record<string, unknown>
+        if (typeof item.id === 'string') scope.unitIds.add(item.id)
+        addStringIds(item.concept_ids, scope.conceptIds)
+        addStringIds(item.message_ids, scope.messageIds)
+        if (typeof item.session_id === 'string') scope.sessionIds.add(item.session_id)
+      }
       if (unit && typeof unit === 'object' && !Array.isArray(unit)) {
         const messageIds = (unit as Record<string, unknown>).message_ids
-        if (Array.isArray(messageIds)) messageIds.forEach((id) => {
-          if (typeof id === 'string' && id.trim()) scope.messageIds.add(id.trim())
-        })
+        addStringIds(messageIds, scope.messageIds)
       }
       const message = value.message
-      if (message && typeof message === 'object' && !Array.isArray(message) && typeof (message as Record<string, unknown>).id === 'string') scope.messageIds.add((message as Record<string, unknown>).id as string)
+      if (message && typeof message === 'object' && !Array.isArray(message)) {
+        const item = message as Record<string, unknown>
+        if (typeof item.id === 'string') scope.messageIds.add(item.id)
+        if (typeof item.session_id === 'string') scope.sessionIds.add(item.session_id)
+        if (typeof item.unit_id === 'string') scope.unitIds.add(item.unit_id)
+        addStringIds(item.concept_ids, scope.conceptIds)
+      }
       const relationsValue = value.relations
       if (Array.isArray(relationsValue)) relationsValue.forEach((relation) => {
         if (!relation || typeof relation !== 'object' || Array.isArray(relation)) return
         const item = relation as Record<string, unknown>
         if (typeof item.id === 'string') scope.relationIds.add(item.id)
+        if (typeof item.sourceId === 'string') scope.conceptIds.add(item.sourceId)
+        if (typeof item.targetId === 'string') scope.conceptIds.add(item.targetId)
+        if (typeof item.source_concept_id === 'string') scope.conceptIds.add(item.source_concept_id)
+        if (typeof item.target_concept_id === 'string') scope.conceptIds.add(item.target_concept_id)
       })
       const messagesValue = value.messages
       if (Array.isArray(messagesValue)) messagesValue.forEach((entry) => {
         if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return
         const item = entry as Record<string, unknown>
         if (typeof item.id === 'string') scope.messageIds.add(item.id)
+        if (typeof item.session_id === 'string') scope.sessionIds.add(item.session_id)
+        if (typeof item.unit_id === 'string') scope.unitIds.add(item.unit_id)
+        addStringIds(item.concept_ids, scope.conceptIds)
       })
       const unassigned = value.unassigned_messages
       if (Array.isArray(unassigned)) unassigned.forEach((entry) => {
         if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return
         const item = entry as Record<string, unknown>
         if (typeof item.id === 'string') scope.messageIds.add(item.id)
+        if (typeof item.session_id === 'string') scope.sessionIds.add(item.session_id)
+        if (typeof item.unit_id === 'string') scope.unitIds.add(item.unit_id)
+        addStringIds(item.concept_ids, scope.conceptIds)
       })
     })
     return scope
@@ -2567,11 +2597,21 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     return { ok: false, errors: [`已展开 ${requested.length} 个引用，任务已重新排队`], continued: true }
   }
 
-  function applyTaskResult(taskId: string, responseText: string): TaskApplyResult {
+  function applyTaskResult(taskId: string, responseText: string, options: { internal?: boolean } = {}): TaskApplyResult {
     const task = tasks.value.find((item) => item.id === taskId)
     if (!task) return { ok: false, errors: ['找不到任务'] }
     if (!['pending', 'running', 'needs_review'].includes(task.status)) {
       return { ok: false, errors: [`任务当前状态为${task.status}，请先重新排队后再应用结果`] }
+    }
+    // API execution owns the running state until the provider response has
+    // been validated. A manual click in the task detail while that request is
+    // in flight could submit the stale first-round response, clear its
+    // disclosure_requests and incorrectly finish the task with no changes.
+    // The executor passes `internal` for its own response; UI callers must
+    // wait for the request (and any automatic disclosure continuation) to
+    // settle before editing or validating a response.
+    if (task.mode === 'api' && task.status === 'running' && !options.internal) {
+      return { ok: false, errors: ['API 任务正在执行，请等待当前请求完成后再校验结果'] }
     }
     if (task.type === 'segmentation') return applySegmentationTask(taskId, responseText)
 
@@ -3315,7 +3355,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
             })
           }
           if (!content) throw new Error('Provider 没有返回可用内容')
-          const result = applyTaskResult(taskId, content)
+          const result = applyTaskResult(taskId, content, { internal: true })
           clearStreamingTaskText(taskId)
           if (result.continued) {
             // Disclosure continuation re-queues the same task. Release this

@@ -728,6 +728,77 @@ describe('direct concept extraction import pipeline', () => {
     expect(result.ok, result.errors.join('; ')).toBe(true)
   })
 
+  it('authorizes relation endpoints and nested concept IDs from disclosed evidence', () => {
+    const parentId = store.createConcept('维护证据父主题')
+    const childId = store.createConcept('维护证据子主题')
+    store.createRelation(parentId, childId, 'hierarchy')
+    store.updateConfig({ llm: { ...store.config.llm, mode: 'prompt_paste' } })
+    const sessionId = store.createConversationTask({ question: '为维护范围准备一条未归属消息' })
+    const maintenanceId = createAuditedMaintenanceTask()
+
+    const result = store.applyTaskResult(maintenanceId, JSON.stringify({
+      reason: '已检查父主题关系和 Session 证据，补充子主题归属。',
+      suggestions: [{
+        type: 'membership_relink',
+        target_type: 'session',
+        target_id: sessionId,
+        concept_ids: [childId],
+        replace: true,
+        reason: '父主题披露的直接关系端点和 Session 证据均指向该子主题。',
+      }],
+      disclosure_requests: [],
+    }))
+
+    expect(result.ok, result.errors.join('; ')).toBe(true)
+    expect(store.applyMaintenanceSuggestion(maintenanceId, 0).ok).toBe(true)
+    expect(store.sessionConcepts).toContainEqual(expect.objectContaining({ sessionId, conceptId: childId }))
+  })
+
+  it('keeps an API maintenance task pending after manually applying a disclosure round', async () => {
+    const rootId = store.createConcept('手动 API 披露根')
+    const childId = store.createConcept('手动 API 披露子')
+    store.createRelation(rootId, childId, 'hierarchy')
+    store.updateConfig({
+      llm: {
+        ...store.config.llm,
+        mode: 'api',
+        defaultProvider: 'manual-maintenance-provider',
+        providers: [{ id: 'manual-maintenance-provider', name: 'Manual maintenance', baseUrl: 'https://example.test/v1', model: 'maintenance-model', apiKey: 'test-key' }],
+      },
+    })
+    const taskId = store.createMaintenanceTask()
+    const first = store.applyTaskResult(taskId, JSON.stringify({
+      reason: '首轮只读取根目录，必须继续展开。',
+      suggestions: [],
+      disclosure_requests: [{ refID: rootId, depth: 1 }],
+    }))
+    expect(first.continued, first.errors.join('; ')).toBe(true)
+    expect(store.tasks.find((task) => task.id === taskId)).toEqual(expect.objectContaining({ status: 'pending', parsedResult: null }))
+
+    let requestCount = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      const content = requestCount === 0
+        ? {
+            reason: '继续检查根主题披露出的子主题。',
+            suggestions: [],
+            disclosure_requests: [{ refID: childId, depth: 1 }],
+          }
+        : {
+            reason: '已检查披露的根主题及子主题，未发现需要修改的地方。',
+            suggestions: [],
+            disclosure_requests: [],
+          }
+      requestCount += 1
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: JSON.stringify(content) } }] }),
+      } as Response
+    }))
+    await expect(store.executeTask(taskId)).resolves.toEqual({ ok: true })
+    expect(requestCount).toBe(2)
+    expect(store.tasks.find((task) => task.id === taskId)?.status).toBe('success')
+  })
+
   it('audits multiple maintenance roots and their descendants in one batched continuation', () => {
     const rootA = store.createConcept('批量审计根 A')
     const childA = store.createConcept('批量审计子 A')
@@ -1284,6 +1355,43 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.tasks.find((item) => item.id === taskId)).toEqual(expect.objectContaining({ status: 'success' }))
     expect(store.tasks.find((item) => item.id === taskId)?.parsedResult).toContain('未发现需要修改')
     expect(store.tasks.find((item) => item.id === taskId)?.prompt).toContain(childId)
+  })
+
+  it('does not let a manual submit consume an API maintenance response while it is running', async () => {
+    const rootId = store.createConcept('运行中维护根主题')
+    const childId = store.createConcept('运行中维护子主题')
+    store.createRelation(rootId, childId, 'hierarchy')
+    const responses = [
+      JSON.stringify({ reason: '首轮需要展开根分支。', suggestions: [], disclosure_requests: [{ refID: rootId, depth: 64 }] }),
+      JSON.stringify({ reason: '已完成根分支审计，未发现需要修改的地方。', suggestions: [], disclosure_requests: [] }),
+    ]
+    let requestIndex = 0
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: responses[requestIndex++] } }] }),
+    } as Response)))
+    store.updateConfig({
+      llm: {
+        ...store.config.llm,
+        mode: 'api',
+        defaultProvider: 'maintenance-race-provider',
+        providers: [{ id: 'maintenance-race-provider', name: 'Maintenance race', baseUrl: 'https://example.test/v1', model: 'maintenance-model', apiKey: 'test-key' }],
+      },
+    })
+    const taskId = store.createMaintenanceTask()
+    const task = store.tasks.find((item) => item.id === taskId)!
+    const execution = store.executeTask(task.id)
+
+    // executeTask marks the task running before its first fetch await. A UI
+    // click at this point must not submit the stale response or change state.
+    const manual = store.applyTaskResult(task.id, responses[0])
+    expect(manual.ok).toBe(false)
+    expect(manual.errors[0]).toContain('API 任务正在执行')
+    expect(store.tasks.find((item) => item.id === taskId)?.status).toBe('running')
+
+    await expect(execution).resolves.toEqual({ ok: true })
+    expect(requestIndex).toBe(2)
+    expect(store.tasks.find((item) => item.id === taskId)).toEqual(expect.objectContaining({ status: 'success' }))
   })
 
   it('rejects an API maintenance response without an overall reason', async () => {
