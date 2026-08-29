@@ -1912,10 +1912,32 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           if (alias && typeof alias === 'object' && !Array.isArray(alias) && typeof (alias as Record<string, unknown>).id === 'string') scope.aliasIds.add((alias as Record<string, unknown>).id as string)
         })
       }
+      // A fully disclosed Concept carries evidence IDs alongside its
+      // `concept` object. They are part of the same authorization boundary
+      // even when their own expansion is requested in a later batch.
+      const memberships = value.memberships
+      if (memberships && typeof memberships === 'object' && !Array.isArray(memberships)) {
+        const membershipValue = memberships as Record<string, unknown>
+        const addIds = (field: string, target: Set<string>): void => {
+          if (!Array.isArray(membershipValue[field])) return
+          membershipValue[field].forEach((id) => {
+            if (typeof id === 'string' && id.trim()) target.add(id.trim())
+          })
+        }
+        addIds('session_ids', scope.sessionIds)
+        addIds('unit_ids', scope.unitIds)
+        addIds('message_ids', scope.messageIds)
+      }
       const session = value.session
       if (session && typeof session === 'object' && !Array.isArray(session) && typeof (session as Record<string, unknown>).id === 'string') scope.sessionIds.add((session as Record<string, unknown>).id as string)
       const unit = value.unit
       if (unit && typeof unit === 'object' && !Array.isArray(unit) && typeof (unit as Record<string, unknown>).id === 'string') scope.unitIds.add((unit as Record<string, unknown>).id as string)
+      if (unit && typeof unit === 'object' && !Array.isArray(unit)) {
+        const messageIds = (unit as Record<string, unknown>).message_ids
+        if (Array.isArray(messageIds)) messageIds.forEach((id) => {
+          if (typeof id === 'string' && id.trim()) scope.messageIds.add(id.trim())
+        })
+      }
       const message = value.message
       if (message && typeof message === 'object' && !Array.isArray(message) && typeof (message as Record<string, unknown>).id === 'string') scope.messageIds.add((message as Record<string, unknown>).id as string)
       const relationsValue = value.relations

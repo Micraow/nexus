@@ -699,6 +699,35 @@ describe('direct concept extraction import pipeline', () => {
     })
   })
 
+  it('authorizes evidence IDs exposed inside disclosed Concept memberships', () => {
+    const conceptId = store.createConcept('维护归属范围主题')
+    store.updateConfig({ llm: { ...store.config.llm, mode: 'prompt_paste' } })
+    const sessionId = store.createConversationTask({ question: '建立一个可审计的会话归属', topicId: conceptId })
+    const conversationTask = store.tasks.find((task) => task.type === 'conversation' && task.inputRevision.startsWith(`${sessionId}:`))!
+    const applied = store.applyTaskResult(conversationTask.id, JSON.stringify({
+      answer: '这是一段用于维护范围回归的回答。',
+      units: [{ title: '维护范围片段', summary: '用于验证披露内容中的证据 ID。', concept_ids: [], concepts: [] }],
+      memberships: [{ target_type: 'session', target_id: sessionId, concept_ids: [conceptId] }],
+      disclosure_requests: [],
+    }))
+    expect(applied.ok, applied.errors.join('; ')).toBe(true)
+
+    const maintenanceId = createAuditedMaintenanceTask()
+    const result = store.applyTaskResult(maintenanceId, JSON.stringify({
+      reason: '已检查主题及其会话证据，归属声明可以审计。',
+      suggestions: [{
+        type: 'membership_relink',
+        target_type: 'session',
+        target_id: sessionId,
+        concept_ids: [conceptId],
+        replace: true,
+        reason: '会话内容直接围绕该主题展开。',
+      }],
+      disclosure_requests: [],
+    }))
+    expect(result.ok, result.errors.join('; ')).toBe(true)
+  })
+
   it('audits multiple maintenance roots and their descendants in one batched continuation', () => {
     const rootA = store.createConcept('批量审计根 A')
     const childA = store.createConcept('批量审计子 A')
