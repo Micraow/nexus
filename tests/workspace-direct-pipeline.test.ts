@@ -572,6 +572,38 @@ describe('direct concept extraction import pipeline', () => {
     expect(prompt).toContain('知识主题：调度器')
   })
 
+  it('accepts a sibling-branch Concept ID already established in the same Session', () => {
+    const sessionId = store.createConversationTask({ question: '先建立第一个探索分支' })
+    const firstTask = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
+    const firstQuestion = store.messages.find((message) => message.sessionId === sessionId && message.role === 'user')!
+    const first = store.applyTaskResult(firstTask.id, JSON.stringify({
+      answer: '第一个分支回答。',
+      concepts: [{ client_ref: 'new:1', name: '兄弟分支主题', summary: '由第一个探索分支建立的主题。', aliases: [] }],
+      memberships: [{ target_type: 'message', target_id: firstQuestion.id, concept_ids: ['new:1'] }],
+      relations: [],
+      units: [{ title: '第一个分支片段', summary: '第一个分支证据。', concept_ids: [], concepts: [] }],
+      disclosure_requests: [],
+    }))
+    expect(first.ok, first.errors.join('; ')).toBe(true)
+
+    const root = store.navNodes.find((node) => node.sessionId === sessionId && !node.parentId)!
+    const siblingTaskId = store.createFollowUpTask({ sessionId, parentNodeId: root.id, question: '从同层分支继续讨论' })
+    const siblingTask = store.tasks.find((item) => item.id === siblingTaskId)!
+    const siblingQuestion = store.messages.find((message) => message.sessionId === sessionId && message.role === 'user' && message.id !== firstQuestion.id)!
+    const conceptId = store.concepts.find((concept) => concept.name === '兄弟分支主题')!.id
+
+    const result = store.applyTaskResult(siblingTaskId, JSON.stringify({
+      answer: '同层分支复用了已有主题。',
+      units: [{ unit_id: store.units[0].id, concept_ids: [conceptId] }],
+      memberships: [{ target_type: 'message', target_id: siblingQuestion.id, concept_ids: [conceptId] }],
+      concepts: [],
+      relations: [],
+      disclosure_requests: [],
+    }))
+    expect(siblingTask.prompt).toContain(conceptId)
+    expect(result.ok, result.errors.join('; ')).toBe(true)
+  })
+
   it('discloses an explicitly selected existing topic even before Session membership is persisted', () => {
     const rootId = store.createConcept('网络根')
     const topicId = store.createConcept('拥塞控制')

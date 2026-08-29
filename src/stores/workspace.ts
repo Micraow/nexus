@@ -7,7 +7,7 @@ import { buildGraph, graphSnapshotIsProgressiveCompatible, graphStats, graphView
 import { buildSearchDocuments, searchKnowledge } from '@/services/search'
 import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildOriginConceptPrompt, buildRepairPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, ensureHarnessPrompt, formatMaintenanceActionApi, listMaintenanceMcpTools, listedDisclosureRefIds, MAINTENANCE_ACTION_API, maintenanceToolCallSuggestion, parseDisclosureContext, PROMPT_VERSION, renderQuickPhrase, replaceDisclosureContext } from '@/services/prompts'
 import { conversationMessageBranchNodeId } from '@/services/conversation'
-import { importPayloadSchema, normalizeOriginConceptResultForReuse, parseImportPayload, validateConceptIdList, validateConceptMemberships, validateConceptName, validateDisclosureRequests, validateOriginConceptResult, validateSegmentationResult, validateUnitText } from '@/services/validation'
+import { hasCompoundConceptConnector, importPayloadSchema, normalizeOriginConceptResultForReuse, parseImportPayload, validateConceptIdList, validateConceptMemberships, validateConceptName, validateDisclosureRequests, validateOriginConceptResult, validateSegmentationResult, validateUnitText } from '@/services/validation'
 import type { DisclosureContext } from '@/services/prompts'
 import { combineSegmentationChunks, splitMessageChunks } from '@/utils/chunks'
 import { wouldCreateHierarchyCycle } from '@/utils/graph-rules'
@@ -1672,6 +1672,50 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       }))
   }
 
+  /**
+   * Conversation turns may continue from a sibling exploration branch. Those
+   * branches can introduce a Concept that is not present in the currently
+   * selected disclosure path, but it is still a valid local Concept for this
+   * Session. Keep the normal disclosure set as the baseline and add concepts
+   * evidenced by the Session's own messages, units, or Session membership.
+   */
+  function conversationConceptIds(task: LLMTask): Set<string> {
+    const ids = promptConceptIds(task)
+    if (task.type !== 'conversation') return ids
+    const sessionId = task.inputRevision.split(':')[0]
+    const activeIds = new Set(activeConcepts.value.map((concept) => concept.id))
+    sessionConcepts.value
+      .filter((link) => link.sessionId === sessionId && activeIds.has(link.conceptId))
+      .forEach((link) => ids.add(link.conceptId))
+    const messageIds = new Set(messages.value.filter((message) => message.sessionId === sessionId).map((message) => message.id))
+    messageConcepts.value
+      .filter((link) => messageIds.has(link.messageId) && activeIds.has(link.conceptId))
+      .forEach((link) => ids.add(link.conceptId))
+    const unitIds = new Set(units.value.filter((unit) => unit.sessionId === sessionId).map((unit) => unit.id))
+    unitConcepts.value
+      .filter((link) => unitIds.has(link.unitId) && activeIds.has(link.conceptId))
+      .forEach((link) => ids.add(link.conceptId))
+    // A branch can be started from a manually selected topic before its first
+    // answer has written a Session/Message/Unit membership. The durable
+    // navigation node still records that trigger Concept, so keep it in the
+    // same-session reuse scope as soon as the branch exists.
+    navNodes.value
+      .filter((node) => node.sessionId === sessionId && node.triggerConceptId && activeIds.has(node.triggerConceptId))
+      .forEach((node) => ids.add(node.triggerConceptId as string))
+    return ids
+  }
+
+  function conversationConceptCatalog(task: LLMTask): Array<{ id: string; name: string; aliases: string[] }> {
+    const ids = conversationConceptIds(task)
+    return activeConcepts.value
+      .filter((concept) => ids.has(concept.id))
+      .map((concept) => ({
+        id: concept.id,
+        name: concept.name,
+        aliases: aliases.value.filter((alias) => alias.conceptId === concept.id).map((alias) => alias.alias),
+      }))
+  }
+
   function validateConceptMembershipPayload(
     task: LLMTask,
     data: Record<string, unknown>,
@@ -2659,7 +2703,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     // the opaque ID, and retain an audit trail in parsed_result. Near matches
     // and compound names still go through the strict validator unchanged.
     const reuseAudit = (task.type === 'origin_concepts' || task.type === 'conversation') && Array.isArray(data.concepts)
-      ? normalizeOriginConceptResultForReuse(data, promptConceptCatalog(task))
+      ? normalizeOriginConceptResultForReuse(data, task.type === 'conversation' ? conversationConceptCatalog(task) : promptConceptCatalog(task))
       : { data, reused: [] }
     if (reuseAudit.reused.length) data = { ...reuseAudit.data, nexus_reuse: reuseAudit.reused }
     else data = reuseAudit.data
@@ -2879,6 +2923,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           conceptIds: promptConceptIds(task),
           conceptCatalog: promptConceptCatalog(task),
           maxConcepts: conceptLimit,
+          allowCompoundWithEvidence: true,
         }).map((issue) => `${issue.path}: ${issue.message}`))
       } else {
         errors.push(...validateConceptMembershipPayload(task, data, membershipTargets))
@@ -2896,18 +2941,29 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         if (rawConcepts.length === 0 && declaredConceptIds.length === 0 && membershipConceptIds.length === 0) errors.push('concepts 或 concept_ids 至少需要一项')
       }
       const candidates = Array.isArray(rawConcepts) ? rawConcepts.map((candidate) => {
-        if (typeof candidate === 'string') return { clientRef: '', name: candidate, summary: '', aliases: [] as string[] }
-        if (!candidate || typeof candidate !== 'object') return { clientRef: '', name: '', summary: '', aliases: [] as string[] }
+        if (typeof candidate === 'string') return { clientRef: '', name: candidate, summary: '', aliases: [] as string[], confidence: undefined, reason: undefined }
+        if (!candidate || typeof candidate !== 'object') return { clientRef: '', name: '', summary: '', aliases: [] as string[], confidence: undefined, reason: undefined }
         const item = candidate as Record<string, unknown>
         return {
           clientRef: typeof item.client_ref === 'string' ? item.client_ref.trim() : '',
           name: typeof item.name === 'string' ? item.name : '',
           summary: typeof item.summary === 'string' ? item.summary.trim() : '',
           aliases: Array.isArray(item.aliases) ? item.aliases.filter((alias): alias is string => typeof alias === 'string') : [],
+          confidence: item.confidence,
+          reason: item.reason,
         }
       }) : []
       candidates.forEach((candidate) => {
-        if (task.type !== 'origin_concepts') errors.push(...validateConceptName(candidate.name).map((issue) => issue.message))
+        if (task.type !== 'origin_concepts') errors.push(...validateConceptName(candidate.name, {
+          allowCompoundWithEvidence: true,
+          confidence: candidate.confidence,
+          reason: candidate.reason,
+        }).map((issue) => issue.message))
+        if (hasCompoundConceptConnector(candidate.name)) {
+          const confidence = typeof candidate.confidence === 'number' ? candidate.confidence : Number.NaN
+          if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) errors.push('复合 Concept 名称的 confidence 必须是 0 到 1 之间的数字')
+          if (typeof candidate.reason !== 'string' || !candidate.reason.trim()) errors.push('复合 Concept 名称必须提供非空 reason')
+        }
         if (candidate.summary.length > 120) errors.push('Concept 摘要不能超过 120 个字符')
       })
       if (errors.length) {
@@ -3011,13 +3067,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const directConceptsProvided = Object.prototype.hasOwnProperty.call(data, 'concepts')
       const rawDirectConcepts = directConceptsProvided && Array.isArray(data.concepts) ? data.concepts : []
       const directConcepts = rawDirectConcepts.map((candidate) => {
-        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return { clientRef: '', name: '', summary: '', aliases: [] as string[] }
+        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return { clientRef: '', name: '', summary: '', aliases: [] as string[], confidence: undefined, reason: undefined }
         const value = candidate as Record<string, unknown>
         return {
           clientRef: typeof value.client_ref === 'string' ? value.client_ref.trim() : '',
           name: typeof value.name === 'string' ? value.name.trim() : '',
           summary: typeof value.summary === 'string' ? value.summary.trim() : '',
           aliases: Array.isArray(value.aliases) ? value.aliases.filter((alias): alias is string => typeof alias === 'string') : [],
+          confidence: value.confidence,
+          reason: value.reason,
         }
       })
       const normalizedUnits = Array.isArray(rawUnits) ? rawUnits.map((item) => {
@@ -3035,11 +3093,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           // field; ignore those fragments rather than rejecting an otherwise
           // usable answer and reading excerpt.
           concepts: concepts.flatMap((concept) => {
-            if (typeof concept === 'string') return [{ name: concept, summary: '', aliases: [] as string[] }]
+            if (typeof concept === 'string') return [{ name: concept, summary: '', aliases: [] as string[], confidence: undefined, reason: undefined }]
             if (!concept || typeof concept !== 'object' || Array.isArray(concept)) return []
             const item = concept as Record<string, unknown>
             if (typeof item.name !== 'string' || !item.name.trim()) return []
-            return [{ name: item.name, summary: typeof item.summary === 'string' ? item.summary.trim() : '', aliases: Array.isArray(item.aliases) ? item.aliases.filter((alias): alias is string => typeof alias === 'string') : [] }]
+            return [{ name: item.name, summary: typeof item.summary === 'string' ? item.summary.trim() : '', aliases: Array.isArray(item.aliases) ? item.aliases.filter((alias): alias is string => typeof alias === 'string') : [], confidence: item.confidence, reason: item.reason }]
           }),
         }
       }) : []
@@ -3047,11 +3105,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         if (!unit.unitId && !unit.title) errors.push('新建对话阅读片段标题不能为空')
         if (!unit.unitId && validateUnitText(unit.title, unit.summary).length) errors.push('新建对话阅读片段标题或摘要超出长度限制')
         unit.concepts.forEach((concept) => {
-          errors.push(...validateConceptName(concept.name).map((issue) => `对话返回的${issue.message}`))
+          errors.push(...validateConceptName(concept.name, {
+            allowCompoundWithEvidence: true,
+            confidence: concept.confidence,
+            reason: concept.reason,
+          }).map((issue) => `对话返回的${issue.message}`))
           if (concept.summary.length > 120) errors.push('对话返回的知识主题摘要不能超过 120 个字符')
         })
         if (unit.conceptIdsProvided) {
-          errors.push(...validateConceptIdList(unit.conceptIdsRaw, promptConceptIds(task)).map((issue) => `${issue.path}: ${issue.message}`))
+          errors.push(...validateConceptIdList(unit.conceptIdsRaw, conversationConceptIds(task)).map((issue) => `${issue.path}: ${issue.message}`))
         }
         if (unit.unitId) {
           const existingUnit = units.value.find((candidate) => candidate.id === unit.unitId)
@@ -3070,11 +3132,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           ...(Object.prototype.hasOwnProperty.call(data, 'relations') ? { relations: data.relations } : {}),
         }, {
           targetIds: conversationTargetIds,
-          conceptIds: promptConceptIds(task),
-          conceptCatalog: promptConceptCatalog(task),
+          conceptIds: conversationConceptIds(task),
+          conceptCatalog: conversationConceptCatalog(task),
           maxConcepts: conceptLimit,
+          allowCompoundWithEvidence: true,
         }).map((issue) => `${issue.path}: ${issue.message}`))
-        errors.push(...validateConceptIdList(data.concept_ids, promptConceptIds(task)).map((issue) => `${issue.path}: ${issue.message}`))
+        errors.push(...validateConceptIdList(data.concept_ids, conversationConceptIds(task)).map((issue) => `${issue.path}: ${issue.message}`))
       } else {
         // Older conversation prompts had no response-local Concept contract
         // and could target an already existing optional KnowledgeUnit.
@@ -3087,8 +3150,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         if (Object.prototype.hasOwnProperty.call(data, 'relations')) {
           errors.push(...validateOriginConceptResult({ concepts: [], memberships: [], relations: data.relations }, {
             targetIds: conversationTargetIds,
-            conceptIds: promptConceptIds(task),
-            conceptCatalog: promptConceptCatalog(task),
+            conceptIds: conversationConceptIds(task),
+            conceptCatalog: conversationConceptCatalog(task),
           }).map((issue) => `${issue.path}: ${issue.message}`))
         }
       }

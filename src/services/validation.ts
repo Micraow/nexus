@@ -13,14 +13,36 @@ export const MAX_CONCEPT_NAME_LENGTH = 24
  * slash separators remain unconditionally invalid because they have no
  * single-topic interpretation in a Concept title.
  */
-const COMPOUND_CONCEPT_CONNECTOR = /\S\s*(?:与|和|及)\s*\S/u
+const COMPOUND_CONCEPT_CONNECTOR = /\S\s*(?:与|和|及)\s*\S|\S\s*[、/／]\s*\S/u
 
-export function validateConceptName(value: unknown): ValidationIssue[] {
+export function hasCompoundConceptConnector(value: unknown): boolean {
+  return typeof value === 'string' && COMPOUND_CONCEPT_CONNECTOR.test(value.trim())
+}
+
+export interface ConceptNameValidationOptions {
+  /** API providers may keep a compound technical label only with evidence. */
+  allowCompoundWithEvidence?: boolean
+  confidence?: unknown
+  reason?: unknown
+}
+
+export function validateConceptName(value: unknown, options: ConceptNameValidationOptions = {}): ValidationIssue[] {
   if (typeof value !== 'string' || !value.trim()) return [{ path: 'name', message: 'Concept 名称不能为空' }]
   const name = value.trim()
   const issues: ValidationIssue[] = []
   if (Array.from(name).length > MAX_CONCEPT_NAME_LENGTH) issues.push({ path: 'name', message: `Concept 名称不能超过 ${MAX_CONCEPT_NAME_LENGTH} 个字符` })
-  if (/[、/／]/u.test(name) || COMPOUND_CONCEPT_CONNECTOR.test(name)) issues.push({ path: 'name', message: 'Concept 名称必须表示单一主题，不能用“与/和/及/、/”拼接多个概念' })
+  if (COMPOUND_CONCEPT_CONNECTOR.test(name)) {
+    const confidence = typeof options.confidence === 'number' ? options.confidence : Number.NaN
+    const reason = typeof options.reason === 'string' ? options.reason.trim() : ''
+    const justified = options.allowCompoundWithEvidence === true
+      && Number.isFinite(confidence)
+      && confidence >= 0
+      && confidence <= 1
+      && reason.length > 0
+    if (!justified) {
+      issues.push({ path: 'name', message: 'Concept 名称必须表示单一主题，不能用“与/和/及/、/”拼接多个概念；API 保留复合技术名称时必须提供 0～1 的 confidence 和非空 reason' })
+    }
+  }
   return issues
 }
 
@@ -136,6 +158,7 @@ export interface OriginConceptValidationOptions {
   conceptIds?: Iterable<string>
   conceptCatalog?: Array<{ id: string; name: string; aliases?: string[] }>
   maxConcepts?: number
+  allowCompoundWithEvidence?: boolean
 }
 
 export interface ReusedConceptRecord {
@@ -278,9 +301,22 @@ export function validateOriginConceptResult(
       if (!name) {
         issues.push({ path: `${path}.name`, message: 'Concept 名称不能为空' })
       } else {
-        validateConceptName(name).filter((issue) => issue.message !== 'Concept 名称不能为空').forEach((issue) => {
+        validateConceptName(name, {
+          allowCompoundWithEvidence: options.allowCompoundWithEvidence,
+          confidence: candidate.confidence,
+          reason: candidate.reason,
+        }).filter((issue) => issue.message !== 'Concept 名称不能为空').forEach((issue) => {
           issues.push({ path: `${path}.${issue.path}`, message: issue.message })
         })
+        if (options.allowCompoundWithEvidence && hasCompoundConceptConnector(name)) {
+          const confidence = typeof candidate.confidence === 'number' ? candidate.confidence : Number.NaN
+          if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+            issues.push({ path: `${path}.confidence`, message: '复合 Concept 名称的 confidence 必须是 0 到 1 之间的数字' })
+          }
+          if (typeof candidate.reason !== 'string' || !candidate.reason.trim()) {
+            issues.push({ path: `${path}.reason`, message: '复合 Concept 名称必须提供非空 reason，说明为何仍视为单一技术主题' })
+          }
+        }
         const normalizedName = name.toLocaleLowerCase()
         if (candidateNames.has(normalizedName)) {
           issues.push({ path: `${path}.name`, message: '同一响应中不能重复 Concept 名称' })

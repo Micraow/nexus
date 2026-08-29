@@ -8,7 +8,7 @@
 - 任务状态转换事务与图谱事实事务分离：队列开始/失败/重试/续轮只更新 `llm_tasks`，不递增 `graph_revision`；只有概念、关系、归属、阅读片段和消息等事实变化才使图谱投影缓存失效，避免任务轮询造成画布闪烁。
 - 人工“校验并应用”不是终态动作。响应要求进一步披露时，store 将下一轮 Prompt 和任务一起恢复为 `pending`。API 任务必须立即执行这一轮；Prompt 粘贴任务保持 pending，界面明确显示更新后的 Prompt，不能显示绿色成功或“无建议变更”。
 - 对话推荐词的分支只有在未提交前是组件内可删除草稿；创建 conversation task 时，user Message、taskId、预留 assistant ID 与导航节点构成持久事实，之后不允许关闭。流式文本按 taskId 只渲染在这条持久分支的卡片内，最终 JSON 校验成功才在同一事务写 assistant Message、阅读片段、归属、导航节点和 `success`。
-- Prompt 与验证器的 ID 范围一致：既有 Concept 只从当前已披露目录引用，新增 Concept 只用响应内 `client_ref`；对话 membership 只写本轮目标 Session、planned user/assistant Message 和已授权的本 Session 阅读片段；维护动作只能使用已披露 content 的 ID。越界结果整体进入 `needs_review`，不会留下部分关系或空分支。
+- Prompt 与验证器的 ID 范围一致：普通提取既有 Concept 只从当前已披露目录引用，新增 Concept 只用响应内 `client_ref`；对话任务除当前披露目录外，还允许复用同一 Session 其他探索分支已经通过 Session/Message/KnowledgeUnit 归属建立的 active Concept，并在 Prompt 中展开其祖先路径。对话 membership 只写本轮目标 Session、planned user/assistant Message 和已授权的本 Session 阅读片段；维护动作只能使用已披露 content 的 ID。越界结果整体进入 `needs_review`，不会留下部分关系或空分支。
 - 维护任务覆盖整个 active 图谱。入口对象仅作为关注提示；`reason` 无论 suggestions 是否为空都保留并展示。维护的 `pending_ref_ids` 未清空前仍处于披露阶段，禁止把空 suggestions 当成最终判断。
 
 状态机审计补充：任务状态（`status + phase`）、队列运行态、披露目录、对话分支和流式预览是五个独立层。只有 `transitionTask*` 能写任务状态；`runQueue → executeTask → applyTaskResult` 是 API 主链，续轮必须释放执行锁并重新排队。当前 `runQueue` 的 triage 优先级是全局的，且同一 Session 的输入锁仍是 store 检查而非数据库 lease；这两点分别记录为调度策略和并发重构事项，不能由 UI 本地布尔值补偿。完整状态图和审计发现见 [`docs/conversation-state-audit.md`](conversation-state-audit.md)。
@@ -55,7 +55,7 @@
 - `segmentation`、标题和摘要任务仍作为旧数据库/按需阅读片段的兼容记录保留。旧分段结果通过完整覆盖、重复、越界和文本长度校验后才可人工审阅；活动状态的旧 `segmentation` 任务在 schema v7 统一转为 `cancelled`，不能重试或执行，也不再产生新的单元投影。按需阅读片段只影响对应 KnowledgeUnit、Message.unit_id 和 UnitConcept 下游，不得清除或阻塞 SessionConcept/MessageConcept。
 - LLM 生成的 Concept 名称、摘要和别名优先在同一结果中写入；可选 KnowledgeUnit 的标题/摘要写入时不增加其 revision。用户创建或编辑 KnowledgeUnit 只使该单元尚未完成的下游任务变为 `stale`，不使直接 Session/Message 归属失效。
 - API 任务队列按配置并发数（1～16）批量执行，单任务最多进行三次请求（含超时、429 和 5xx 的指数退避）。同一 Session 的直接 Concept 任务按输入 revision 串行，避免旧结果覆盖新归属；可选 KnowledgeUnit 元数据任务只在对应单元创建后串行。Prompt 粘贴任务保持人工逐项应用。并发数已在设置页提供手动数字输入（1～16），写回 `config.yaml`；同一 Session 的 revision 规则不受并发数影响。
-- `llm.concept_limit` 由设置页手动配置为 `1～32`（默认 `8`），并同时传入 Concept、起源 Concept 和对话 Prompt；应用校验器按当前值拒绝超限响应，不静默截断。Concept 名称要求教材章节式的短、单一主题词组，最长 24 个 Unicode 字符；Prompt 输出前机械扫描“与”“和”“及”“、”“/”“／”六类分隔字符，命中时必须拆成独立 Concept，并用 hierarchy 表达共同上位主题，不能只删除连接词后继续合并。消息归属只保留有直接证据的稀疏 membership。
+- `llm.concept_limit` 由设置页手动配置为 `1～32`（默认 `8`），并同时传入 Concept、起源 Concept 和对话 Prompt；应用校验器按当前值拒绝超限响应，不静默截断。Concept 名称要求教材章节式的短、单一主题词组，最长 24 个 Unicode 字符；Prompt 输出前机械扫描“与”“和”“及”“、”“/”“／”六类分隔字符，默认要求拆分并用 hierarchy 表达共同上位主题；若确属不可拆分的固定技术名称，API/对话响应可在该对象提供 `confidence`（0～1）和非空 `reason` 作为证据，不能只删除连接词后继续合并。消息归属只保留有直接证据的稀疏 membership。
 - Token 预算不是固定的 `8000`：设置页允许输入任意不小于 `1000` 的有限安全整数并立即持久化为 `llm.token_budget`，不施加产品级最大值。配置读取、界面提交和写回使用同一归一化函数；该值供长 Session 分窗与新对话上下文超限检查共同使用，已创建的任务不会因之后修改预算而重写。
 - 长 Session 按估算 token 预算切成带两条消息重叠的运行时窗口；合并多个窗口结果时按全局 Message ID、Concept 规范名、归属目标和关系类型去重，并校验未知 ID、关系成环与 related/hierarchy 语义冲突，任何冲突都整体判失败，不写入部分结果。窗口不创建 KnowledgeUnit。
 - API 模式采用 OpenAI-compatible Chat Completions：请求地址为 `baseUrl + /chat/completions`，只发送当前任务 Prompt，温度固定为 `0`。历史 `local_only` 字段仅用于兼容旧数据，不再阻止 API 执行；Prompt 粘贴模式不发网络请求。

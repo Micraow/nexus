@@ -11,15 +11,15 @@ export const PROMPT_VERSION = '2026-08-v9-maintenance-disclosure-audit'
 const CONCEPT_NAME_QUALITY_CONTRACT = `
 Concept 名称输出前机械自检（硬限制，必须逐项执行）：
 1. 草拟最终 JSON 后，逐个扫描 concepts[i].name 的全部 Unicode 字符。
-2. 只要 name 中出现“与”“和”“及”“、”“/”“／”任一字符并用于连接两段非空文本，该名称就无条件不合格；对确认作为连接词的情况没有技术术语、固定搭配或比较场景例外，必须在输出前改正。若“与/和/及”只是词内部组成部分或位于名称首尾，不属于拼接，不要误报。
+2. 出现“与”“和”“及”“、”“/”“／”任一字符并用于连接两段非空文本时，禁止用“与/和/及/、/”拼接多个主题，通常必须拆分；没有技术术语、固定搭配或比较场景例外时不得保留。若该表达在领域内确实是不可拆分的固定技术名称，允许保留，但必须在该 Concept 对象中额外给出 0～1 的 confidence 和非空 reason，说明为什么它仍是单一技术主题。若“与/和/及”只是词内部组成部分或位于名称首尾，不属于拼接，不要误报。
 3. 如果不合格名称实际包含多个独立主题，必须拆成多个 concepts 对象，各自使用短而独立的名称；禁止仅删除连接词后仍把多个主题塞在同一个 name 中。
 4. 拆分出的主题若有共同的稳定上位主题，应创建或复用该单一父主题，并用 hierarchy 组织父→子；比较、并列或共同出现本身不能冒充 hierarchy。若拆分后会超过 Concept 数量上限，只保留证据最充分的单一主题，绝不能重新合并。
-5. 输出前再次逐项检查：每个 name 最长 24 个 Unicode 字符，只表达一个主题，并且不含作为拼接分隔符使用的上述六种字符；任一项失败都不得输出该 JSON。
+5. 输出前再次逐项检查：每个 name 最长 24 个 Unicode 字符。含连接分隔符的名称只有在同一对象提供合法 confidence 和 reason 时才可保留；否则必须拆分，任一项失败都不得输出该 JSON。
 反例（禁止）："DCQCN 与 PFC"、"PathTable/FlowTable 设计"、"CONGA、MP-RDMA 方案对比"。
 正例：把共同上位主题和独立子主题分别声明为 {"client_ref":"new:1","name":"RDMA 网络控制","summary":"RDMA 网络中的流量调节主题。","aliases":[]}、{"client_ref":"new:2","name":"DCQCN 拥塞控制","summary":"基于 ECN 反馈的端到端拥塞控制。","aliases":[]}、{"client_ref":"new:3","name":"PFC 逐跳反压","summary":"按优先级暂停链路流量的逐跳机制。","aliases":[]}，再返回 new:1→new:2、new:1→new:3 的 hierarchy；不得把三个名称重新拼成一个 Concept。
 `
 
-const CONCEPT_NAME_FINAL_GATE = '最终 JSON 门禁：输出前逐项扫描 concepts[].name；含作为拼接分隔符使用的“与”“和”“及”“、”“/”“／”就先拆成独立 Concept，不能输出后依赖软件拒绝，也不能只删连接词继续合并。词内部或名称首尾的“与/和/及”不算拼接分隔符。'
+const CONCEPT_NAME_FINAL_GATE = '最终 JSON 门禁：输出前逐项扫描 concepts[].name；含作为拼接分隔符使用的“与”“和”“及”“、”“/”“／”时，默认拆成独立 Concept；只有确属不可拆分固定技术名称时，才在该对象提供 0～1 的 confidence 和非空 reason。不能只删连接词继续合并，不能输出后依赖软件拒绝。词内部或名称首尾的“与/和/及”不算拼接分隔符。'
 
 const TECHNICAL_MARKER_COVERAGE_CONTRACT = `
 推荐词技术覆盖审计（硬约束）：完成 answer 草稿后，从全文逐段扫描所有具有独立知识含义的技术实体，至少检查协议/标准、算法、架构/拓扑、组件、数据结构、控制机制、英文缩写、连字符词和 CamelCase 词。只要该实体在正文中以真实词组首次出现，就必须单独包在一个 Nexus marker 中；已有目录主题用 existing，目录没有明确证据的用 suggested。不要因为词是英文、缩写、大小写混排或出现在代码/列表/表格中而漏标，也不要把相邻技术实体合并在同一个 marker。普通连接词、泛化名词和同一实体的后续重复不必标记。输出前逐个核对正文中的技术词与 marker 数量，优先保证覆盖而不是只标记少数大主题。`
@@ -521,7 +521,7 @@ Session：${session.title}
 export function buildConceptPrompt(session: Session, unit: KnowledgeUnit, messages: Message[], conceptNames: string[], disclosure?: DisclosureContext, conceptLimit = DEFAULT_CONCEPT_LIMIT): string {
   const disclosureText = formatDisclosureContext(disclosure)
   const limit = promptConceptLimit(conceptLimit)
-  return buildHarnessPrompt(`请从下面的 KnowledgeUnit 提取 1～${limit} 个稳定、可复用的 Concept。最多只能返回 ${limit} 个 Concept，超过部分必须舍弃；这个数量上限是硬约束。每个 Concept 名称最长 24 个字符（按 Unicode 字符计数），必须像教材章节的大标题或小标题，是单一、凝练、可区分的主题词组（通常 1～6 个关键词）；标题中禁止用“与/和/及/、/”拼接多个主题，不要写“甲与乙关系”“甲/乙对比”“甲方案谱系”等复合标题，多个独立概念必须分别返回。优先返回具体知识主体，不要返回“问题”“回答”“内容”等泛词；已有 Concept 只作为候选参考，不要强行合并。
+  return buildHarnessPrompt(`请从下面的 KnowledgeUnit 提取 1～${limit} 个稳定、可复用的 Concept。最多只能返回 ${limit} 个 Concept，超过部分必须舍弃；这个数量上限是硬约束。每个 Concept 名称最长 24 个字符（按 Unicode 字符计数），必须像教材章节的大标题或小标题，是单一、凝练、可区分的主题词组（通常 1～6 个关键词）。含“与/和/及/、/”的复合标题默认拆分；只有确属不可拆分固定技术名称时才可保留，并在该 Concept 对象提供 0～1 的 confidence 和非空 reason。多个独立概念必须分别返回。优先返回具体知识主体，不要返回“问题”“回答”“内容”等泛词；已有 Concept 只作为候选参考，不要强行合并。
 ${CONCEPT_NAME_QUALITY_CONTRACT}
 
 Session：${session.title}
@@ -564,7 +564,7 @@ export function buildOriginConceptPrompt(
     ? `输入范围：这是长会话的技术窗口 ${validWindow.index}/${validWindow.total}。窗口只用于控制上下文长度，不是 KnowledgeUnit、知识边界或独立会话；不要按窗口边界命名 Concept，也不要仅凭局部窗口给整个 Session 建立归属。`
     : '输入范围：完整 Session。'
 
-  return buildHarnessPrompt(`请直接从下面的 Session 和 Message 提取 1～${limit} 个稳定、可复用的核心 Concept（包括复用已有 Concept 与新候选），最多只能返回 ${limit} 个 Concept，超过部分必须舍弃；这个数量上限是硬约束。每个 Concept 名称最长 24 个字符（按 Unicode 字符计数），必须像教材章节的大标题或小标题，是单一、凝练、可区分的主题词组（通常 1～6 个关键词）；标题中禁止用“与/和/及/、/”拼接多个主题，不要写“甲与乙关系”“甲/乙对比”“甲方案谱系”等复合标题，多个独立概念必须分别返回。并建立可追溯的多对多归属。但是现在你只能建立hierarchy关系。探讨、比较或操作流程也可以包含稳定知识；不要为了生成主题而先把对话分段。
+  return buildHarnessPrompt(`请直接从下面的 Session 和 Message 提取 1～${limit} 个稳定、可复用的核心 Concept（包括复用已有 Concept 与新候选），最多只能返回 ${limit} 个 Concept，超过部分必须舍弃；这个数量上限是硬约束。每个 Concept 名称最长 24 个字符（按 Unicode 字符计数），必须像教材章节的大标题或小标题，是单一、凝练、可区分的主题词组（通常 1～6 个关键词）。含“与/和/及/、/”的复合标题默认拆分；只有确属不可拆分固定技术名称时才可保留，并在该 Concept 对象提供 0～1 的 confidence 和非空 reason。多个独立概念必须分别返回。并建立可追溯的多对多归属。但是现在你只能建立hierarchy关系。探讨、比较或操作流程也可以包含稳定知识；不要为了生成主题而先把对话分段。
 ${CONCEPT_NAME_QUALITY_CONTRACT}
 
 Session：${session.title}
@@ -669,7 +669,7 @@ ${disclosureText}
 ${disclosureAvailability(input.disclosure)}
 
 知识主题与事实归属同步：
-- 顶层 concepts 用于本轮回答中新识别出的稳定知识主题；最多 ${conceptLimit} 项，每个候选必须提供本响应唯一的 client_ref（new:1 到 new:${conceptLimit}）。每个 Concept 名称最长 24 个字符（按 Unicode 字符计数），必须像教材章节的大标题或小标题，是单一、凝练、可区分的主题词组（通常 1～6 个关键词）；标题中禁止用“与/和/及/、/”拼接多个主题，不要把多个主题合并成“甲与乙关系”“甲/乙对比”“甲方案谱系”等复合标题，必须拆成同级独立概念或父子hierarchy membership，多个独立概念必须分别返回。只是值得继续探索、证据尚不足的黄色建议不要创建为 Concept。
+- 顶层 concepts 用于本轮回答中新识别出的稳定知识主题；最多 ${conceptLimit} 项，每个候选必须提供本响应唯一的 client_ref（new:1 到 new:${conceptLimit}）。每个 Concept 名称最长 24 个字符（按 Unicode 字符计数），必须像教材章节的大标题或小标题，是单一、凝练、可区分的主题词组（通常 1～6 个关键词）。含“与/和/及/、/”的复合标题默认拆分；只有确属不可拆分固定技术名称时才可保留，并在该对象提供 0～1 的 confidence 和非空 reason；否则必须拆成同级独立概念或父子 hierarchy。只是值得继续探索、证据尚不足的黄色建议不要创建为 Concept。
 ${CONCEPT_NAME_QUALITY_CONTRACT}
 - 顶层 memberships 只能使用上面给出的 Session ID、用户 Message ID 或 assistant Message ID，target_type 只能是 session 或 message。引用已有主题时使用 DISCLOSURE_INDEX 已列出的 Concept refID；引用本轮新主题时使用 client_ref。
 - 本轮 memberships.target_id 的唯一白名单如下（只能逐字复制，不能改写、截断或从此前对话/来源上下文取值）：{"session":"${input.targetSessionId || '由调用方创建'}","user_message":"${input.targetMessageId || '由调用方创建'}","assistant_message":"${input.targetAssistantMessageId || '由调用方创建'}"}。除这三个值外一律不要生成 membership；尤其禁止引用历史 Message、来源 Session/Message、KnowledgeUnit、导航节点或自行猜测的 ID。
