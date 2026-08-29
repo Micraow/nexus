@@ -131,4 +131,45 @@ describe('full-graph maintenance entry', () => {
     expect(target.querySelector('.tasks-view')).not.toBeNull()
     expect(target.querySelector('.maintenance-panel')).not.toBeNull()
   })
+
+  it('does not project the previous disclosure response as the next-round draft', async () => {
+    const target = document.createElement('div')
+    document.body.appendChild(target)
+    const pinia = createPinia()
+    const store = useWorkspaceStore(pinia)
+    store.init = async () => undefined
+    const now = '2026-08-29T00:00:00.000Z'
+    store.tasks = [{
+      id: 'maintenance-disclosure-1',
+      type: 'maintenance',
+      mode: 'prompt_paste',
+      promptVersion: 'test',
+      inputRevision: 'maintenance:state:focus',
+      prompt: '{"DISCLOSURE_INDEX":{"roots":[]}}',
+      status: 'pending',
+      retryCount: 0,
+      response: JSON.stringify({
+        reason: '首轮需要展开根主题后再审计。',
+        suggestions: [],
+        disclosure_requests: [{ refID: 'root', depth: 1 }],
+      }),
+      parsedResult: null,
+      createdAt: now,
+      updatedAt: now,
+    }] satisfies LLMTask[]
+
+    const app = createApp(App)
+    app.use(pinia)
+    mounted.push(app)
+    app.mount(target)
+    await nextTick()
+
+    ;[...target.querySelectorAll<HTMLButtonElement>('.nav-item')]
+      .find((button) => button.textContent?.includes('任务中心'))?.click()
+    await nextTick()
+    target.querySelector<HTMLButtonElement>('.task-row')!.click()
+    await nextTick()
+
+    expect(target.querySelector<HTMLTextAreaElement>('#task-response')?.value).toBe('')
+  })
 })

@@ -1625,8 +1625,26 @@ function taskValidationErrors(task: LLMTask): string[] {
   }
 }
 
+function isAwaitingMaintenanceDisclosure(task: LLMTask): boolean {
+  if (task.type !== 'maintenance' || task.status !== 'pending' || task.parsedResult != null || !task.response) return false
+  try {
+    const value: unknown = JSON.parse(task.response)
+    return Boolean(value && typeof value === 'object' && !Array.isArray(value)
+      && Array.isArray((value as { disclosure_requests?: unknown }).disclosure_requests)
+      && ((value as { disclosure_requests: unknown[] }).disclosure_requests.length > 0))
+  } catch {
+    return false
+  }
+}
+
 function taskResponse(task: LLMTask): string {
-  return taskDrafts.value[task.id] ?? task.response ?? ''
+  const draft = taskDrafts.value[task.id]
+  if (draft !== undefined) return draft
+  // A disclosure continuation keeps the previous raw response for audit, but
+  // clears parsedResult and re-queues the task. That response is no longer a
+  // valid submission for the new prompt and must not be projected as a draft.
+  if (isAwaitingMaintenanceDisclosure(task)) return ''
+  return task.response ?? ''
 }
 
 function setTaskDraft(taskId: string, value: string): void {
