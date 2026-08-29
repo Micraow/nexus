@@ -107,8 +107,6 @@ let dragStartPoint: { x: number; y: number } | null = null
 let dragCurrentPoint: { x: number; y: number } | null = null
 let dragPointerOffset: { x: number; y: number } | null = null
 let dragMoved = false
-let draggedDescendants = new Map<string, { x: number; y: number }>()
-let dragPinnedNodes = new Map<string, { x: number; y: number }>()
 let suppressClickNodeId: string | null = null
 let suppressClickTimer: number | null = null
 let lastNodeSignature = ''
@@ -633,12 +631,9 @@ function render(): void {
   lastNodeSignature = nodeSignature
   lastVisibleNodeIds = new Set(nodes.map((node) => node.id))
   const shouldFitView = nodes.length > 0 && (viewportInsetChanged || (!userMovedViewport && (!hasFittedData || (topologyChanged && props.fitOnTopologyChange))))
-  nodes.forEach((node) => {
-    if (node.fixed && node.x != null && node.y != null) {
-      node.fx = node.x
-      node.fy = node.y
-    }
-  })
+  // `fixed` is persisted layout metadata, not a permanent physics lock. A
+  // node that was manually positioned must still respond to hierarchy/link
+  // forces after the next render; only an active drag assigns fx/fy below.
   // During a disclosure render, hold the existing topology in place for the
   // lifetime of this simulation while newly revealed children settle around
   // their parent. Releasing and reheating these nodes on a timer produces a
@@ -650,7 +645,7 @@ function render(): void {
     structuralComponent(nodeId, structuralLinks).forEach((componentNodeId) => expansionComponentIds.add(componentNodeId))
   })
   const temporarilyAnchoredNodes = topologyExpanded && hasPreviousLayout && expansionComponentIds.size
-    ? nodes.filter((node) => !expansionComponentIds.has(node.id) && !node.fixed && node.x != null && node.y != null)
+    ? nodes.filter((node) => !expansionComponentIds.has(node.id) && node.x != null && node.y != null)
     : []
   temporarilyAnchoredNodes.forEach((node) => {
     node.fx = node.x
@@ -661,7 +656,7 @@ function render(): void {
   // charge/center forces fling a first-click expansion toward a corner before
   // the parent-child spring has had a chance to act.
   const newlySeededNodes = topologyChanged && hasPreviousLayout
-    ? nodes.filter((node) => !knownNodeIds.has(node.id) && node.x != null && node.y != null && !node.fixed)
+    ? nodes.filter((node) => !knownNodeIds.has(node.id) && node.x != null && node.y != null)
     : []
   newlySeededNodes.forEach((node) => {
     node.fx = node.x
@@ -918,46 +913,16 @@ function render(): void {
       dragCurrentPoint = pointer
       dragPointerOffset = { x: (node.x ?? pointer.x) - pointer.x, y: (node.y ?? pointer.y) - pointer.y }
       dragMoved = false
-      draggedDescendants = new Map<string, { x: number; y: number }>()
-      dragPinnedNodes = new Map<string, { x: number; y: number }>()
       highlightNode(node.id)
       // Reheat the springs while dragging so connected nodes follow the
       // pointer instead of feeling pinned in place. Keep the target finite;
       // an unlimited alpha target makes dense imported graphs oscillate.
       if (!event.active) simulation?.alphaTarget(0.3).restart()
-      node.fx = node.x
-      node.fy = node.y
-      if (node.type === 'concept') {
-        const childrenByParent = new Map<string, string[]>()
-        links.forEach((link) => {
-          if (link.type !== 'hierarchy') return
-          const source = typeof link.source === 'string' ? link.source : (link.source as unknown as GraphNode).id
-          const target = typeof link.target === 'string' ? link.target : (link.target as unknown as GraphNode).id
-          childrenByParent.set(source, [...(childrenByParent.get(source) ?? []), target])
-        })
-        const queue = [node.id]
-        const seen = new Set(queue)
-        for (let index = 0; index < queue.length; index += 1) {
-          const parentId = queue[index]
-          ;(childrenByParent.get(parentId) ?? []).forEach((childId) => {
-            if (seen.has(childId)) return
-            seen.add(childId)
-            queue.push(childId)
-            const child = nodeById.get(childId)
-            if (child?.x != null && child.y != null) draggedDescendants.set(childId, { x: child.x, y: child.y })
-          })
-        }
-      }
-      // The center force acts on every component. Pin nodes outside the
-      // dragged component for the duration of the gesture so an unrelated
-      // cluster remains visually stationary while this component is moved.
-      const componentIds = structuralComponent(node.id, structuralLinks)
-      nodes.forEach((candidate) => {
-        if (componentIds.has(candidate.id) || candidate.fixed || candidate.x == null || candidate.y == null) return
-        dragPinnedNodes.set(candidate.id, { x: candidate.x, y: candidate.y })
-        candidate.fx = candidate.x
-        candidate.fy = candidate.y
-      })
+      // Do not pin the dragged node or any other node. Writing x/y gives the
+      // pointer immediate control while the running simulation can still
+      // apply springs, repulsion and collision during the gesture.
+      node.fx = null
+      node.fy = null
     })
     .on('drag', (event, node) => {
       const pointer = graphPointer(event.sourceEvent)
@@ -965,20 +930,8 @@ function render(): void {
       if (dragStartPoint && (Math.abs(pointer.x - dragStartPoint.x) > 4 || Math.abs(pointer.y - dragStartPoint.y) > 4)) dragMoved = true
       const offset = dragPointerOffset ?? { x: 0, y: 0 }
       const nextPosition = { x: pointer.x + offset.x, y: pointer.y + offset.y }
-      node.fx = nextPosition.x
-      node.fy = nextPosition.y
       node.x = nextPosition.x
       node.y = nextPosition.y
-      const dx = dragStartPoint ? pointer.x - dragStartPoint.x : 0
-      const dy = dragStartPoint ? pointer.y - dragStartPoint.y : 0
-      draggedDescendants.forEach((position, childId) => {
-        const child = nodeById.get(childId)
-        if (!child || child.fixed) return
-        child.fx = position.x + dx
-        child.fy = position.y + dy
-        child.x = position.x + dx
-        child.y = position.y + dy
-      })
       paint()
     })
     .on('end', (event, node) => {
@@ -992,25 +945,11 @@ function render(): void {
       const pointer = dragCurrentPoint ?? graphPointer(event.sourceEvent)
       const offset = dragPointerOffset ?? { x: 0, y: 0 }
       const finalPosition = { x: pointer.x + offset.x, y: pointer.y + offset.y }
-      node.fx = finalPosition.x
-      node.fy = finalPosition.y
       node.x = finalPosition.x
       node.y = finalPosition.y
-      draggedDescendants.forEach((_position, childId) => {
-        const child = nodeById.get(childId)
-        if (!child || child.fixed) return
-        if (child.x != null && child.y != null) nodePositions.set(child.id, { x: child.x, y: child.y })
-        child.fx = null
-        child.fy = null
-      })
-      draggedDescendants.clear()
-      dragPinnedNodes.forEach((_position, pinnedId) => {
-        const pinned = nodeById.get(pinnedId)
-        if (!pinned || pinned.fixed) return
-        pinned.fx = null
-        pinned.fy = null
-      })
-      dragPinnedNodes.clear()
+      // Match ForceAtlas-style drag semantics: the pointer owns the node only
+      // during the gesture. Persist the coordinate as a seed, then let the
+      // springs and repulsion settle the node again after release.
       // Keep the in-memory seed in sync with the persisted layout immediately;
       // a disclosure render can happen before the next simulation tick.
       nodePositions.set(node.id, finalPosition)
@@ -1028,7 +967,7 @@ function render(): void {
       dragMoved = false
       draggingNodeId = null
       clearHighlight()
-      emit('layout-change', { nodeType: node.type, refId: node.refId, x: finalPosition.x, y: finalPosition.y, fixed: true })
+      emit('layout-change', { nodeType: node.type, refId: node.refId, x: finalPosition.x, y: finalPosition.y, fixed: false })
     })
   nodeSelection.call(drag)
 
@@ -1074,16 +1013,12 @@ function render(): void {
     window.setTimeout(() => {
       if (generation !== renderGeneration) return
       newlySeededNodes.forEach((node) => {
-        if (!node.fixed) {
-          node.fx = null
-          node.fy = null
-        }
+        node.fx = null
+        node.fy = null
       })
       temporarilyAnchoredNodes.forEach((node) => {
-        if (!node.fixed) {
-          node.fx = null
-          node.fy = null
-        }
+        node.fx = null
+        node.fy = null
       })
       simulation?.alpha(Math.max(simulation.alpha(), 0.18)).restart()
     }, 220)
