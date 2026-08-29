@@ -155,6 +155,13 @@ pnpm build:extension      # 产物在 extension/dist/
 4. 图谱首屏只显示真实根主题。单击主题同时打开详情并逐层展开；刷新和重置布局后节点位置稳定，线段和箭头端点落在圆周而不是圆心，当前节点/路径高亮，阅读片段连线只在悬停时显示。切换到其他菜单后，知识维护浮窗和按钮应自动收起且不残留。
 5. 阅读片段页默认按最近更新排序，并可切换最早更新、最近创建和标题排序；搜索标题、摘要或来源会话后，右侧仍显示所选片段的完整消息内容。普通列表、搜索候选和图谱标签不应泄漏 Markdown 或 Nexus 标记语法；无法解析到本地 active Concept 的 `existing` 标记不得显示为蓝色链接。
 
+### 5.5 任务状态与渐进披露验收
+
+1. 以 API 模式模拟维护任务首轮返回 `reason`、空 `suggestions` 和有效 `disclosure_requests`。点击“校验并应用”后，任务必须保持 pending/running 并用更新后的 Prompt 自动发起下一轮；最终轮才允许显示成功或“无建议变更”。以 Prompt 粘贴模式重复该操作，确认不发网络请求、Prompt 已替换且任务仍为 pending。
+2. 分别模拟无效 Concept ID、越界 membership target 和重复披露引用。三种情况均应保留原始响应、进入 `needs_review`，不写 assistant Message、Concept 关系或维护建议；修复后只能通过 retry 回到 pending。
+3. 点击推荐词创建草稿分支，提交前可关闭；提交后检查 user Message、taskId 和导航节点已存在且关闭控件消失。API 流式传输期间增量文本只能出现在该卡片内；成功后变为持久 assistant Message，校验失败后保留在同一卡片作为待检查响应。
+4. 用维护任务和对话任务分别核对 Prompt 中可见的 ID 目录。模型只能引用目录中的既有 Concept、同响应 `client_ref`、本轮 Session/Message/Unit 目标；不得用仅有 title/summary 的未披露节点或其他 Session ID。为每条范围规则保留回归测试。
+
 ## 6. 常见问题
 
 | 现象 | 处理 |

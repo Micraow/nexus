@@ -2,6 +2,14 @@
 
 本文记录 `docs/design.md` 与 `docs/data-spec.md` 没有完全展开、但实现时必须固定下来的行为。它不是新的产品需求；后续实现和验收如有冲突，以设计文档和数据规范为准，并在这里追加变更原因。
 
+## 2026-08-29 任务与会话状态基线
+
+- `LLMTask` 是任务队列、人工校验与页面动作的唯一完成状态；组件不得以图标、当前页或本地 `started` 布尔值判断任务已完成。状态转换集中在 `services/task-state.ts`，store 通过命名事件执行条件更新：`start`、`continue_disclosure`、`accept_validated_result`、`reject_validation`、`fail_transport`、`retry`、`cancel`、`invalidate`。
+- 人工“校验并应用”不是终态动作。响应要求进一步披露时，store 将下一轮 Prompt 和任务一起恢复为 `pending`。API 任务必须立即执行这一轮；Prompt 粘贴任务保持 pending，界面明确显示更新后的 Prompt，不能显示绿色成功或“无建议变更”。
+- 对话推荐词的分支只有在未提交前是组件内可删除草稿；创建 conversation task 时，user Message、taskId、预留 assistant ID 与导航节点构成持久事实，之后不允许关闭。流式文本按 taskId 只渲染在这条持久分支的卡片内，最终 JSON 校验成功才在同一事务写 assistant Message、阅读片段、归属、导航节点和 `success`。
+- Prompt 与验证器的 ID 范围一致：既有 Concept 只从当前已披露目录引用，新增 Concept 只用响应内 `client_ref`；对话 membership 只写本轮目标 Session、planned user/assistant Message 和已授权的本 Session 阅读片段；维护动作只能使用已披露 content 的 ID。越界结果整体进入 `needs_review`，不会留下部分关系或空分支。
+- 维护任务覆盖整个 active 图谱。入口对象仅作为关注提示；`reason` 无论 suggestions 是否为空都保留并展示。维护的 `pending_ref_ids` 未清空前仍处于披露阶段，禁止把空 suggestions 当成最终判断。
+
 ## 2026-08-28 图谱与主题页实现状态
 
 - 图谱默认只投影没有未拒绝 hierarchy 父节点的 active 根主题。提议父关系默认不绘制但仍阻止子主题成为根；Concept 主体的一次单击同时打开右侧详情并切换当前分支；有子主题时显示下一层，叶主题只打开详情。Enter/Space 与单击相同，图谱不提供独立的 `+/-` 展开控件。

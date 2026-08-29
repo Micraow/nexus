@@ -880,6 +880,108 @@ Nexus 采用克制的知识工作台风格，优先信息层级、可读性和�
 | 扩展懒加载/登录失效 | 保留已成功会话，显示失败原因和重试入口 |
 | Concept 合并/删除 | 可撤销事务，不删除原始 Session/Message/KnowledgeUnit |
 
+### 13.1 运行时状态与接口契约
+
+本节是任务编排与会话界面的唯一状态规范。页面不得通过按钮是否显示、临时字符串是否非空等推断业务完成度；持久化的 `LLMTask`、`Message` 与 `NavTreeNode` 才是事实来源。`workspace` store 负责事务和状态转换，`services/task-state.ts` 定义纯转换规则，`services/prompts.ts` 负责请求契约，`services/validation.ts` 负责响应契约，组件只发出事件并派生展示状态。
+
+| 所有者 | 持久事实 | 临时展示状态 | 不可替代的事实 |
+|---|---|---|---|
+| 任务编排 | `LLMTask`、输入 revision、Prompt、原始响应、校验错误 | API abort controller、重试计时器 | 任务状态、披露轮数和可否重试 |
+| 对话 | `Session`、user/assistant `Message`、`NavTreeNode` | SSE 增量文本、尚未提交的推荐词分支 | 已开始分支的 user Message 与 taskId |
+| 知识图谱 | Concept、关系、三类归属事实 | 当前展开集合、布局 simulation、悬停 | hierarchy 关系和 Concept status |
+| 维护 | 维护 `LLMTask` 的 `reason`、suggestions、应用记录 | 当前入口的关注对象 | 维护范围始终是整个 active 图谱 |
+
+`LLMTask.status` 只能由命名事件转换。数据库更新必须先按来源状态做条件更新；未取得转换资格时不得发起网络请求或覆盖响应。
+
+```mermaid
+stateDiagram-v2
+  [*] --> pending: create / retry
+  pending --> running: start
+  pending --> cancelled: cancel
+  pending --> stale: invalidate
+  running --> pending: continue_disclosure
+  running --> success: accept_validated_result
+  running --> needs_review: reject_validation
+  running --> failed: fail_transport
+  running --> cancelled: cancel
+  running --> stale: invalidate
+  needs_review --> pending: retry
+  needs_review --> success: accept_repaired_result
+  needs_review --> stale: invalidate
+  needs_review --> cancelled: cancel
+  failed --> pending: retry
+  stale --> pending: retry
+  cancelled --> pending: retry
+```
+
+任务事件的语义如下：`start` 只接受 `pending`；`continue_disclosure` 保存新的 Prompt、清空解析结果并回到 `pending`；`accept_validated_result` 和其业务写入在同一事务中完成；`reject_validation` 保留原始响应和修复 Prompt；`fail_transport` 不写结构化结果；`invalidate` 由输入 revision 或 Prompt 版本变化触发。`success` 是终态，不能由页面直接改回可执行状态。
+
+API 和 Prompt 粘贴使用同一 Prompt/校验器，但续轮责任不同。用户在任务中心点击“校验并应用”时，若响应产生 `continue_disclosure`：API 模式立即从新 Prompt 重新执行同一任务；Prompt 粘贴模式保持 `pending` 并要求用户复制更新后的 Prompt。任何一种模式都不得把“已要求披露但尚未完成”显示为成功或“无建议变更”。
+
+```mermaid
+sequenceDiagram
+  participant UI as 任务中心
+  participant Store as workspace store
+  participant API as Provider / 用户粘贴
+  UI->>Store: apply(response)
+  Store->>Store: parse + validate disclosure_requests
+  alt 需要进一步披露
+    Store->>Store: continue_disclosure(pending, nextPrompt)
+    alt API 模式
+      Store->>API: start(nextPrompt)
+    else Prompt 粘贴模式
+      Store-->>UI: 显示更新后的 Prompt 与 pending
+    end
+  else 最终有效结果
+    Store->>Store: 事务写业务事实 + success
+  else 无效结果
+    Store->>Store: 保存原始响应 + needs_review
+  end
+```
+
+对话采用“持久化问题先于流式预览，答案后原子完成”的模型。点击黄色推荐词只创建可关闭的内存草稿分支；提交后，事务创建 user Message、预留 assistant Message ID、conversation task 与对应 NavTreeNode。此时关闭资格由任务是否仍为未开始的草稿决定，不能依赖组件局部布尔值；一旦 task 或 user Message 已存在，分支不能关闭。SSE 内容只绑定该 taskId 的当前卡片，校验成功后在同一事务写 assistant Message、阅读片段、归属、导航节点和 `success`，随后清除预览。失败或待人工检查时保留问题和 task，绝不把预览当成回答落库。
+
+```mermaid
+sequenceDiagram
+  participant User
+  participant UI as 对话卡片
+  participant Store
+  participant API
+  User->>UI: 点击推荐词
+  UI->>UI: 创建可关闭草稿分支
+  User->>UI: 提交问题
+  UI->>Store: createFollowUpTask
+  Store->>Store: user Message + task + NavTreeNode
+  Store->>API: start(task)
+  API-->>UI: SSE preview(taskId)
+  API-->>Store: final JSON
+  Store->>Store: validate; 原子写 assistant/units/nav/success
+  Store-->>UI: 按 taskId 刷新当前卡片
+```
+
+输入输出 ID 范围必须在本地校验，不能由模型名称猜测代替。普通 Concept/对话响应的既有 `concept_ids` 只能引用当前 `DISCLOSURE_INDEX` 已披露的 active Concept，新增项只能通过同一响应中的 `client_ref`；对话 membership 只能写目标 Session、当前 planned user Message、当前 planned assistant Message，以及契约明确列出的同 Session 阅读片段。维护动作只能引用已展开 `content` 中的对象，不能由根目录的标题、统计或模型猜测引用。违反范围时整个结果进入 `needs_review`，不执行部分写入。
+
+导入任务的顺序固定为：原始 Session/Message 先落库，创建 `session_triage`；只有 triage 判为 `knowledge` 才可创建起始 Concept 提取，`discussion`/`procedure` 不创建该任务，`mixed` 仍按直接证据提取。维护不等同于单个主题整理：它先获取所有根主题的 title/summary 和直接子引用，再按 `pending_ref_ids` 批量披露，直到可审计地给出 `reason` 与 suggestions 或无变更结论。
+
+```mermaid
+sequenceDiagram
+  participant Import
+  participant Store
+  participant Triage
+  participant Concept
+  Import->>Store: persist Session + Messages
+  Store->>Triage: session_triage
+  alt knowledge
+    Triage->>Store: result
+    Store->>Concept: origin_concepts
+  else mixed
+    Triage->>Store: result
+    Store->>Concept: direct evidence extraction
+  else discussion / procedure
+    Triage->>Store: result; no origin task
+  end
+```
+
 ## 14. MVP 与完整交付范围
 
 本项目是程序设计实践课程的完整作品，也面向个人长期使用和后续推广。文档定义的功能全部属于本次交付范围。MVP 只表示第一版先跑通可用闭环。
