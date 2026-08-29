@@ -172,4 +172,47 @@ describe('full-graph maintenance entry', () => {
 
     expect(target.querySelector<HTMLTextAreaElement>('#task-response')?.value).toBe('')
   })
+
+  it.each([
+    ['pending', false],
+    ['running', false],
+    ['needs_review', true],
+  ] as const)('only shows apply action for API tasks that need review (%s)', async (status, showsApplyAction) => {
+    const target = document.createElement('div')
+    document.body.appendChild(target)
+    const pinia = createPinia()
+    const store = useWorkspaceStore(pinia)
+    store.init = async () => undefined
+    const now = '2026-08-29T00:00:00.000Z'
+    store.tasks = [{
+      id: `maintenance-api-${status}`,
+      type: 'maintenance',
+      mode: 'api',
+      promptVersion: 'test',
+      inputRevision: 'maintenance:state:full',
+      prompt: '{}',
+      status,
+      retryCount: 0,
+      response: status === 'needs_review' ? '{"suggestions":[]}' : undefined,
+      parsedResult: null,
+      createdAt: now,
+      updatedAt: now,
+    }] satisfies LLMTask[]
+
+    const app = createApp(App)
+    app.use(pinia)
+    mounted.push(app)
+    app.mount(target)
+    await nextTick()
+
+    ;[...target.querySelectorAll<HTMLButtonElement>('.nav-item')]
+      .find((button) => button.textContent?.includes('任务中心'))?.click()
+    await nextTick()
+    target.querySelector<HTMLButtonElement>('.task-row')!.click()
+    await nextTick()
+
+    const applyButtons = [...target.querySelectorAll<HTMLButtonElement>('.response-actions button')]
+      .filter((button) => button.textContent?.includes('校验并应用'))
+    expect(applyButtons).toHaveLength(showsApplyAction ? 1 : 0)
+  })
 })
