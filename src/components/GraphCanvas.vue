@@ -104,6 +104,8 @@ let paintFrame: number | null = null
 let renderedSize: { width: number; height: number } | null = null
 let draggingNodeId: string | null = null
 let dragStartPoint: { x: number; y: number } | null = null
+let dragCurrentPoint: { x: number; y: number } | null = null
+let dragPointerOffset: { x: number; y: number } | null = null
 let dragMoved = false
 let draggedDescendants = new Map<string, { x: number; y: number }>()
 let dragPinnedNodes = new Map<string, { x: number; y: number }>()
@@ -888,11 +890,33 @@ function render(): void {
       activateNode(event, node)
     })
 
+  const graphPointer = (sourceEvent: Event): { x: number; y: number } => {
+    const touchEvent = sourceEvent as TouchEvent
+    const pointerEvent: Event | Touch = 'touches' in sourceEvent
+      ? touchEvent.touches[0] ?? touchEvent.changedTouches[0] ?? sourceEvent
+      : sourceEvent
+    const [screenX, screenY] = d3.pointer(pointerEvent, element)
+    const [x, y] = d3.zoomTransform(element).invert([screenX, screenY])
+    return { x, y }
+  }
+  const paint = (): void => {
+    linkSelection
+      .attr('x1', (edge) => edgePoints(edge).x1)
+      .attr('y1', (edge) => edgePoints(edge).y1)
+      .attr('x2', (edge) => edgePoints(edge).x2)
+      .attr('y2', (edge) => edgePoints(edge).y2)
+    nodeSelection.attr('transform', (node) => `translate(${node.x ?? layoutWidth / 2},${node.y ?? height / 2})`)
+  }
+
   const drag = d3
     .drag<SVGGElement, GraphNode & d3.SimulationNodeDatum>()
     .on('start', (event, node) => {
+      event.sourceEvent.stopPropagation()
       draggingNodeId = node.id
-      dragStartPoint = { x: event.x, y: event.y }
+      const pointer = graphPointer(event.sourceEvent)
+      dragStartPoint = pointer
+      dragCurrentPoint = pointer
+      dragPointerOffset = { x: (node.x ?? pointer.x) - pointer.x, y: (node.y ?? pointer.y) - pointer.y }
       dragMoved = false
       draggedDescendants = new Map<string, { x: number; y: number }>()
       dragPinnedNodes = new Map<string, { x: number; y: number }>()
@@ -900,7 +924,7 @@ function render(): void {
       // Reheat the springs while dragging so connected nodes follow the
       // pointer instead of feeling pinned in place. Keep the target finite;
       // an unlimited alpha target makes dense imported graphs oscillate.
-      if (!event.active) simulation?.alphaTarget(0.18).restart()
+      if (!event.active) simulation?.alphaTarget(0.3).restart()
       node.fx = node.x
       node.fy = node.y
       if (node.type === 'concept') {
@@ -936,11 +960,17 @@ function render(): void {
       })
     })
     .on('drag', (event, node) => {
-      if (dragStartPoint && (Math.abs(event.x - dragStartPoint.x) > 4 || Math.abs(event.y - dragStartPoint.y) > 4)) dragMoved = true
-      node.fx = event.x
-      node.fy = event.y
-      const dx = dragStartPoint ? event.x - dragStartPoint.x : 0
-      const dy = dragStartPoint ? event.y - dragStartPoint.y : 0
+      const pointer = graphPointer(event.sourceEvent)
+      dragCurrentPoint = pointer
+      if (dragStartPoint && (Math.abs(pointer.x - dragStartPoint.x) > 4 || Math.abs(pointer.y - dragStartPoint.y) > 4)) dragMoved = true
+      const offset = dragPointerOffset ?? { x: 0, y: 0 }
+      const nextPosition = { x: pointer.x + offset.x, y: pointer.y + offset.y }
+      node.fx = nextPosition.x
+      node.fy = nextPosition.y
+      node.x = nextPosition.x
+      node.y = nextPosition.y
+      const dx = dragStartPoint ? pointer.x - dragStartPoint.x : 0
+      const dy = dragStartPoint ? pointer.y - dragStartPoint.y : 0
       draggedDescendants.forEach((position, childId) => {
         const child = nodeById.get(childId)
         if (!child || child.fixed) return
@@ -949,6 +979,7 @@ function render(): void {
         child.x = position.x + dx
         child.y = position.y + dy
       })
+      paint()
     })
     .on('end', (event, node) => {
       if (!event.active) {
@@ -956,10 +987,15 @@ function render(): void {
         // Give the revised links one short settling pass after the pointer is
         // released. This makes the elastic response visible without leaving
         // the simulation running indefinitely.
-        if (simulation && !props.reducedMotion) simulation.alpha(Math.max(simulation.alpha(), 0.14)).restart()
+        if (simulation && !props.reducedMotion) simulation.alpha(Math.max(simulation.alpha(), 0.2)).restart()
       }
-      node.fx = event.x
-      node.fy = event.y
+      const pointer = dragCurrentPoint ?? graphPointer(event.sourceEvent)
+      const offset = dragPointerOffset ?? { x: 0, y: 0 }
+      const finalPosition = { x: pointer.x + offset.x, y: pointer.y + offset.y }
+      node.fx = finalPosition.x
+      node.fy = finalPosition.y
+      node.x = finalPosition.x
+      node.y = finalPosition.y
       draggedDescendants.forEach((_position, childId) => {
         const child = nodeById.get(childId)
         if (!child || child.fixed) return
@@ -977,7 +1013,7 @@ function render(): void {
       dragPinnedNodes.clear()
       // Keep the in-memory seed in sync with the persisted layout immediately;
       // a disclosure render can happen before the next simulation tick.
-      nodePositions.set(node.id, { x: event.x, y: event.y })
+      nodePositions.set(node.id, finalPosition)
       if (dragMoved) {
         suppressClickNodeId = node.id
         if (suppressClickTimer != null) window.clearTimeout(suppressClickTimer)
@@ -987,10 +1023,12 @@ function render(): void {
         }, 600)
       }
       dragStartPoint = null
+      dragCurrentPoint = null
+      dragPointerOffset = null
       dragMoved = false
       draggingNodeId = null
       clearHighlight()
-      emit('layout-change', { nodeType: node.type, refId: node.refId, x: event.x, y: event.y, fixed: true })
+      emit('layout-change', { nodeType: node.type, refId: node.refId, x: finalPosition.x, y: finalPosition.y, fixed: true })
     })
   nodeSelection.call(drag)
 
@@ -1051,14 +1089,6 @@ function render(): void {
     }, 220)
   }
   let paintPending = false
-  const paint = (): void => {
-      linkSelection
-        .attr('x1', (edge) => edgePoints(edge).x1)
-        .attr('y1', (edge) => edgePoints(edge).y1)
-        .attr('x2', (edge) => edgePoints(edge).x2)
-        .attr('y2', (edge) => edgePoints(edge).y2)
-      nodeSelection.attr('transform', (node) => `translate(${node.x ?? layoutWidth / 2},${node.y ?? height / 2})`)
-  }
   // Paint the seeded positions before the first physics tick. Topology
   // updates can otherwise leave one rendered frame with an empty canvas.
   paint()
