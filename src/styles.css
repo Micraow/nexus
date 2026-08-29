@@ -768,7 +768,7 @@ body.fullscreen-active { overflow: hidden; }
 .conversation-mode .empty-state { color: var(--muted); }
 .conversation-mode .conversation-heading > .icon-button, .conversation-mode .conversation-header-actions .icon-button { width: 44px; height: 44px; }
 .conversation-mode .conversation-header-actions .button { min-height: 44px; }
-.conversation-minimap { position: relative; align-self: stretch; padding: 12px 8px; overflow: auto; background: transparent; border: 0; }
+.conversation-minimap { position: relative; align-self: stretch; padding: 12px 8px; overflow: visible; background: transparent; border: 0; }
 .conversation-minimap .minimap-heading { justify-content: center; margin-bottom: 12px; }
 .conversation-minimap .nav-tree { display: grid; justify-items: center; gap: 4px; padding: 4px 0 12px; overflow: visible; }
 .conversation-minimap .nav-tree-branch { width: 72px; }
