@@ -81,14 +81,21 @@ describe('direct origin Concept response validation', () => {
     expect(validateConceptName('超长知识主题'.repeat(5)).some((issue) => issue.message.includes('24'))).toBe(true)
   })
 
-  it('requires disclosed prefix parents instead of creating another root', () => {
+  it('accepts disclosed prefix names with hierarchy or explicit evidence', () => {
     const base = {
       concepts: [{ client_ref: 'new:1', name: 'CAVER 路径信息交换', summary: '交换路径状态。', aliases: [] }],
       memberships: [{ target_type: 'message', target_id: 'm1', concept_ids: ['new:1'] }],
     }
     const options = { targetIds: ['m1'], conceptIds: ['caver'], conceptCatalog: [{ id: 'caver', name: 'CAVER' }] }
     const missingParent = validateOriginConceptResult({ ...base, relations: [] }, options)
-    expect(missingParent.some((issue) => issue.message.includes('不能另建一级根'))).toBe(true)
+    expect(missingParent.some((issue) => issue.message.includes('confidence'))).toBe(true)
+
+    const evidenced = validateOriginConceptResult({
+      ...base,
+      concepts: [{ ...base.concepts[0], confidence: 0.96, reason: '该名称是资料中固定的单一机制名称。' }],
+      relations: [],
+    }, options)
+    expect(evidenced).toHaveLength(0)
 
     const valid = validateOriginConceptResult({ ...base, relations: [{ source: 'caver', target: 'new:1', type: 'hierarchy' }] }, options)
     expect(valid).toHaveLength(0)

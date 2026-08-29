@@ -301,6 +301,12 @@ export function validateOriginConceptResult(
       if (!name) {
         issues.push({ path: `${path}.name`, message: 'Concept 名称不能为空' })
       } else {
+        if (candidate.confidence != null && (typeof candidate.confidence !== 'number' || !Number.isFinite(candidate.confidence) || candidate.confidence < 0 || candidate.confidence > 1)) {
+          issues.push({ path: `${path}.confidence`, message: 'confidence 必须是 0 到 1 之间的数字' })
+        }
+        if (candidate.reason != null && (typeof candidate.reason !== 'string' || !candidate.reason.trim())) {
+          issues.push({ path: `${path}.reason`, message: 'reason 必须是非空字符串' })
+        }
         validateConceptName(name, {
           allowCompoundWithEvidence: options.allowCompoundWithEvidence,
           confidence: candidate.confidence,
@@ -397,9 +403,14 @@ export function validateOriginConceptResult(
     })
   }
   requiredPrefixParents.forEach((parentId, clientRef) => {
-    if (!hierarchyPairs.has(`${parentId}\u0000${clientRef}`)) {
-      issues.push({ path: 'relations', message: `${clientRef} 名称沿用了已披露父主题前缀，必须返回从 ${parentId} 到 ${clientRef} 的直接 hierarchy，不能另建一级根` })
-    }
+    if (hierarchyPairs.has(`${parentId}\u0000${clientRef}`)) return
+    const candidate = Array.isArray(rawConcepts)
+      ? rawConcepts.find((raw) => raw && typeof raw === 'object' && !Array.isArray(raw) && (raw as Record<string, unknown>).client_ref === clientRef) as Record<string, unknown> | undefined
+      : undefined
+    const confidence = candidate?.confidence
+    const reason = typeof candidate?.reason === 'string' ? candidate.reason.trim() : ''
+    if (typeof confidence === 'number' && Number.isFinite(confidence) && confidence >= 0 && confidence <= 1 && reason.length > 0) return
+    issues.push({ path: 'relations', message: `${clientRef} 名称沿用了已披露主题前缀；请返回直接 hierarchy，或提供 0～1 的 confidence 与非空 reason 说明为何前缀名称仍是单一主题` })
   })
 
   if (candidateRefs.size === 0 && !Array.isArray(result.memberships)) {

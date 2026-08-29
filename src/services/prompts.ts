@@ -541,7 +541,8 @@ ${disclosureAvailability(disclosure)}
 输出中的 memberships 是可选的细粒度归属声明；同一目标可以列出多个 Concept，必须使用 concept_ids 数组。只标记有直接证据的消息，不要为了覆盖全部消息、凑满数量或重复同一主题而逐条复制 membership。只能引用 DISCLOSURE_INDEX 中已经出现的 Concept refID；新提取的 Concept 由 concepts 数组定义，应用会按本 KnowledgeUnit 的范围建立多对多关联。如果全部复用现有 Concept，concepts 可以返回空数组，但 concept_ids 不能同时为空。
 
 ${CONCEPT_NAME_FINAL_GATE}
- 只返回 JSON：{"concepts":[{"name":"...","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"concept_ids":["已列出的 Concept refID"],"memberships":[{"target_type":"unit|message|session","target_id":"原始 ID","concept_ids":["Concept refID", "另一个 Concept refID"]}],"relations":[{"source":"直接父 Concept 名称或 refID","target":"直接子 Concept 名称或 refID","type":"hierarchy","status":"proposed"}],"disclosure_requests":[]}`)
+ 固定名称 one-shot 示例：{"concepts":[{"client_ref":"new:1","name":"喜羊羊与灰太狼","summary":"一部完整动画作品的正式名称。","aliases":[],"confidence":0.99,"reason":"这是不可拆分的正式作品名，整体指向同一部动画。"}],"concept_ids":[],"memberships":[{"target_type":"message","target_id":"原始消息 ID","concept_ids":["new:1"]}],"relations":[],"disclosure_requests":[]}
+只返回 JSON：{"concepts":[{"name":"...","summary":"不超过 120 个中文字符的主题摘要","aliases":[],"confidence":0.0,"reason":"仅在名称含连接分隔符且确属固定单一名称时填写"}],"concept_ids":["已列出的 Concept refID"],"memberships":[{"target_type":"unit|message|session","target_id":"原始 ID","concept_ids":["Concept refID", "另一个 Concept refID"]}],"relations":[{"source":"直接父 Concept 名称或 refID","target":"直接子 Concept 名称或 refID","type":"hierarchy","status":"proposed"}],"disclosure_requests":[]}`)
 }
 
 /** Session-wide Concept extraction uses the same contract as unit extraction. */
@@ -592,7 +593,8 @@ Concept 与归属：
 - 关系端点使用已披露的 Concept refID 或本次 concepts 的 client_ref。普通提取只能返回 hierarchy 建议，status 只能省略或为 proposed，绝不能写 confirmed/rejected；应用会在本地去重、做 DAG 环检测，用户确认后才会改变状态。不要为了把所有 Concept 连起来而补关系。
 
 ${CONCEPT_NAME_FINAL_GATE}
-只返回 JSON：{"concepts":[{"client_ref":"new:1","name":"...","summary":"不超过 120 个中文字符的主题摘要","aliases":[]}],"memberships":[{"target_type":"message","target_id":"上面列出的 Message ID","concept_ids":["已披露的 Concept refID 或 new:1","另一个 Concept refID 或 client_ref"]}],"relations":[{"source":"Concept refID 或 client_ref","target":"Concept refID 或 client_ref","type":"hierarchy","status":"proposed"}],"disclosure_requests":[]}`)
+固定名称 one-shot 示例（必须一次性提供证据字段）：{"concepts":[{"client_ref":"new:1","name":"喜羊羊与灰太狼","summary":"一部完整动画作品的正式名称。","aliases":[],"confidence":0.99,"reason":"这是不可拆分的正式作品名，整体指向同一部动画。"}],"memberships":[{"target_type":"message","target_id":"上面列出的 Message ID","concept_ids":["new:1"]}],"relations":[],"disclosure_requests":[]}
+只返回 JSON：{"concepts":[{"client_ref":"new:1","name":"...","summary":"不超过 120 个中文字符的主题摘要","aliases":[],"confidence":0.0,"reason":"仅在名称含连接分隔符且确属固定单一名称时填写"}],"memberships":[{"target_type":"message","target_id":"上面列出的 Message ID","concept_ids":["已披露的 Concept refID 或 new:1","另一个 Concept refID 或 client_ref"]}],"relations":[{"source":"Concept refID 或 client_ref","target":"Concept refID 或 client_ref","type":"hierarchy","status":"proposed"}],"disclosure_requests":[]}`)
 }
 
 export function buildRepairPrompt(originalResponse: string, errors: string[], disclosure?: DisclosureContext, originalTaskPrompt?: string): string {
@@ -604,7 +606,7 @@ export function buildRepairPrompt(originalResponse: string, errors: string[], di
   const originalTask = beginIndex >= 0 && endIndex > beginIndex
     ? originalTaskPrompt!.slice(beginIndex + taskBegin.length, endIndex).trim()
     : originalTaskPrompt?.trim() ?? ''
-  return buildHarnessPrompt(`请修正下面 JSON 的结构错误。只修改导致校验失败的字段，不改变其他有效内容，不添加解释文字。不得编造、缩短或截断任何 ID。
+  return buildHarnessPrompt(`请修正下面 JSON 的结构错误。保留所有仍然有效的字段、ID、证据和层级；允许为修复复合主题而拆分或新增 concepts，并同步调整 memberships 与 hierarchy relations。不得静默删除有效 Concept、关系或归属，不添加解释文字，不得编造、缩短或截断任何 ID。
 
 ${originalTask ? `原任务规格（其中的字段约束、目录和 ID 白名单继续完整生效）：\n${originalTask}\n` : ''}
 
@@ -613,7 +615,7 @@ ${originalTask ? `原任务规格（其中的字段约束、目录和 ID 白名�
 ${originalTask ? '' : disclosureText}
 如果原始响应包含 memberships 或 concept_ids，请保留其中合法的多归属列表；不要把多个 Concept 压缩为单个 concept_id。
 如果校验错误指出“主题已在当前目录中，必须复用 Concept ID”，这是可审计的确定性修复：从 concepts 数组移除该重复对象，并把其 client_ref 在 concept_ids、memberships.concept_ids、relations.source/target 中逐一替换为错误消息中的真实 Concept ID；不得创建同名副本，也不得把相似但不完全匹配的主题强行合并。可在最终 JSON 外记录 nexus_reuse 审计字段，但不得改变其他有效字段。
-如果校验错误指出 Concept 名称必须表示单一主题，必须把包含多个独立实体的对象拆成多个独立 concepts，并同步拆分 memberships 与 hierarchy；不能只删除“与/和/及/、/”后继续保留复合标题。此硬门禁不因技术术语、比较场景或固定搭配而豁免。
+如果校验错误指出 Concept 名称必须表示单一主题，必须把包含多个独立实体的对象拆成多个独立 concepts，并同步拆分 memberships 与 hierarchy；不能只删除“与/和/及/、/”后继续保留复合标题。若确属不可拆分正式固定名称（例如“喜羊羊与灰太狼”），可以保留原 name，但必须补充 0～1 的 confidence 与非空 reason；普通并列或比较仍须拆分。拆分时允许新增 client_ref（new:1 到原任务上限）并把独立主题挂到合适父 Concept 下。
 只返回修正后的 JSON。`)
 }
 
