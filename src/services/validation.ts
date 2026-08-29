@@ -20,7 +20,7 @@ export function validateConceptName(value: unknown): ValidationIssue[] {
   const name = value.trim()
   const issues: ValidationIssue[] = []
   if (Array.from(name).length > MAX_CONCEPT_NAME_LENGTH) issues.push({ path: 'name', message: `Concept 名称不能超过 ${MAX_CONCEPT_NAME_LENGTH} 个字符` })
-  // if (/[、/／]/u.test(name) || COMPOUND_CONCEPT_CONNECTOR.test(name)) issues.push({ path: 'name', message: 'Concept 名称必须表示单一主题，不能用“与/和/及/、/”拼接多个概念' })
+  if (/[、/／]/u.test(name) || COMPOUND_CONCEPT_CONNECTOR.test(name)) issues.push({ path: 'name', message: 'Concept 名称必须表示单一主题，不能用“与/和/及/、/”拼接多个概念' })
   return issues
 }
 
