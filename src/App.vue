@@ -715,12 +715,6 @@ function setView(view: ViewName): void {
   const viewChanged = view !== activeView.value
   if (view === 'overview' && activeView.value === 'overview') startWelcomeTypewriter()
   activeView.value = view
-  // Imports and background API tasks may finish between navigation events;
-  // refresh the reactive projections when entering another module so users
-  // never need to restart the desktop shell to see new graph facts.
-  if (viewChanged) {
-    try { store.refreshFromDb() } catch { /* initialization may still be in progress */ }
-  }
   if (viewChanged) {
     // Detail and maintenance panels belong to the module that opened them.
     // Clear both when navigating so a stale floating card cannot cover the
