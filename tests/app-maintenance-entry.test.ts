@@ -22,7 +22,7 @@ afterEach(() => {
 })
 
 describe('full-graph maintenance entry', () => {
-  it('is discoverable on a knowledge page and disappears with its panel on unrelated pages', async () => {
+  it('uses one global entry and closes the panel when changing modules', async () => {
     const target = document.createElement('div')
     document.body.appendChild(target)
     const pinia = createPinia()
@@ -38,8 +38,8 @@ describe('full-graph maintenance entry', () => {
 
     navButton('知识主题')!.click()
     await nextTick()
-    const entry = target.querySelector<HTMLButtonElement>('.concepts-view .maintenance-entry-button')
-    expect(entry?.textContent).toContain('全图知识维护')
+    const entry = target.querySelector<HTMLButtonElement>('.topbar .maintenance-entry-button')
+    expect(entry?.textContent).toContain('全图维护')
 
     entry!.click()
     await nextTick()
@@ -48,7 +48,7 @@ describe('full-graph maintenance entry', () => {
 
     navButton('设置')!.click()
     await nextTick()
-    expect(target.querySelector('.maintenance-entry-button')).toBeNull()
+    expect(target.querySelector('.topbar .maintenance-entry-button')).not.toBeNull()
     expect(target.querySelector('.maintenance-panel')).toBeNull()
   })
 
@@ -123,7 +123,7 @@ describe('full-graph maintenance entry', () => {
 
     ;[...target.querySelectorAll<HTMLButtonElement>('.nav-item')].find((button) => button.textContent?.includes('知识主题'))?.click()
     await nextTick()
-    target.querySelector<HTMLButtonElement>('.concepts-view .maintenance-entry-button')!.click()
+    target.querySelector<HTMLButtonElement>('.topbar .maintenance-entry-button')!.click()
     await nextTick()
     target.querySelector<HTMLButtonElement>('.maintenance-global-scope .primary-button')!.click()
     await nextTick()
