@@ -356,7 +356,14 @@ const pendingConversationBranchCanClose = computed(() => canCloseConversationBra
   pendingConversationBranch.value,
   store.tasks,
   activeConversationMessages.value,
-) && !activeConversationUnfinishedTask.value)
+) && !pendingConversationBranch.value?.started
+  && !pendingConversationBranch.value?.taskId
+  && !activeConversationUnfinishedTask.value
+  && !activeConversationMessages.value.some((message) => {
+    const metadata = parseMetadata(message.metadata)
+    return metadata.navNodeId === pendingConversationBranch.value?.id
+      || metadata.taskId === pendingConversationBranch.value?.taskId
+  }))
 const activeConversationTask = computed(() => activeConversationSessionId.value
   ? conversationTaskForNode(store.tasks, store.messages, activeConversationSessionId.value,
       pendingConversationBranch.value?.id === selectedNavNodeId.value
