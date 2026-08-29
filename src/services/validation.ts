@@ -5,12 +5,22 @@ import { normalizeText } from '@/utils/id'
 
 export const MAX_CONCEPT_NAME_LENGTH = 24
 
+/**
+ * Chinese conjunctions are separators only when they sit between two
+ * non-whitespace terms. This keeps legitimate single technical terms such as
+ * "和声编码" or "与门逻辑" from being rejected while still rejecting
+ * explicit compound labels like "拥塞控制与流量整形". List punctuation and
+ * slash separators remain unconditionally invalid because they have no
+ * single-topic interpretation in a Concept title.
+ */
+const COMPOUND_CONCEPT_CONNECTOR = /\S\s*(?:与|和|及)\s*\S/u
+
 export function validateConceptName(value: unknown): ValidationIssue[] {
   if (typeof value !== 'string' || !value.trim()) return [{ path: 'name', message: 'Concept 名称不能为空' }]
   const name = value.trim()
   const issues: ValidationIssue[] = []
   if (Array.from(name).length > MAX_CONCEPT_NAME_LENGTH) issues.push({ path: 'name', message: `Concept 名称不能超过 ${MAX_CONCEPT_NAME_LENGTH} 个字符` })
-  if (/[、/／]|(?:与|和|及)/u.test(name)) issues.push({ path: 'name', message: 'Concept 名称必须表示单一主题，不能用“与/和/及/、/”拼接多个概念' })
+  if (/[、/／]/u.test(name) || COMPOUND_CONCEPT_CONNECTOR.test(name)) issues.push({ path: 'name', message: 'Concept 名称必须表示单一主题，不能用“与/和/及/、/”拼接多个概念' })
   return issues
 }
 

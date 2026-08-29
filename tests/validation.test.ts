@@ -73,6 +73,9 @@ describe('direct origin Concept response validation', () => {
   it('rejects long or compound Concept titles', () => {
     expect(validateConceptName('DRE 拥塞测量')).toHaveLength(0)
     expect(validateConceptName('CAVER 与 CONGA、MP-RDMA 等负载均衡方案对比').some((issue) => issue.message.includes('单一主题'))).toBe(true)
+    expect(validateConceptName('和声编码')).toHaveLength(0)
+    expect(validateConceptName('与门逻辑')).toHaveLength(0)
+    expect(validateConceptName('拥塞控制 与 流量整形').some((issue) => issue.message.includes('单一主题'))).toBe(true)
     expect(validateConceptName('超长知识主题'.repeat(5)).some((issue) => issue.message.includes('24'))).toBe(true)
   })
 
