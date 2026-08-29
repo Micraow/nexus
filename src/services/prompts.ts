@@ -672,8 +672,9 @@ ${disclosureAvailability(input.disclosure)}
 - 顶层 concepts 用于本轮回答中新识别出的稳定知识主题；最多 ${conceptLimit} 项，每个候选必须提供本响应唯一的 client_ref（new:1 到 new:${conceptLimit}）。每个 Concept 名称最长 24 个字符（按 Unicode 字符计数），必须像教材章节的大标题或小标题，是单一、凝练、可区分的主题词组（通常 1～6 个关键词）；标题中禁止用“与/和/及/、/”拼接多个主题，不要把多个主题合并成“甲与乙关系”“甲/乙对比”“甲方案谱系”等复合标题，必须拆成同级独立概念或父子hierarchy membership，多个独立概念必须分别返回。只是值得继续探索、证据尚不足的黄色建议不要创建为 Concept。
 ${CONCEPT_NAME_QUALITY_CONTRACT}
 - 顶层 memberships 只能使用上面给出的 Session ID、用户 Message ID 或 assistant Message ID，target_type 只能是 session 或 message。引用已有主题时使用 DISCLOSURE_INDEX 已列出的 Concept refID；引用本轮新主题时使用 client_ref。
+- 本轮 memberships.target_id 的唯一白名单如下（只能逐字复制，不能改写、截断或从此前对话/来源上下文取值）：{"session":"${input.targetSessionId || '由调用方创建'}","user_message":"${input.targetMessageId || '由调用方创建'}","assistant_message":"${input.targetAssistantMessageId || '由调用方创建'}"}。除这三个值外一律不要生成 membership；尤其禁止引用历史 Message、来源 Session/Message、KnowledgeUnit、导航节点或自行猜测的 ID。
 - 每个新主题必须至少归属于用户或 assistant Message；只标记有直接证据的消息，不要为了覆盖全部消息、凑满数量或重复同一主题而逐条复制 membership。只有主题确实概括整个会话时才同时归属于 Session。不要把 Session 归属隐式复制给所有 Message。
-- units 表示本轮回答所属的阅读片段。当前 Session 没有片段时必须创建一个；已有片段时优先填写已有 unit_id 复用，只有证据边界发生变化才新建。每轮回答至少复用一个已有片段或创建一个新片段。复用时 unit_id 必须逐字引用上方“当前 Session 可复用的阅读片段”中的真实 ID，title/summary 可省略；新建时必须省略 unit_id，严禁自行生成、猜测或使用占位 ID，并且 title/summary 必须填写。units[].concept_ids 只能引用已披露的已有主题；units[].concepts 可以定义只属于该阅读片段的新主题，但不能替代 Message/Session 的直接证据归属。
+- units 表示本轮回答所属的阅读片段。当前 Session 没有片段时必须创建一个；已有片段时优先填写已有 unit_id 复用，只有证据边界发生变化才新建。每轮回答至少复用一个已有片段或创建一个新片段。复用时 unit_id 必须逐字引用上方“当前 Session 可复用的阅读片段”中的真实 ID，title/summary 可省略；新建时必须省略 unit_id，严禁自行生成、猜测或使用占位 ID，并且 title/summary 必须填写。units[].concept_ids 只能引用 DISCLOSURE_INDEX 中以 refID 字段逐字出现的已有主题 ID；仅在上下文摘要、历史回答或主题名称中出现但没有对应 refID 的主题必须留空，不能根据名称或旧回答猜 ID。units[].concepts 可以定义只属于该阅读片段的新主题，但不能替代 Message/Session 的直接证据归属。
 - 对每个新 Concept，优先在 DISCLOSURE_INDEX 中找语义范围最窄的已有直接父主题，并检查本轮 concepts 是否存在更合适的直接父主题。目录名称或别名完全匹配时必须复用已有 refID；候选标题沿用已披露主题前缀时应去掉重复前缀，并把已有主题作为 hierarchy 父级。目录层级不足时请求展开；找到合适父主题必须通过 relations 返回 hierarchy，只有确无合适上位主题才允许暂作根。不要把本轮 Concept 默认并列。
 - relations 只表达 hierarchy。source 是直接父主题，target 是直接子主题；只有 target 的语义范围严格包含于 source，或 source 是明确的类别而 target 是其成员时才可建立。支持/依赖/实现/使用/比较/同会话出现不是 hierarchy；方向不确定时省略关系。related 不由对话模型返回，而由软件根据共享 Session/Message 自动计算。关系端点只能是已披露 Concept refID 或本轮 client_ref；status 只能省略或为 proposed，绝不能写 confirmed/rejected。不要为了连接所有 Concept 编造 hierarchy。hierarchy 必须像思维导图一样表达清晰、可导航的直接上下位结构。
 - 推荐词选择与主题层级保持同样的粒度：使用类似教材章节大标题/小标题的短词组；回答中出现多个清晰的概念词时可以分别标记它们，但不要把整句或多个概念拼成一个推荐词。
@@ -740,6 +741,7 @@ export function buildMaintenancePrompt(input: {
 - membership_relink：修改 Session、Message 或 KnowledgeUnit 的直接主题归属，参数 target_type、target_id、concept_ids、replace；replace=true 替换，false 追加。消息归属同步兼容 metadata.concept_ids。
 - unit_revision：编辑阅读片段，参数 unit_id、title、summary，至少提供一个字段。
 - relation、archive_concept 仍作为兼容别名；机器目录中的 deprecated=true 表示新任务应优先使用对应的 canonical 动作。所有未知动作、未知字段组合和不存在的 ID 必须拒绝。
+- ID 白名单硬门禁：除非某个 ID 已在 DISCLOSURE_INDEX 的 expansion.content 结构化 JSON 中逐字出现，否则不能把它放进任何动作参数。roots/children 的导航 refID、全图统计数字、用户附加关注范围、标题/摘要文本以及模型记忆都不能授权写入；发现缺少实体 ID 时必须先请求对应 refID 的披露，不能猜测或复用历史任务 ID。
 
   机器可读动作目录（字段类型中的 ? 表示可选；每次工具调用或每条 suggestion 必须额外包含非空 reason）。目录条目同时提供 MCP 兼容的 name、description、inputSchema，以及便于旧客户端读取的 input_schema；服务端必须以 inputSchema 的 additionalProperties=false 执行白名单校验：
 ${formatMaintenanceActionApi()}
