@@ -803,9 +803,9 @@ body.fullscreen-active { overflow: hidden; }
 /* The in-conversation navigator uses one coordinate system for both circles
    and edges. This avoids the accumulated offsets produced by recursive DOM
    borders, especially once one parent has several children. */
-.conversation-tree-map { position: relative; width: max-content; margin: 0 auto; }
-.conversation-tree-svg { display: block; overflow: visible; }
-.conversation-tree-edge { fill: none; stroke: #aebbc4; stroke-width: 1.5; stroke-linecap: round; vector-effect: non-scaling-stroke; transition: stroke var(--motion-fast), stroke-width var(--motion-fast), opacity var(--motion-fast); }
+.conversation-tree-map { position: relative; z-index: 2; width: max-content; margin: 0 auto; overflow: visible; }
+.conversation-tree-svg { display: block; overflow: visible; shape-rendering: geometricPrecision; }
+.conversation-tree-edge { fill: none; stroke: #aebbc4; stroke-width: 1.7; stroke-linecap: round; vector-effect: non-scaling-stroke; transition: stroke var(--motion-fast), stroke-width var(--motion-fast), opacity var(--motion-fast); }
 .conversation-tree-edge.is-path { stroke: var(--primary); stroke-width: 3; }
 .conversation-tree-node { cursor: pointer; outline: none; }
 .conversation-tree-node-halo { fill: transparent; stroke: transparent; stroke-width: 2; transition: fill var(--motion-fast), stroke var(--motion-fast); }
@@ -817,7 +817,7 @@ body.fullscreen-active { overflow: hidden; }
 .conversation-tree-node:hover .conversation-tree-node-halo, .conversation-tree-node:focus-visible .conversation-tree-node-halo { fill: color-mix(in srgb, var(--primary) 10%, transparent); stroke: color-mix(in srgb, var(--primary) 35%, transparent); }
 .conversation-tree-node:focus-visible .conversation-tree-node-circle { stroke-width: 3; }
 .conversation-tree-map, .conversation-tree-svg { overflow: visible; }
-.conversation-tree-tooltip { position: absolute; z-index: 120; width: min(360px, calc(100vw - 72px)); max-width: min(420px, calc(100vw - 72px)); padding: 6px 9px; overflow-wrap: anywhere; color: var(--text); background: #fff; border: 1px solid var(--line-strong); border-radius: 6px; box-shadow: var(--shadow-md); font-size: calc(11px * var(--app-font-scale)); font-weight: 650; line-height: 1.4; pointer-events: none; transform: translateY(-50%); white-space: normal; }
+.conversation-tree-tooltip { position: absolute; z-index: 120; width: max-content; min-width: 140px; max-width: min(420px, calc(100vw - 32px)); box-sizing: border-box; padding: 6px 9px; overflow-wrap: break-word; word-break: normal; color: var(--text); background: #fff; border: 1px solid var(--line-strong); border-radius: 6px; box-shadow: var(--shadow-md); font-size: calc(11px * var(--app-font-scale)); font-weight: 650; line-height: 1.4; pointer-events: none; transform: translateY(-50%); white-space: normal; writing-mode: horizontal-tb; text-orientation: mixed; }
 .conversation-tree-tooltip.place-left { transform: translate(-100%, -50%); }
 .add-inline .search-select { flex: 1; }
 

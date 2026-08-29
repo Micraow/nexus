@@ -240,6 +240,33 @@ describe('GraphCanvas progressive disclosure', () => {
     expect(target.querySelector('[data-edge-id="edge:stale"]')).toBeNull()
   })
 
+  it('seeds a promoted root from the authoritative edges, ignoring stale parent metadata', async () => {
+    const snapshot: GraphSnapshot = {
+      revision: 62,
+      nodes: [
+        { id: 'concept:parent', type: 'concept', refId: 'parent', label: '旧父', degree: 1, unitCount: 0, parentIds: [], hasChildren: true, x: 120, y: 140 },
+        // A stale worker response may keep the removed parent reference for a
+        // frame after the local promotion has already completed.
+        { id: 'concept:promoted', type: 'concept', refId: 'promoted', label: '已提升', degree: 1, unitCount: 0, parentIds: ['parent'], x: 180, y: 140 },
+        { id: 'concept:grandchild', type: 'concept', refId: 'grandchild', label: '后代', degree: 1, unitCount: 0, parentIds: ['promoted'] },
+      ],
+      edges: [
+        { id: 'edge:stale-parent', source: 'concept:parent', target: 'concept:promoted', type: 'hierarchy', weight: 1, status: 'confirmed' },
+        { id: 'edge:child', source: 'concept:promoted', target: 'concept:grandchild', type: 'hierarchy', weight: 1, status: 'confirmed' },
+      ],
+    }
+    const { target } = mountReactiveSnapshot(snapshot, {
+      expandedConceptIds: [],
+      // The parent edge has just been deleted by the promotion action. The
+      // remaining child edge makes the promoted Concept a visible root.
+      hierarchyRelations: [{ parentConceptId: 'promoted', childConceptId: 'grandchild', relationType: 'hierarchy', status: 'confirmed' }],
+    })
+    await nextTick()
+
+    expect([...target.querySelectorAll<SVGGElement>('.graph-node')].map((node) => node.dataset.refId).sort()).toEqual(['parent', 'promoted'])
+    expect(target.querySelector('[data-ref-id="promoted"]')?.getAttribute('data-expanded')).toBe('false')
+  })
+
   it('shows Reading Unit association links only while an endpoint node is hovered', async () => {
     const target = mountSnapshot({
       revision: 7,
@@ -285,6 +312,23 @@ describe('GraphCanvas progressive disclosure', () => {
     const leafRadius = Number(target.querySelector<SVGCircleElement>('[data-ref-id="leaf"] circle')?.getAttribute('r'))
     expect(parentRadius).toBeGreaterThan(leafRadius)
     expect(leafRadius).toBe(16)
+  })
+
+  it('derives a visible parent size from hierarchy edges when counts are omitted', async () => {
+    const childIds = ['one', 'two', 'three']
+    const target = mountSnapshot({
+      revision: 81,
+      nodes: [
+        { id: 'concept:parent', type: 'concept', refId: 'parent', label: '父', degree: 0, unitCount: 0 },
+        ...childIds.map((id) => ({ id: `concept:${id}`, type: 'concept' as const, refId: id, label: id, degree: 0, unitCount: 0 })),
+      ],
+      edges: childIds.map((id) => ({ id: `edge:${id}`, source: 'concept:parent', target: `concept:${id}`, type: 'hierarchy' as const, weight: 1, status: 'confirmed' as const })),
+    }, {}, { expandedConceptIds: ['parent'] })
+    await nextTick()
+
+    const parentRadius = Number(target.querySelector<SVGCircleElement>('[data-ref-id="parent"] circle')?.getAttribute('r'))
+    const leafRadius = Number(target.querySelector<SVGCircleElement>('[data-ref-id="one"] circle')?.getAttribute('r'))
+    expect(parentRadius).toBeGreaterThan(leafRadius)
   })
 
   it('makes stronger semantic links darker and slightly thicker', async () => {

@@ -122,7 +122,10 @@ const inspectedNode = computed(() => layout.value.nodes.find((item) => item.node
 const inspectedNodeTooltip = computed(() => {
   const item = inspectedNode.value
   if (!item) return null
-  const placeLeft = item.x > layout.value.width / 2
+  // Keep the label on the side with the most horizontal room. The old
+  // midpoint check put a long label against the viewport edge, where the
+  // minimap's narrow grid column made it appear vertically truncated.
+  const placeLeft = item.x > layout.value.width * 0.58
   return {
     item,
     placement: placeLeft ? 'left' : 'right',

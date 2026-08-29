@@ -309,11 +309,13 @@ function conceptHasChildren(node: GraphNode, edges: GraphEdge[]): boolean {
   return edges.some((edge) => edge.type === 'hierarchy' && (edge.source === conceptNodeId || edge.source === conceptId))
 }
 
-function nodeRadius(node: GraphNode): number {
+function nodeRadius(node: GraphNode, fallbackChildCount = 0): number {
+  const childCount = node.childCount ?? fallbackChildCount
+  const descendantCount = node.descendantCount ?? childCount
   return node.type === 'concept'
     // Hierarchy counts stay stable while disclosure moves evidence and
     // co-occurrence edges between a hidden descendant and its visible parent.
-    ? Math.min(42, 16 + Math.log2((node.descendantCount ?? node.childCount ?? 0) + 1) * 5.5 + Math.log2((node.childCount ?? 0) + 1) * 2)
+    ? Math.min(42, 16 + Math.log2(descendantCount + 1) * 5.5 + Math.log2(childCount + 1) * 2)
     : node.type === 'unit' ? 11 : 7
 }
 
@@ -356,6 +358,13 @@ function scheduleResizeRender(): void {
 
 function render(): void {
   if (!svg.value || !host.value) return
+  // A cache miss while the graph worker is preparing the requested disclosure
+  // used to replace a healthy graph with an empty SVG for one render. Keep the
+  // previous projection in place until that response arrives. A truly empty
+  // graph still renders normally because it has no previously visible nodes.
+  if (props.snapshot.nodes.length === 0
+    && lastVisibleNodeIds.size > 0
+    && (props.hierarchyRelations?.length ?? 0) > 0) return
   draggingNodeId = null
   const generation = ++renderGeneration
   // A repeated render must first retire all work owned by the previous DOM.
@@ -469,8 +478,15 @@ function render(): void {
   const hierarchyChildNodeIds = new Set(snapshot.edges
     .filter((edge) => edge.type === 'hierarchy')
     .map((edge) => edge.target))
+  // When the relation list is authoritative, stale parentIds on a Worker
+  // snapshot must not hide a Concept that was just promoted to a root. Legacy
+  // snapshots without that list still use their embedded parent metadata.
+  if (props.hierarchyRelations === undefined) {
+    snapshot.nodes
+      .filter((node) => node.type === 'concept' && (node.parentIds?.length || node.parentId))
+      .forEach((node) => hierarchyChildNodeIds.add(node.id))
+  }
   const rootConcepts = snapshot.nodes.filter((node) => node.type === 'concept'
-    && !(node.parentIds?.length || node.parentId)
     && !hierarchyChildNodeIds.has(node.id))
   const rootCount = rootConcepts.length
   rootConcepts.forEach((node, rootIndex) => {
@@ -587,6 +603,15 @@ function render(): void {
     .attr('fill', '#2c6e9e')
 
   const nodeById = new Map(nodes.map((node) => [node.id, node]))
+  // Older Worker payloads omitted childCount/descendantCount. Derive the
+  // direct hierarchy count from the visible projection so node size remains a
+  // useful scope cue even while a stale response is being replaced.
+  const hierarchyChildCountByNode = new Map<string, number>()
+  links.forEach((edge) => {
+    if (edge.type !== 'hierarchy') return
+    hierarchyChildCountByNode.set(edge.source, (hierarchyChildCountByNode.get(edge.source) ?? 0) + 1)
+  })
+  const radiusForNode = (node: GraphNode): number => nodeRadius(node, hierarchyChildCountByNode.get(node.id) ?? 0)
   const edgePoints = (edge: GraphEdge): { x1: number; y1: number; x2: number; y2: number } => {
     const source = (typeof edge.source === 'string' ? nodeById.get(edge.source) : edge.source as unknown as GraphNode & d3.SimulationNodeDatum)
     const target = (typeof edge.target === 'string' ? nodeById.get(edge.target) : edge.target as unknown as GraphNode & d3.SimulationNodeDatum)
@@ -597,8 +622,8 @@ function render(): void {
     const dx = tx - sx
     const dy = ty - sy
     const distance = Math.hypot(dx, dy) || 1
-    const sourceRadius = source ? nodeRadius(source) + 2 : 0
-    const targetRadius = target ? nodeRadius(target) + 2 : 0
+    const sourceRadius = source ? radiusForNode(source) + 2 : 0
+    const targetRadius = target ? radiusForNode(target) + 2 : 0
     return {
       x1: sx + (dx / distance) * sourceRadius,
       y1: sy + (dy / distance) * sourceRadius,
@@ -624,12 +649,12 @@ function render(): void {
       group
         .append('circle')
         .attr('class', 'graph-node-shape')
-        .attr('r', nodeRadius)
+        .attr('r', radiusForNode)
         .attr('fill', (node) => palette[node.type])
       group
         .append('text')
         .attr('class', (node) => `graph-node-label graph-node-label-${node.type}`)
-        .attr('dy', (node) => (node.type === 'concept' ? nodeRadius(node) + 15 : nodeRadius(node) + 17))
+        .attr('dy', (node) => (node.type === 'concept' ? radiusForNode(node) + 15 : radiusForNode(node) + 17))
         .text((node) => node.label)
       group
         .append('title')
@@ -650,10 +675,10 @@ function render(): void {
     })
     .classed('is-expandable', (node) => node.type === 'concept' && conceptHasChildren(node, links))
   nodeSelection.select<SVGCircleElement>('.graph-node-shape')
-    .attr('r', nodeRadius)
+    .attr('r', radiusForNode)
     .attr('fill', (node) => palette[node.type])
   nodeSelection.select<SVGTextElement>('.graph-node-label')
-    .attr('dy', (node) => (node.type === 'concept' ? nodeRadius(node) + 15 : nodeRadius(node) + 17))
+    .attr('dy', (node) => (node.type === 'concept' ? radiusForNode(node) + 15 : radiusForNode(node) + 17))
     .text((node) => cleanGraphText(node.label) || node.label)
   nodeSelection.classed('is-selected', (node) => node.type === 'unit' && props.selectedUnitIds.includes(node.refId))
 
