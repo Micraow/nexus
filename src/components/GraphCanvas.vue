@@ -497,20 +497,18 @@ function render(): void {
   // layout because deterministic seeds were already painted synchronously.
   const hasPreviousLayout = previousVisibleNodeIds.size > 0
   const seedPositions = new Map(nodePositions)
-  // A newly disclosed child may carry a stale persisted coordinate from the
-  // full-graph layout. Ignore that coordinate and reseed it around its now
-  // visible parent; otherwise the first expansion renders a large jump before
-  // the force simulation can correct it.
-  if (hasPreviousLayout) {
-    snapshot.nodes.forEach((node) => {
-      if (!previousVisibleNodeIds.has(node.id) && anchorByNode.has(node.id)) seedPositions.delete(node.id)
-    })
-  }
   snapshot.nodes.forEach((node) => {
     if (!seedPositions.has(node.id) && node.x != null && node.y != null) {
       seedPositions.set(node.id, { x: node.x, y: node.y })
     }
   })
+  // The snapshot coordinate pass above intentionally supports legacy nodes,
+  // but must not restore a stale coordinate for a child being disclosed now.
+  if (hasPreviousLayout) {
+    snapshot.nodes.forEach((node) => {
+      if (!previousVisibleNodeIds.has(node.id) && anchorByNode.has(node.id)) seedPositions.delete(node.id)
+    })
+  }
   // Seed roots before children are mapped. A first-click expansion can happen
   // before the initial force simulation has produced a persisted coordinate;
   // in that case an unseeded child would otherwise default to the canvas
@@ -978,9 +976,12 @@ function render(): void {
     // without letting dense sessions collapse into one pile.
     .force('link', linkForce)
     .force('charge', chargeForce)
-    .force('center', d3.forceCenter(layoutWidth / 2, height / 2))
-    .force('x', d3.forceX<GraphNode & d3.SimulationNodeDatum>(layoutWidth / 2).strength(largeGraph ? 0.014 : 0.02))
-    .force('y', d3.forceY<GraphNode & d3.SimulationNodeDatum>(height / 2).strength(largeGraph ? 0.014 : 0.02))
+    // Do not use d3.forceCenter here: it translates every node by the same
+    // aggregate-centroid correction, so dragging one disconnected component
+    // makes every other component follow. Per-node recentering keeps the
+    // canvas bounded without coupling unrelated components.
+    .force('x', d3.forceX<GraphNode & d3.SimulationNodeDatum>(layoutWidth / 2).strength(largeGraph ? 0.006 : 0.009))
+    .force('y', d3.forceY<GraphNode & d3.SimulationNodeDatum>(height / 2).strength(largeGraph ? 0.006 : 0.009))
     .force('collide', d3.forceCollide<GraphNode & d3.SimulationNodeDatum>().radius((node) => (node as GraphNode).type === 'concept' ? 50 : 28).strength(0.86).iterations(largeGraph ? 1 : 2))
     .velocityDecay(largeGraph ? 0.68 : 0.64)
   if (newlySeededNodes.length && !props.reducedMotion) {
