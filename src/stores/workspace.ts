@@ -1870,7 +1870,74 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }))
   }
 
-  function maintenanceSuggestionErrors(value: unknown, onlyIndex?: number): { suggestions: MaintenanceSuggestion[]; errors: string[] } {
+  type MaintenanceDisclosureScope = {
+    conceptIds: Set<string>
+    sessionIds: Set<string>
+    unitIds: Set<string>
+    messageIds: Set<string>
+    relationIds: Set<string>
+    aliasIds: Set<string>
+  }
+
+  /**
+   * Build the mutation whitelist from disclosed entity content, not from the
+   * whole local database. A maintenance prompt may list opaque navigation
+   * references, but an action is only authorized after the corresponding
+   * expansion includes the entity's structured content.
+   */
+  function maintenanceDisclosureScope(task: LLMTask): MaintenanceDisclosureScope {
+    const scope: MaintenanceDisclosureScope = {
+      conceptIds: new Set(),
+      sessionIds: new Set(),
+      unitIds: new Set(),
+      messageIds: new Set(),
+      relationIds: new Set(),
+      aliasIds: new Set(),
+    }
+    const context = parseDisclosureContext(task.prompt)
+    ;(context?.expansions ?? []).forEach((expansion) => {
+      if (!expansion.content) return
+      let parsed: unknown
+      try { parsed = JSON.parse(expansion.content) } catch { return }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return
+      const value = parsed as Record<string, unknown>
+      const concept = value.concept
+      if (concept && typeof concept === 'object' && !Array.isArray(concept)) {
+        const item = concept as Record<string, unknown>
+        if (typeof item.id === 'string') scope.conceptIds.add(item.id)
+        if (Array.isArray(item.aliases)) item.aliases.forEach((alias) => {
+          if (alias && typeof alias === 'object' && !Array.isArray(alias) && typeof (alias as Record<string, unknown>).id === 'string') scope.aliasIds.add((alias as Record<string, unknown>).id as string)
+        })
+      }
+      const session = value.session
+      if (session && typeof session === 'object' && !Array.isArray(session) && typeof (session as Record<string, unknown>).id === 'string') scope.sessionIds.add((session as Record<string, unknown>).id as string)
+      const unit = value.unit
+      if (unit && typeof unit === 'object' && !Array.isArray(unit) && typeof (unit as Record<string, unknown>).id === 'string') scope.unitIds.add((unit as Record<string, unknown>).id as string)
+      const message = value.message
+      if (message && typeof message === 'object' && !Array.isArray(message) && typeof (message as Record<string, unknown>).id === 'string') scope.messageIds.add((message as Record<string, unknown>).id as string)
+      const relationsValue = value.relations
+      if (Array.isArray(relationsValue)) relationsValue.forEach((relation) => {
+        if (!relation || typeof relation !== 'object' || Array.isArray(relation)) return
+        const item = relation as Record<string, unknown>
+        if (typeof item.id === 'string') scope.relationIds.add(item.id)
+      })
+      const messagesValue = value.messages
+      if (Array.isArray(messagesValue)) messagesValue.forEach((entry) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return
+        const item = entry as Record<string, unknown>
+        if (typeof item.id === 'string') scope.messageIds.add(item.id)
+      })
+      const unassigned = value.unassigned_messages
+      if (Array.isArray(unassigned)) unassigned.forEach((entry) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return
+        const item = entry as Record<string, unknown>
+        if (typeof item.id === 'string') scope.messageIds.add(item.id)
+      })
+    })
+    return scope
+  }
+
+  function maintenanceSuggestionErrors(value: unknown, onlyIndex?: number, scope?: MaintenanceDisclosureScope): { suggestions: MaintenanceSuggestion[]; errors: string[] } {
     const errors: string[] = []
     if (!value || typeof value !== 'object' || Array.isArray(value)) return { suggestions: [], errors: ['维护结果必须是 JSON 对象'] }
     const rawSuggestions = (value as Record<string, unknown>).suggestions
@@ -1946,6 +2013,42 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       })
       if (raw.new_relation_type !== undefined && raw.new_relation_type !== 'hierarchy' && raw.new_relation_type !== 'related') errors.push(`suggestions.${index}.new_relation_type 类型不符合动作 API`)
       if (errors.length > itemErrorStart) return
+      const requireConceptInScope = (id: unknown, path: string): void => {
+        if (scope && typeof id === 'string' && id.trim() && !scope.conceptIds.has(id.trim())) errors.push(`suggestions.${index}.${path}: Concept ID 不在当前披露范围中`)
+      }
+      const requireEntityInScope = (ids: Set<string> | undefined, id: unknown, path: string): void => {
+        if (ids && typeof id === 'string' && id.trim() && !ids.has(id.trim())) errors.push(`suggestions.${index}.${path}: ID 不在当前披露范围中`)
+      }
+      if (suggestion.type === 'create_concept') {
+        ;(suggestion.parent_concept_ids ?? (suggestion.parent_concept_id ? [suggestion.parent_concept_id] : [])).forEach((id) => requireConceptInScope(id, 'parent_concept_id'))
+      }
+      if (suggestion.type === 'update_concept' || suggestion.type === 'delete_concept' || suggestion.type === 'archive_concept' || suggestion.type === 'restore_concept' || suggestion.type === 'alias' || suggestion.type === 'move_concept' || suggestion.type === 'set_hierarchy_parents') {
+        requireConceptInScope(suggestion.concept_id, 'concept_id')
+      }
+      if (suggestion.type === 'merge') {
+        requireConceptInScope(suggestion.source_concept_id, 'source_concept_id')
+        requireConceptInScope(suggestion.target_concept_id, 'target_concept_id')
+      }
+      if (suggestion.type === 'add_relation' || suggestion.type === 'relation' || suggestion.type === 'update_relation') {
+        requireConceptInScope(suggestion.source_concept_id ?? suggestion.parent_concept_id ?? suggestion.new_source_concept_id, 'source_concept_id')
+        requireConceptInScope(suggestion.target_concept_id ?? suggestion.child_concept_id ?? suggestion.new_target_concept_id, 'target_concept_id')
+      }
+      if (suggestion.type === 'remove_hierarchy') {
+        requireConceptInScope(suggestion.child_concept_id, 'child_concept_id')
+        requireConceptInScope(suggestion.parent_concept_id, 'parent_concept_id')
+      }
+      if (suggestion.type === 'remove_alias') requireEntityInScope(scope?.aliasIds, suggestion.alias_id, 'alias_id')
+      if (suggestion.type === 'update_relation' || suggestion.type === 'delete_relation' || suggestion.type === 'remove_relation' || suggestion.type === 'set_relation_status' || suggestion.type === 'confirm_relation' || suggestion.type === 'reject_relation') requireEntityInScope(scope?.relationIds, suggestion.relation_id, 'relation_id')
+      if (suggestion.type === 'unit_relink' || suggestion.type === 'unit_revision') requireEntityInScope(scope?.unitIds, suggestion.unit_id, 'unit_id')
+      if (suggestion.type === 'unit_create') {
+        requireEntityInScope(scope?.sessionIds, suggestion.session_id, 'session_id')
+        ;(suggestion.message_ids ?? []).forEach((id) => requireEntityInScope(scope?.messageIds, id, 'message_ids'))
+      }
+      if (suggestion.type === 'membership_relink') {
+        const targetSet = suggestion.target_type === 'session' ? scope?.sessionIds : suggestion.target_type === 'unit' ? scope?.unitIds : scope?.messageIds
+        requireEntityInScope(targetSet, suggestion.target_id, 'target_id')
+        ;(suggestion.concept_ids ?? []).forEach((id) => requireConceptInScope(id, 'concept_ids'))
+      }
       if (suggestion.type === 'merge') {
         const source = concepts.value.find((concept) => concept.id === suggestion.source_concept_id)
         const target = concepts.value.find((concept) => concept.id === suggestion.target_concept_id)
@@ -2141,7 +2244,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     // Revalidate only the selected operation against the current database.
     // Earlier suggestions may intentionally change the state needed by later
     // operations, such as delete_concept followed by restore_concept.
-    const validation = maintenanceSuggestionErrors(parsed, suggestionIndex)
+    const validation = maintenanceSuggestionErrors(parsed, suggestionIndex, maintenanceDisclosureScope(task))
     const suggestion = validation.suggestions[suggestionIndex]
     if (validation.errors.length || !suggestion) return { ok: false, error: validation.errors[0] ?? '找不到这条建议' }
     const raw = parsed as { suggestions: Array<MaintenanceSuggestion & { applied?: boolean }> }
@@ -2467,6 +2570,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const errors: string[] = []
     const conceptLimit = normalizeConceptLimit(config.value.llm.conceptLimit)
     if (task.type === 'maintenance') {
+      if (task.mode === 'api' && (typeof data.reason !== 'string' || !data.reason.trim())) {
+        const reasonErrors = ['reason 必须是非空字符串；维护 API 响应不能省略总体审计说明']
+        markTask(taskId, 'needs_review', responseText, reasonErrors)
+        return { ok: false, errors: reasonErrors }
+      }
       const taskStateHash = task.inputRevision.split(':')[1]
       if (!taskStateHash || taskStateHash !== maintenanceStateHash()) {
         const staleErrors = ['维护任务输入已变化：知识主题、关系、阅读片段或可选消息目录已更新，请重新发起知识维护。']
@@ -2504,13 +2612,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
 
     if (task.type === 'maintenance') {
+      const disclosureScope = maintenanceDisclosureScope(task)
       const maintenanceTargetIds = [
-        ...units.value.map((unit) => unit.id),
-        ...sessions.value.map((session) => session.id),
-        ...messages.value.map((message) => message.id),
+        ...disclosureScope.unitIds,
+        ...disclosureScope.sessionIds,
+        ...disclosureScope.messageIds,
       ]
-      errors.push(...validateConceptMembershipPayload(task, data, maintenanceTargetIds, new Set(activeConcepts.value.map((concept) => concept.id))))
-      const validation = maintenanceSuggestionErrors(data)
+      errors.push(...validateConceptMembershipPayload(task, data, maintenanceTargetIds, disclosureScope.conceptIds))
+      const validation = maintenanceSuggestionErrors(data, undefined, disclosureScope)
       if (errors.length) {
         markTask(taskId, 'needs_review', responseText, errors)
         return { ok: false, errors }

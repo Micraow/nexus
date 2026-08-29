@@ -161,6 +161,7 @@ pnpm build:extension      # 产物在 extension/dist/
 
 1. 以 API 模式模拟维护任务首轮返回 `reason`、空 `suggestions` 和有效 `disclosure_requests`。点击“校验并应用”后，任务必须保持 pending/running 并用更新后的 Prompt 自动发起下一轮；最终轮才允许显示成功或“无建议变更”。以 Prompt 粘贴模式重复该操作，确认不发网络请求、Prompt 已替换且任务仍为 pending。
 2. 分别模拟无效 Concept ID、越界 membership target 和重复披露引用。三种情况均应保留原始响应、进入 `needs_review`，不写 assistant Message、Concept 关系或维护建议；修复后只能通过 retry 回到 pending。
+   维护任务还要验证动作 ID 必须来自已展开 `content` 的实体白名单；只出现在根目录或 children 摘要中的 Concept、Session、Message 或 Unit 均应被拒绝。API 维护响应缺少总体 `reason` 时同样进入 `needs_review`，不能显示为“无建议变更”。
 3. 点击推荐词创建草稿分支，提交前可关闭；提交后检查 user Message、taskId 和导航节点已存在且关闭控件消失。API 流式传输期间增量文本只能出现在该卡片内；成功后变为持久 assistant Message，校验失败后保留在同一卡片作为待检查响应。
 4. 用维护任务和对话任务分别核对 Prompt 中可见的 ID 目录。模型只能引用目录中的既有 Concept、同响应 `client_ref`、本轮 Session/Message/Unit 目标；不得用仅有 title/summary 的未披露节点或其他 Session ID。为每条范围规则保留回归测试。
 

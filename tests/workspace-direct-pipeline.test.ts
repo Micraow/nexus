@@ -1191,6 +1191,53 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.units).toContainEqual(expect.objectContaining({ title: '披露结果片段' }))
   })
 
+  it('keeps API maintenance disclosure rounds pending and automatically requests the next round', async () => {
+    const rootId = store.createConcept('维护披露根主题')
+    const childId = store.createConcept('维护披露子主题')
+    store.createRelation(rootId, childId, 'hierarchy')
+    const responses = [
+      JSON.stringify({ reason: '首轮只规划并请求展开根分支。', suggestions: [], disclosure_requests: [{ refID: rootId, depth: 64 }] }),
+      JSON.stringify({ reason: '已检查根主题及其子主题，未发现需要修改的地方。', suggestions: [], disclosure_requests: [] }),
+    ]
+    let requestIndex = 0
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: responses[requestIndex++] } }] }),
+    } as Response)))
+    store.updateConfig({
+      llm: {
+        ...store.config.llm,
+        mode: 'api',
+        defaultProvider: 'maintenance-disclosure-provider',
+        providers: [{ id: 'maintenance-disclosure-provider', name: 'Maintenance disclosure', baseUrl: 'https://example.test/v1', model: 'maintenance-model', apiKey: 'test-key' }],
+      },
+    })
+    const taskId = store.createMaintenanceTask()
+    const task = store.tasks.find((item) => item.id === taskId)!
+    await expect(store.executeTask(task.id)).resolves.toEqual({ ok: true })
+    expect(requestIndex).toBe(2)
+    expect(store.tasks.find((item) => item.id === taskId)).toEqual(expect.objectContaining({ status: 'success' }))
+    expect(store.tasks.find((item) => item.id === taskId)?.parsedResult).toContain('未发现需要修改')
+    expect(store.tasks.find((item) => item.id === taskId)?.prompt).toContain(childId)
+  })
+
+  it('rejects an API maintenance response without an overall reason', async () => {
+    store.createConcept('缺少总体理由主题')
+    store.updateConfig({
+      llm: {
+        ...store.config.llm,
+        mode: 'api',
+        defaultProvider: 'missing-reason-provider',
+        providers: [{ id: 'missing-reason-provider', name: 'Missing reason', baseUrl: 'https://example.test/v1', model: 'maintenance-model', apiKey: 'test-key' }],
+      },
+    })
+    const taskId = store.createMaintenanceTask()
+    const result = store.applyTaskResult(taskId, JSON.stringify({ suggestions: [], disclosure_requests: [] }))
+    expect(result.ok).toBe(false)
+    expect(result.errors.join('; ')).toContain('reason 必须是非空字符串')
+    expect(store.tasks.find((item) => item.id === taskId)?.status).toBe('needs_review')
+  })
+
   it('applies a complete second-round answer when the provider repeats an already expanded ref', async () => {
     const vueId = store.createConcept('Vue')
     const reactivityId = store.createConcept('响应式原理')
