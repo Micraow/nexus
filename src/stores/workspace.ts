@@ -2087,6 +2087,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (suggestion.type === 'update_concept' || suggestion.type === 'delete_concept' || suggestion.type === 'archive_concept' || suggestion.type === 'restore_concept' || suggestion.type === 'alias' || suggestion.type === 'move_concept' || suggestion.type === 'set_hierarchy_parents') {
         requireConceptInScope(suggestion.concept_id, 'concept_id')
       }
+      if (suggestion.type === 'move_concept') {
+        requireConceptInScope(suggestion.parent_concept_id, 'parent_concept_id')
+      }
+      if (suggestion.type === 'set_hierarchy_parents') {
+        ;(suggestion.parent_concept_ids ?? []).forEach((id) => requireConceptInScope(id, 'parent_concept_ids'))
+      }
       if (suggestion.type === 'merge') {
         requireConceptInScope(suggestion.source_concept_id, 'source_concept_id')
         requireConceptInScope(suggestion.target_concept_id, 'target_concept_id')
@@ -2102,6 +2108,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (suggestion.type === 'remove_alias') requireEntityInScope(scope?.aliasIds, suggestion.alias_id, 'alias_id')
       if (suggestion.type === 'update_relation' || suggestion.type === 'delete_relation' || suggestion.type === 'remove_relation' || suggestion.type === 'set_relation_status' || suggestion.type === 'confirm_relation' || suggestion.type === 'reject_relation') requireEntityInScope(scope?.relationIds, suggestion.relation_id, 'relation_id')
       if (suggestion.type === 'unit_relink' || suggestion.type === 'unit_revision') requireEntityInScope(scope?.unitIds, suggestion.unit_id, 'unit_id')
+      if (suggestion.type === 'unit_relink' || suggestion.type === 'unit_create') {
+        ;(suggestion.concept_ids ?? []).forEach((id) => requireConceptInScope(id, 'concept_ids'))
+      }
       if (suggestion.type === 'unit_create') {
         requireEntityInScope(scope?.sessionIds, suggestion.session_id, 'session_id')
         ;(suggestion.message_ids ?? []).forEach((id) => requireEntityInScope(scope?.messageIds, id, 'message_ids'))
@@ -2514,6 +2523,21 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     // accidentally turning arbitrary JSON into a continuation.
     if (!disclosureTaskTypes.has(task.type)) return null
     if (!Array.isArray(data.disclosure_requests) || data.disclosure_requests.length === 0) return null
+    if (task.type === 'maintenance') {
+      // A maintenance disclosure round is a planning-only response. Requiring
+      // the explicit empty array prevents a partial/malformed response from
+      // being mistaken for an auditable no-op during manual validation.
+      if (typeof data.reason !== 'string' || !data.reason.trim()) {
+        const errors = ['reason 必须是非空字符串；维护披露中间轮不能省略总体审计说明']
+        markTask(task.id, 'needs_review', responseText, errors)
+        return { ok: false, errors }
+      }
+      if (!Object.prototype.hasOwnProperty.call(data, 'suggestions') || !Array.isArray(data.suggestions) || data.suggestions.length > 0) {
+        const errors = ['维护披露中间轮必须显式返回 suggestions: []，不能夹带或省略建议']
+        markTask(task.id, 'needs_review', responseText, errors)
+        return { ok: false, errors }
+      }
+    }
     const current = parseDisclosureContext(task.prompt)
     if (!current) {
       const errors = ['响应请求展开引用，但当前 Prompt 没有可用的 DISCLOSURE_INDEX']
