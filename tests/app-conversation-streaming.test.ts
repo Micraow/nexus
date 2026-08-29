@@ -24,6 +24,41 @@ afterEach(() => {
 })
 
 describe('conversation answer preview', () => {
+  it('only marks topics evidenced by the current conversation message', async () => {
+    const target = document.createElement('div')
+    document.body.appendChild(target)
+    const pinia = createPinia()
+    const store = useWorkspaceStore(pinia)
+    store.init = async () => undefined
+    store.sessions = [{
+      id: 'session-markers', source: 'in_app', platform: 'local', title: '主题标记', createdAt: now, updatedAt: now,
+      messageCount: 2, unitCount: 0, knowledgeKind: 'knowledge', knowledgeRetainInGraph: true, revision: 1, localOnly: false,
+    }] satisfies Session[]
+    store.navNodes = [{ id: 'root-markers', sessionId: 'session-markers', parentId: null, label: '标记测试', depth: 0, createdAt: now }] satisfies NavTreeNode[]
+    store.concepts = [
+      { id: 'evidenced-topic', name: '拥塞控制', normalizedName: '拥塞控制', summary: '', notes: '', status: 'active', createdAt: now, updatedAt: now },
+      { id: 'unrelated-topic', name: '无关主题', normalizedName: '无关主题', summary: '', notes: '', status: 'active', createdAt: now, updatedAt: now },
+    ] satisfies Concept[]
+    store.messages = [
+      { id: 'marker-question', sessionId: 'session-markers', role: 'user', content: '问题', orderInSession: 0, timestamp: now, metadata: { mode: 'new', parentNodeId: 'root-markers' } },
+      { id: 'marker-answer', sessionId: 'session-markers', role: 'assistant', content: '[[nexus:existing:拥塞控制]]拥塞控制[[/nexus]] 与 [[nexus:existing:无关主题]]无关主题[[/nexus]]。', orderInSession: 1, timestamp: now, metadata: { navNodeId: 'root-markers' } },
+    ] satisfies Message[]
+    store.messageConcepts = [{ messageId: 'marker-answer', conceptId: 'evidenced-topic', source: 'manual', createdAt: now }]
+
+    const app = createApp(App)
+    app.use(pinia)
+    mounted.push(app)
+    app.mount(target)
+    await nextTick()
+    target.querySelector<HTMLButtonElement>('.recent-row')!.click()
+    await nextTick()
+
+    const answer = target.querySelector<HTMLElement>('[data-conversation-message="marker-answer"]')
+    expect(answer?.querySelector('[data-concept-id="evidenced-topic"]')?.textContent).toBe('拥塞控制')
+    expect(answer?.querySelector('[data-concept-id="unrelated-topic"]')).toBeNull()
+    expect(answer?.textContent).toContain('无关主题')
+  })
+
   it('keeps a needs-review answer inside the current branch card', async () => {
     const target = document.createElement('div')
     document.body.appendChild(target)

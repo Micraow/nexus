@@ -31,7 +31,10 @@ const selectedValues = computed<string[]>(() => {
   if (Array.isArray(props.modelValue)) return props.modelValue.filter((value): value is string => typeof value === 'string')
   return typeof props.modelValue === 'string' ? [props.modelValue] : []
 })
-const selected = computed(() => props.options.find((option) => option.value === props.modelValue) ?? null)
+const selected = computed(() => {
+  if (props.multiple) return null
+  return props.options.find((option) => option.value === props.modelValue) ?? null
+})
 const selectedOptions = computed(() => selectedValues.value
   .map((value) => props.options.find((option) => option.value === value))
   .filter(Boolean) as SearchSelectOption[])
@@ -111,10 +114,10 @@ watch(() => props.modelValue, () => { if (!open.value) query.value = '' })
   <div ref="rootElement" class="search-select" :class="{ open, disabled }" @focusout="closeOnFocusOut">
     <button ref="triggerElement" type="button" class="search-select-trigger" :aria-label="props.ariaLabel" aria-haspopup="listbox" :aria-expanded="open" :aria-multiselectable="props.multiple || undefined" :disabled="props.disabled" @click="toggleOpen">
       <span v-if="props.multiple && selectedOptions.length" class="search-select-chips"><span v-for="option in selectedOptions" :key="option.value ?? 'none'" class="search-select-chip">{{ displayText(option.label) }}</span></span>
-      <span v-else :class="{ placeholder: !selected }">{{ displayText(selected?.label) || props.placeholder }}</span>
+      <span v-else :class="{ placeholder: !selected }">{{ displayText(selected?.label) || (props.multiple ? props.placeholder : props.placeholder) }}</span>
       <ChevronDown :size="14" />
     </button>
-    <div v-if="open" class="search-select-popover" role="listbox" :aria-label="props.ariaLabel">
+    <div v-if="open" class="search-select-popover" role="listbox" :aria-label="props.ariaLabel" @pointerdown.stop @mousedown.stop>
       <label class="search-select-input"><Search :size="14" /><input ref="searchInput" v-model="query" :placeholder="props.placeholder" :aria-label="`${props.ariaLabel}搜索`" @keydown.esc.prevent="closeAndRestoreFocus" /></label>
       <button v-for="option in filtered" :key="option.value ?? 'none'" type="button" class="search-select-option" :class="{ selected: props.multiple ? selectedValues.includes(option.value as string) : option.value === props.modelValue }" @mousedown.prevent @click="choose(option.value)">
         <span><strong>{{ displayText(option.label) }}</strong><small v-if="option.hint">{{ displayText(option.hint) }}</small></span>
