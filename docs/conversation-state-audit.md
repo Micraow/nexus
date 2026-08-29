@@ -1,33 +1,95 @@
-# Conversation/task state audit
+# Nexus 状态与接口审计
 
-本审计依据 `/tmp/goal/prompt.txt`、`docs/design.md`、`docs/data-spec.md`、`src/services/prompts.ts`、`src/services/validation.ts`、`src/stores/workspace.ts` 和 `src/App.vue` 编写，记录当前实现和验证边界。
+本文把任务队列、知识维护、对话分支和渐进披露放在同一份状态模型中。它是实现和验收的索引；具体字段约束仍以 `docs/data-spec.md`、Prompt 版本和本地校验器为准。
 
-## 已验证
+## 模块边界
 
-- 新对话和追问提交后都会清空输入草稿；离开会话或重新打开 composer 也会重置草稿。
-- 新对话原子化写入 Session、根导航节点、用户 Message、conversation task，以及用户预选主题的 SessionConcept/MessageConcept 归属。追问写入已有 Session，并保留 `parentNodeId`、`taskId` 和源上下文引用。
-- conversation 结果先校验 `answer`、本轮 `units`（首轮新建或后续复用/新建）、Session/Message 归属、Concept ID、标题/摘要和版本；成功后在同一事务中写入 assistant Message、导航树分支、阅读片段关联、多主题归属、Session 标题/滚动摘要和准确计数。历史 `units: []` 仅保留兼容路径，新的 Prompt 要求每轮明确片段。
-- `applyTaskResult()` 拒绝对 `success`、`cancelled`、`stale` 等终态任务重复应用；需要再次处理时必须先重新排队。任务详情仅对 `pending`、`running`、`needs_review` 显示“校验并应用”。
-- API 任务只在明确执行或启动队列时发出请求；Prompt 粘贴任务保持待处理，需人工粘贴并应用结果。导入提示使用“创建待处理任务”，不暗示已经发起网络请求。
-- API task 从任务中心和队列同时启动时由单 task in-flight 护栏合并为一次请求；`pending → running` 使用条件更新，取消不会被并发启动覆盖。
-- 同一 Session 同时只允许一个未完成 conversation task；页面和 store 都拦截 `pending`、`running`、`needs_review` 状态下的重复追问。追问 Prompt 携带当前导航路径、Session 标题/摘要和最近历史消息。
-- `[[nexus:existing:...]]` 与 `[[nexus:suggested:...]]` 标记由 Prompt 约定并由 Markdown renderer 渲染为蓝色/黄色下划线；只有能解析到本地 active Concept 名称或别名的已有主题才显示为蓝色链接，未知 `existing` 标记退化为普通文本。已有主题点击进入知识主题目录并选中对应条目；建议主题点击会把安全的探索问题填入当前会话输入，不会静默写入事实。推荐词要求短、独立、像教材章节大标题/小标题；回答中多个独立概念可以分别标记。
-- 探索树节点点击会定位到带有 `data-conversation-message` 的回答；活动对话只有顶部“全屏”入口，主题消息列表只有顶部“全屏查看全部对话”入口，并支持跨 Session 分页。
-- 导入主链只创建 `session_triage` 和 `origin_concepts`，不再创建 segmentation 或以分段为前置条件的 KnowledgeUnit。schema v7 会把历史活动 `segmentation` 任务统一标记为 `cancelled`，保留原 Prompt/响应供审计但不允许重新执行；title/summary 任务仍按兼容状态维护。
-- 图谱使用 Session、Message、KnowledgeUnit 三类直接归属投影；SessionConcept 和 UnitConcept 在 `showUnits=false`、`showMessages=true` 时仍能落到消息边。归档 Session 的残留 join facts 不进入 active graph。主题详情和目录右栏通过共享证据解析器汇总 Session/Message/可选阅读片段，单个主题的全屏入口固定绑定主题并跨 Session 每页 20 条显示来源会话。
+| 模块 | 责任 | 不应承担的责任 |
+|---|---|---|
+| `services/task-state.ts` | 声明任务事件、合法来源状态和目标状态 | 写数据库、发请求、决定业务结果 |
+| `services/prompts.ts` | 生成 Prompt、MCP 工具目录和披露目录格式 | 直接修改知识库 |
+| `services/validation.ts` | 校验 JSON 结构、ID 白名单、标题/名称长度和 DAG 输入 | 猜测或修复越界 ID |
+| `stores/workspace.ts` | 持久化任务转换、业务事实事务、队列租约和续轮 | 以 UI 状态代替数据库事实 |
+| `App.vue` | 发送用户意图、显示任务和派生卡片状态 | 直接写任务状态或从数组长度推断成功 |
+| `GraphCanvas.vue` | 绘制已投影的图谱、处理节点单击和布局事件 | 修改层级关系或推断隐藏节点 |
 
-## 已明确的边界
+## 任务状态
 
-1. **Session 级证据范围。** 直接 SessionConcept 按规范表示整段会话归属，因此主题详情会包含该 Session 的全部单元和消息。若产品希望改成单元级证据，需要另行定义新的归属语义，不能在展示层静默缩小范围。
+```mermaid
+stateDiagram-v2
+  [*] --> pending: create / retry
+  pending --> running: start
+  running --> pending: continue_disclosure
+  pending --> success: accept_validated_result
+  running --> success: accept_validated_result
+  needs_review --> success: accept_validated_result
+  pending --> needs_review: reject_validation
+  running --> needs_review: reject_validation
+  needs_review --> needs_review: reject_validation
+  running --> failed: fail_transport
+  pending --> cancelled: cancel
+  running --> cancelled: cancel
+  needs_review --> cancelled: cancel
+  pending --> stale: invalidate
+  running --> stale: invalidate
+  needs_review --> stale: invalidate
+  failed --> pending: retry
+  stale --> pending: retry
+  cancelled --> pending: retry
+```
 
-2. **对话返回的新 Concept 的直接归属。** conversation 结果支持响应内唯一 `client_ref`；新主题必须通过顶层 `memberships` 至少归属本轮用户或 assistant Message，确有会话级证据时才归属 Session。`units[].concepts` 只补充可选阅读片段证据，不能替代直接消息证据。
+`success` 是终态。`continue_disclosure` 必须同时保存本轮原始响应、下一轮 Prompt，清空 `parsed_result` 和校验错误，然后回到 `pending`。API 任务取得新的执行租约后再次进入 `running`；Prompt 粘贴任务等待用户复制新的 Prompt。任何仍有 `pending_ref_ids` 的维护任务都不能进入 success。
 
-3. **Suggested marker 的后续动作。** 黄色标记只触发预填的探索问题；用户提交后才创建 conversation task 和持久化事实，不会因渲染或点击自动创建主题。
+## 维护时序
 
-4. **旧手工任务与会话状态绑定。** 同一 Session 的输入锁仍只允许一个未完成 conversation task；当前导航节点状态按用户 Message 的 `metadata.taskId` 和 assistant Message 的 `navNodeId` 精确解析。旧 `segmentation` 已不在活动任务集合中。
+```mermaid
+sequenceDiagram
+  participant User as 用户
+  participant UI as 任务中心
+  participant Store as workspace store
+  participant Provider as API/网页端
+  User->>UI: 全图维护
+  UI->>Store: createMaintenanceTask()
+  Store-->>UI: 根主题、未归属 Session/Unit 的披露目录
+  UI->>Store: applyTaskResult(response)
+  Store->>Store: validate scope + reason + disclosure
+  alt pending_ref_ids 非空
+    Store->>Store: continue_disclosure()
+    alt API
+      Store->>Provider: executeTask(nextPrompt)
+    else Prompt 粘贴
+      Store-->>UI: pending + 新 Prompt
+    end
+  else 完整审计结果
+    Store->>Store: success（只保存 suggestions，不自动应用）
+    UI-->>User: reason + 逐条确认/全部确认
+  end
+```
 
-## Verification
+维护入口的关注主题只是排序提示，任务范围始终是整个 active 图谱。动作参数中的 Concept、Session、Message 和 Unit ID 必须来自已披露的 `content`；越界结果整体进入 `needs_review`，不执行部分写入。`unit_create.title` 统一限制为最多 30 个 Unicode 字符。
 
-自动化测试覆盖主题跨 Session 证据范围、消息分页、旧 segmentation 迁移/恢复、无摘要阅读片段状态、导航树多层递归、主题 marker 安全渲染、渐进图谱根投影及 API 任务重复启动护栏。2026-08-28 已通过 193 项测试；主应用与扩展类型检查、主应用与扩展构建及 `git diff --check` 按 `docs/development.md` 的发布前命令复核。
+## 对话时序
 
-隔离浏览器 fixture 已在 375×812、768×1024、1024×768、1440×900 四档视口完成渐进展开、递归收起、拖拽抑制、键盘操作、详情跳转、跨 Session 分页、建议主题预填和输入清空验收；无横向溢出、控制台错误或失败资源请求。`data/99-deepseek-export-2026-08-25.json` 只读解析为 99 个 Session、797 条 Message、1,433,985 个内容字符（按当前规则约 358,497 tokens）和 0 个导出错误，未导入业务数据库。
+```mermaid
+sequenceDiagram
+  participant User as 用户
+  participant UI as 对话卡片
+  participant Store as workspace store
+  participant Provider as API
+  User->>UI: 点击黄色推荐词
+  UI->>UI: 创建可关闭草稿分支并预填问题
+  User->>UI: 提交问题
+  UI->>Store: createFollowUpTask()
+  Store->>Store: user Message + task + assistant ID + NavTreeNode
+  Store->>Provider: executeTask(task)
+  Provider-->>UI: SSE 增量（按 taskId）
+  Provider-->>Store: 最终 JSON
+  Store->>Store: 校验并原子写 assistant、Unit、归属、NavTreeNode
+  Store-->>UI: success；草稿分支变为持久分支
+```
+
+提交前草稿可以关闭；只要 user Message 或 task 已创建，关闭入口必须消失或禁用。流式文本只属于对应 `taskId` 的卡片，校验失败时保留在该卡片供修复，不能落到父卡片或在最终刷新时消失。全屏查看按 Session 分页，同一个 Session 的所有消息必须在同一页。
+
+## 队列顺序
+
+导入先保存原始 Session/Message，再创建 `session_triage`。队列优先执行分类；只有 `knowledge` 才创建/执行 `origin_concepts`，`discussion` 和 `procedure` 取消遗留起始任务；`mixed` 可直接进行有证据的提取。不同 Session 可并行，同一 Session 任务按依赖顺序串行。

@@ -13,7 +13,7 @@ import { combineSegmentationChunks, splitMessageChunks } from '@/utils/chunks'
 import { wouldCreateHierarchyCycle } from '@/utils/graph-rules'
 import { createId, isoNow, normalizeText, parseIsoTimestamp, stableHash } from '@/utils/id'
 import { parseMetadata } from '@/utils/metadata'
-import { isActiveTaskStatus, LEGACY_SEGMENTATION_RETIRED_REASON, normalizeTaskStatus } from '@/services/task-state'
+import { canTransitionTask, canTransitionTaskStatus, isActiveTaskStatus, LEGACY_SEGMENTATION_RETIRED_REASON, normalizeTaskStatus, taskStatusForTransition, type TaskTransitionEvent } from '@/services/task-state'
 import type {
   AppConfig,
   Concept,
@@ -422,6 +422,68 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       db.bumpGraphRevision()
     })
     refreshFromDb()
+  }
+
+  type TaskTransitionPatch = {
+    response?: string | null
+    parsedResult?: string | null
+    validationErrors?: string[] | null
+    errorMessage?: string | null
+    prompt?: string
+    retryCountDelta?: number
+  }
+
+  /**
+   * The only task status writer. The caller may perform related business
+   * writes in the same database transaction by using this transaction-local
+   * form; the public wrapper below is for standalone queue/UI events.
+   */
+  function transitionTaskInTransaction(taskId: string, event: TaskTransitionEvent, patch: TaskTransitionPatch = {}): boolean {
+    // Read the persisted status inside the transaction. `tasks.value` is a
+    // reactive snapshot and can lag behind a previous transition in the same
+    // mutate callback (notably when legacy segmentation chunks are retired
+    // before the current chunk is accepted).
+    const row = db.query<Row>('SELECT status, prompt FROM llm_tasks WHERE id = ?', [taskId])[0]
+    if (!row) return false
+    const currentStatus = text(row.status) as LLMTask['status']
+    if (!canTransitionTask(currentStatus, event)) return false
+    const status = taskStatusForTransition(event)
+    const assignments = ['status = ?']
+    const values: unknown[] = [status]
+    if (Object.prototype.hasOwnProperty.call(patch, 'response')) {
+      assignments.push('response = ?')
+      values.push(patch.response ?? null)
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'parsedResult')) {
+      assignments.push('parsed_result = ?')
+      values.push(patch.parsedResult ?? null)
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'validationErrors')) {
+      assignments.push('validation_errors = ?')
+      values.push(patch.validationErrors?.length ? JSON.stringify(patch.validationErrors) : null)
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'errorMessage')) {
+      assignments.push('error_message = ?')
+      values.push(patch.errorMessage ?? null)
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'prompt')) {
+      assignments.push('prompt = ?')
+      values.push(patch.prompt ?? text(row.prompt))
+    }
+    if (patch.retryCountDelta) {
+      assignments.push('retry_count = retry_count + ?')
+      values.push(patch.retryCountDelta)
+    }
+    assignments.push('updated_at = ?')
+    values.push(isoNow(), taskId, currentStatus)
+    db.run(`UPDATE llm_tasks SET ${assignments.join(', ')} WHERE id = ? AND status = ?`, values)
+    return true
+  }
+
+  function transitionTask(taskId: string, event: TaskTransitionEvent, patch: TaskTransitionPatch = {}): boolean {
+    let changed = false
+    mutate(() => { changed = transitionTaskInTransaction(taskId, event, patch) })
+    return changed
   }
 
   function graphCacheKey(options: GraphViewOptions): string {
@@ -1130,7 +1192,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const now = isoNow()
       db.run('UPDATE knowledge_units SET title = ?, summary = ?, status = ?, revision = revision + 1, updated_at = ? WHERE id = ?', [updates.title?.trim() || null, updates.summary?.trim() || null, 'ready', now, unitId])
       db.run('UPDATE sessions SET revision = revision + 1, updated_at = ? WHERE id = ?', [now, unit.sessionId])
-      db.run("UPDATE llm_tasks SET status = 'stale', updated_at = ? WHERE input_revision LIKE ? AND status IN ('pending', 'running', 'needs_review')", [now, `${unitId}:%`])
+      tasks.value
+        .filter((task) => task.inputRevision.startsWith(`${unitId}:`) && isActiveTaskStatus(task.status))
+        .forEach((task) => transitionTaskInTransaction(task.id, 'invalidate'))
     })
   }
 
@@ -1536,14 +1600,30 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   function markTask(taskId: string, status: LLMTask['status'], response?: string, errors?: string[]): void {
-    mutate(() => {
-      const task = tasks.value.find((item) => item.id === taskId)
-      if (!task) return
-      // Keep the current disclosure catalog in a repair prompt so a user can
-      // correct an invalid response without losing the IDs they were shown.
-      const disclosure = status === 'needs_review' && response ? parseDisclosureContext(task.prompt) : null
-      const nextPrompt = status === 'needs_review' && response ? buildRepairPrompt(response, errors ?? [], disclosure ?? undefined, task.prompt) : task.prompt
-      db.run('UPDATE llm_tasks SET status = ?, response = COALESCE(?, response), validation_errors = ?, error_message = ?, prompt = ?, retry_count = retry_count + ?, updated_at = ? WHERE id = ?', [status, response ?? null, errors ? JSON.stringify(errors) : null, errors?.[0] ?? null, nextPrompt, status === 'failed' || status === 'needs_review' ? 1 : 0, isoNow(), taskId])
+    const event: TaskTransitionEvent = status === 'needs_review'
+      ? 'reject_validation'
+      : status === 'failed'
+        ? 'fail_transport'
+        : status === 'stale'
+          ? 'invalidate'
+          : status === 'cancelled'
+            ? 'cancel'
+            : status === 'pending'
+              ? 'retry'
+              : 'accept_validated_result'
+    const task = tasks.value.find((item) => item.id === taskId)
+    if (!task) return
+    if (!canTransitionTaskStatus(task.status, status) || (task.status !== status && !canTransitionTask(task.status, event))) return
+    // Keep the current disclosure catalog in a repair prompt so a user can
+    // correct an invalid response without losing the IDs they were shown.
+    const disclosure = status === 'needs_review' && response ? parseDisclosureContext(task.prompt) : null
+    const nextPrompt = status === 'needs_review' && response ? buildRepairPrompt(response, errors ?? [], disclosure ?? undefined, task.prompt) : task.prompt
+    transitionTask(taskId, event, {
+      ...(response !== undefined ? { response } : {}),
+      validationErrors: errors ?? null,
+      errorMessage: errors?.[0] ?? null,
+      prompt: nextPrompt,
+      retryCountDelta: status === 'failed' || status === 'needs_review' ? 1 : 0,
     })
   }
 
@@ -2345,7 +2425,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       markTask(task.id, 'needs_review', responseText, errors)
       return { ok: false, errors }
     }
-    mutate(() => db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = NULL, validation_errors = NULL, error_message = NULL, prompt = ?, updated_at = ? WHERE id = ?', ['pending', responseText, nextPrompt, isoNow(), task.id]))
+    if (!transitionTask(task.id, 'continue_disclosure', {
+      response: responseText,
+      parsedResult: null,
+      validationErrors: null,
+      errorMessage: null,
+      prompt: nextPrompt,
+    })) {
+      const errors = ['任务状态在披露续轮期间发生变化，请重新加载任务后再试']
+      markTask(task.id, 'needs_review', responseText, errors)
+      return { ok: false, errors }
+    }
     return { ok: false, errors: [`已展开 ${requested.length} 个引用，任务已重新排队`], continued: true }
   }
 
@@ -2429,20 +2519,26 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         markTask(taskId, 'needs_review', responseText, validation.errors)
         return { ok: false, errors: validation.errors }
       }
-      // Persist a concise model-level explanation even when the provider only
-      // returned an empty suggestions array (or an older response omitted the
-      // field). This keeps the task center informative without weakening the
-      // per-action reason contract.
+      // Preserve the provider's audited explanation verbatim. Older clients
+      // did not send the envelope-level reason, so retain a clearly marked
+      // derived fallback while the prompt migrates those clients; new API
+      // responses are required to provide the field themselves.
+      const suppliedReason = typeof data.reason === 'string' ? data.reason.trim() : ''
+      const derivedReason = validation.suggestions.length
+        ? `旧版响应未提供总体 reason；已收到 ${validation.suggestions.length} 条带逐条理由的建议。`
+        : '模型检查后未发现需要修改的地方。'
       const normalizedMaintenance = {
         ...data,
-        reason: typeof data.reason === 'string' && data.reason.trim()
-          ? data.reason.trim()
-          : validation.suggestions.length
-            ? `模型提出 ${validation.suggestions.length} 条维护建议。`
-            : '模型检查后未发现需要修改的地方。',
+        reason: suppliedReason || derivedReason,
+        ...(suppliedReason ? {} : { reason_source: 'derived_compatibility' }),
       }
       mutate(() => {
-        db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = ?, validation_errors = NULL, error_message = NULL, updated_at = ? WHERE id = ?', ['success', responseText, JSON.stringify(normalizedMaintenance), isoNow(), taskId])
+        transitionTaskInTransaction(taskId, 'accept_validated_result', {
+          response: responseText,
+          parsedResult: JSON.stringify(normalizedMaintenance),
+          validationErrors: null,
+          errorMessage: null,
+        })
       })
       return { ok: true, errors: [] }
     }
@@ -2465,14 +2561,24 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       mutate(() => {
         const now = isoNow()
         db.run('UPDATE sessions SET knowledge_kind = ?, knowledge_confidence = ?, knowledge_judgment = ?, knowledge_retain_in_graph = ?, updated_at = ? WHERE id = ?', [kind, confidence, String(reason).trim(), retainInGraph ? 1 : 0, now, targetId])
-        db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = ?, validation_errors = NULL, error_message = NULL, updated_at = ? WHERE id = ?', ['success', responseText, JSON.stringify(data), now, taskId])
+        transitionTaskInTransaction(taskId, 'accept_validated_result', {
+          response: responseText,
+          parsedResult: JSON.stringify(data),
+          validationErrors: null,
+          errorMessage: null,
+        })
         if (kind === 'knowledge') {
           const existingOriginTask = db.query<Row>('SELECT id FROM llm_tasks WHERE type = ? AND input_revision LIKE ? LIMIT 1', ['origin_concepts', `${targetId}:%`])[0]
           if (!existingOriginTask && triageSession) {
             createOriginConceptTasks(triageSession, messages.value.filter((message) => message.sessionId === targetId).sort((left, right) => left.orderInSession - right.orderInSession))
           }
         } else {
-          db.run("UPDATE llm_tasks SET status = 'cancelled', error_message = ?, updated_at = ? WHERE type = 'origin_concepts' AND input_revision LIKE ? AND status IN ('pending', 'running', 'needs_review')", ['会话分类不是 knowledge，已跳过起始知识主题提取。', now, `${targetId}:%`])
+          tasks.value
+            .filter((candidate) => candidate.type === 'origin_concepts' && candidate.inputRevision.startsWith(`${targetId}:`) && isActiveTaskStatus(candidate.status))
+            .forEach((candidate) => {
+              transitionTaskInTransaction(candidate.id, 'cancel', { errorMessage: '会话分类不是 knowledge，已跳过起始知识主题提取。' })
+              abortControllers.get(candidate.id)?.abort()
+            })
         }
       })
       return { ok: true, errors: [] }
@@ -2498,7 +2604,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       mutate(() => {
         const now = isoNow()
         db.run("UPDATE knowledge_units SET title = ?, summary = ?, status = 'ready', updated_at = ? WHERE id = ?", [String(title).trim(), String(summary).trim(), now, targetId])
-        db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = ?, validation_errors = NULL, updated_at = ? WHERE id = ?', ['success', responseText, JSON.stringify(data), now, taskId])
+        transitionTaskInTransaction(taskId, 'accept_validated_result', {
+          response: responseText,
+          parsedResult: JSON.stringify(data),
+          validationErrors: null,
+          errorMessage: null,
+        })
       })
       return { ok: true, errors: [] }
     }
@@ -2518,7 +2629,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         const now = isoNow()
         if (field === 'title') db.run("UPDATE knowledge_units SET title = ?, status = 'ready', updated_at = ? WHERE id = ?", [String(value).trim(), now, targetId])
         else db.run("UPDATE knowledge_units SET summary = ?, status = 'ready', updated_at = ? WHERE id = ?", [String(value).trim(), now, targetId])
-        db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = ?, validation_errors = NULL, updated_at = ? WHERE id = ?', ['success', responseText, JSON.stringify(data), now, taskId])
+        transitionTaskInTransaction(taskId, 'accept_validated_result', {
+          response: responseText,
+          parsedResult: JSON.stringify(data),
+          validationErrors: null,
+          errorMessage: null,
+        })
       })
       return { ok: true, errors: [] }
     }
@@ -2633,7 +2749,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           persistConceptMemberships(data.memberships, now, resolveConceptRef, false)
         }
         persistProposedConceptRelations(data.relations, now, resolveConceptRef)
-        db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = ?, validation_errors = NULL, updated_at = ? WHERE id = ?', ['success', responseText, JSON.stringify(data), now, taskId])
+        transitionTaskInTransaction(taskId, 'accept_validated_result', {
+          response: responseText,
+          parsedResult: JSON.stringify(data),
+          validationErrors: null,
+          errorMessage: null,
+        })
       })
       return { ok: true, errors: [] }
     }
@@ -2876,22 +2997,32 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         // including answers that contain no KnowledgeUnit.
         db.run('UPDATE sessions SET title = ?, summary = ?, message_count = (SELECT COUNT(*) FROM messages WHERE session_id = ?), unit_count = (SELECT COUNT(*) FROM knowledge_units WHERE session_id = ?), revision = revision + 1, updated_at = ? WHERE id = ?', [nextTitle, nextSummary, targetId, targetId, now, targetId])
         if (nextTitle !== currentTitle) db.run('UPDATE nav_tree_nodes SET label = ? WHERE session_id = ? AND parent_id IS NULL', [nextTitle, targetId])
-        db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = ?, validation_errors = NULL, error_message = NULL, updated_at = ? WHERE id = ?', ['success', responseText, JSON.stringify(data), now, taskId])
+        transitionTaskInTransaction(taskId, 'accept_validated_result', {
+          response: responseText,
+          parsedResult: JSON.stringify(data),
+          validationErrors: null,
+          errorMessage: null,
+        })
       })
       return { ok: true, errors: [] }
     }
 
-    mutate(() => db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = ?, validation_errors = NULL, updated_at = ? WHERE id = ?', ['success', responseText, JSON.stringify(data), isoNow(), taskId]))
+    mutate(() => transitionTaskInTransaction(taskId, 'accept_validated_result', {
+      response: responseText,
+      parsedResult: JSON.stringify(data),
+      validationErrors: null,
+      errorMessage: null,
+    }))
     return { ok: true, errors: [] }
   }
 
   function retryTask(taskId: string): void {
     if (tasks.value.find((task) => task.id === taskId)?.type === 'segmentation') return
-    mutate(() => db.run("UPDATE llm_tasks SET status = 'pending', error_message = NULL, validation_errors = NULL, updated_at = ? WHERE id = ? AND status IN ('failed', 'needs_review', 'stale', 'cancelled')", [isoNow(), taskId]))
+    transitionTask(taskId, 'retry', { errorMessage: null, validationErrors: null })
   }
 
   function cancelTask(taskId: string): void {
-    mutate(() => db.run("UPDATE llm_tasks SET status = 'cancelled', updated_at = ? WHERE id = ? AND status IN ('pending', 'running')", [isoNow(), taskId]))
+    transitionTask(taskId, 'cancel')
     abortControllers.get(taskId)?.abort()
   }
 
@@ -2918,7 +3049,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     executingTaskIds.add(taskId)
     clearStreamingTaskText(taskId)
     try {
-      mutate(() => db.run("UPDATE llm_tasks SET status = 'running', updated_at = ? WHERE id = ? AND status = 'pending'", [isoNow(), taskId]))
+      transitionTask(taskId, 'start')
       const started = tasks.value.find((item) => item.id === taskId)
       if (!started || started.status !== 'running') {
         executingTaskIds.delete(taskId)
@@ -3032,7 +3163,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           if (task.type === 'maintenance' && message?.tool_calls?.length) {
             const suggestions = message.tool_calls.map((call) => maintenanceToolCallSuggestion(call.function?.name ?? '', call.function?.arguments ?? ''))
             if (suggestions.some((suggestion) => !suggestion)) throw new Error('Provider 返回了无法识别的维护工具调用')
-            content = JSON.stringify({ suggestions, disclosure_requests: [] })
+            const validSuggestions = suggestions.filter((suggestion): suggestion is Record<string, unknown> => Boolean(suggestion))
+            const reasons = validSuggestions
+              .map((suggestion) => typeof suggestion.reason === 'string' ? suggestion.reason.trim() : '')
+              .filter(Boolean)
+            content = JSON.stringify({
+              reason: reasons.length
+                ? `模型通过维护工具提出 ${validSuggestions.length} 条建议：${reasons.slice(0, 3).join('；')}`
+                : `模型通过维护工具提出 ${validSuggestions.length} 条建议，请逐条核对证据。`,
+              suggestions: validSuggestions,
+              disclosure_requests: [],
+            })
           }
           if (!content) throw new Error('Provider 没有返回可用内容')
           const result = applyTaskResult(taskId, content)
@@ -3080,6 +3221,22 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         tasks.value
           .filter((task) => task.status === 'pending' && task.mode === 'api' && task.promptVersion !== PROMPT_VERSION)
           .forEach(rejectOutdatedPendingTask)
+        // Legacy databases may contain origin tasks created before triage was
+        // introduced. Once a session is classified as non-knowledge those
+        // tasks are ineligible forever; retire them explicitly so the queue
+        // cannot appear stuck with an un-runnable pending item.
+        const ineligibleOrigins = tasks.value.filter((task) => {
+          if (task.type !== 'origin_concepts' || task.status !== 'pending') return false
+          const sessionId = ownerSessionId(task)
+          const kind = sessions.value.find((session) => session.id === sessionId)?.knowledgeKind
+          return kind != null && kind !== 'unknown' && kind !== 'knowledge'
+        })
+        if (ineligibleOrigins.length) {
+          mutate(() => ineligibleOrigins.forEach((task) => transitionTaskInTransaction(task.id, 'cancel', {
+            errorMessage: '会话分类不是 knowledge，已跳过起始知识主题提取。',
+          })))
+          ineligibleOrigins.forEach((task) => abortControllers.get(task.id)?.abort())
+        }
         const pending = tasks.value.filter((task) => task.status === 'pending' && task.mode === 'api')
         if (!pending.length) break
         const triagePending = pending.filter((task) => task.type === 'session_triage')
@@ -3142,7 +3299,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function writeSegmentation(session: Session, sessionMessages: Message[], segmentation: { units: Array<{ message_indices: number[]; title_hint?: string }>; unassigned_message_indices: number[] }, segmentationTaskIds: string[], task: LLMTask, responseText: string): void {
     mutate(() => {
       const now = isoNow()
-      db.run("UPDATE llm_tasks SET status = 'stale', updated_at = ? WHERE input_revision LIKE ? AND status IN ('pending', 'running', 'needs_review')", [now, `${session.id}:${session.revision}%`])
+      tasks.value
+        .filter((candidate) => candidate.inputRevision.startsWith(`${session.id}:${session.revision}`) && isActiveTaskStatus(candidate.status) && !segmentationTaskIds.includes(candidate.id))
+        .forEach((candidate) => transitionTaskInTransaction(candidate.id, 'invalidate'))
       const oldUnits = db.query<Row>('SELECT id FROM knowledge_units WHERE session_id = ?', [session.id]).map((row) => text(row.id))
       oldUnits.forEach((unitId) => db.run('DELETE FROM knowledge_units WHERE id = ?', [unitId]))
       db.run('UPDATE messages SET unit_id = NULL WHERE session_id = ?', [session.id])
@@ -3172,8 +3331,24 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       })
       db.run('UPDATE sessions SET message_count = ?, unit_count = ?, revision = revision + 1, updated_at = ? WHERE id = ?', [sessionMessages.length, segmentation.units.length, now, session.id])
       const refreshedSession = sessionFromRow(db.query<Row>('SELECT * FROM sessions WHERE id = ?', [session.id])[0])
-      db.run("UPDATE llm_tasks SET status = 'pending', input_revision = ?, validation_errors = NULL, error_message = NULL, updated_at = ? WHERE type = 'origin_concepts' AND scope_label LIKE ? AND status = 'stale'", [`${session.id}:${refreshedSession.revision}`, now, `${session.title} · 起始知识主题%`])
-      segmentationTaskIds.forEach((id) => db.run('UPDATE llm_tasks SET status = ?, response = CASE WHEN id = ? THEN ? ELSE response END, parsed_result = COALESCE(parsed_result, ?), validation_errors = NULL, error_message = NULL, updated_at = ? WHERE id = ?', ['success', id, responseText, JSON.stringify(segmentation), now, id]))
+      tasks.value
+        .filter((candidate) => candidate.type === 'origin_concepts' && candidate.scopeLabel?.startsWith(`${session.title} · 起始知识主题`) && candidate.status === 'stale')
+        .forEach((candidate) => {
+          if (transitionTaskInTransaction(candidate.id, 'retry', { validationErrors: null, errorMessage: null })) {
+            db.run('UPDATE llm_tasks SET input_revision = ?, updated_at = ? WHERE id = ?', [`${session.id}:${refreshedSession.revision}`, now, candidate.id])
+          }
+        })
+      segmentationTaskIds.forEach((id) => {
+        if (transitionTaskInTransaction(id, 'accept_validated_result', {
+          response: id === task.id ? responseText : undefined,
+          parsedResult: JSON.stringify(segmentation),
+          validationErrors: null,
+          errorMessage: null,
+        })) return
+        // A completed chunk can be included in a combined result. It is
+        // already terminal; refresh only its audit payload in that case.
+        db.run("UPDATE llm_tasks SET response = COALESCE(?, response), parsed_result = COALESCE(parsed_result, ?), validation_errors = NULL, error_message = NULL, updated_at = ? WHERE id = ? AND status = 'success'", [id === task.id ? responseText : null, JSON.stringify(segmentation), now, id])
+      })
     })
     // The first transaction creates the new units and refreshes reactive
     // arrays. Rebuild the requeued origin prompt afterwards so its disclosure
@@ -3226,7 +3401,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
     const segmentation = validation.data
     if (input.total > 1) {
-      mutate(() => db.run('UPDATE llm_tasks SET status = ?, response = ?, parsed_result = ?, validation_errors = NULL, error_message = NULL, updated_at = ? WHERE id = ?', ['success', responseText, JSON.stringify(segmentation), isoNow(), taskId]))
+      mutate(() => {
+        if (!transitionTaskInTransaction(taskId, 'accept_validated_result', {
+          response: responseText,
+          parsedResult: JSON.stringify(segmentation),
+          validationErrors: null,
+          errorMessage: null,
+        })) throw new Error('分段任务状态已变化，请重新加载后再试')
+      })
       const chunkRows = db.query<Row>('SELECT * FROM llm_tasks WHERE type = ? AND input_revision LIKE ? AND status = ? ORDER BY created_at', ['segmentation', `${session.id}:${session.revision}:chunk:%`, 'success'])
       if (chunkRows.length < input.total) return { ok: true, errors: [] }
       const combined = combineSegmentationChunks(chunkRows.map((row) => JSON.parse(text(row.parsed_result)) as { units: Array<{ message_indices: number[]; title_hint?: string }>; unassigned_message_indices: number[] }), sessionMessages.length)
@@ -3399,7 +3581,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   /** Start a brand-new session seeded with one user question. */
-  function createConversationTask(input: { question: string; topicId?: string; parentNodeId?: string; sourceUnitIds?: string[]; sourceMessageIds?: string[]; includeFullContent?: boolean }): string {
+  function createConversationTask(input: { question: string; topicId?: string; topicIds?: string[]; parentNodeId?: string; sourceUnitIds?: string[]; sourceMessageIds?: string[]; includeFullContent?: boolean }): string {
     const question = input.question.trim()
     if (!question) throw new Error('问题不能为空')
     const sourceUnitIds = input.sourceUnitIds ?? selectedContextIds.value
