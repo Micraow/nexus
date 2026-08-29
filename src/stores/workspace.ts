@@ -3330,6 +3330,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     executingTaskIds.add(taskId)
     clearStreamingTaskText(taskId)
     try {
+      const initial = tasks.value.find((item) => item.id === taskId)
+      if (initial?.status === 'needs_review') transitionTask(taskId, 'retry', { errorMessage: null, validationErrors: null })
       transitionTask(taskId, 'start')
       const started = tasks.value.find((item) => item.id === taskId)
       if (!started || started.status !== 'running') {
@@ -3341,22 +3343,36 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       throw error
     }
     let lastError: Error | null = null
+    let repairAttempts = 0
     try {
-      for (let attempt = 0; attempt < 3; attempt += 1) {
+      // Transport retries and semantic repair retries are deliberately kept
+      // separate. A malformed provider response must first produce a repair
+      // prompt and be re-queued; it must never be treated as an apply-ready
+      // result by the API path.
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const currentTask = tasks.value.find((item) => item.id === taskId)
+        if (!currentTask) return { ok: false, error: '找不到任务' }
+        if (currentTask.status !== 'pending' && currentTask.status !== 'running') {
+          if (currentTask.status === 'cancelled') return { ok: false, error: '任务已取消' }
+          if (currentTask.status !== 'needs_review') return { ok: false, error: `任务当前状态为${currentTask.status}` }
+          if (!transitionTask(taskId, 'retry', { errorMessage: null, validationErrors: null }) || !transitionTask(taskId, 'start')) {
+            return { ok: false, error: '任务无法重新排队进行修复' }
+          }
+        }
         const controller = new AbortController()
         abortControllers.set(taskId, controller)
         const timeout = window.setTimeout(() => controller.abort(), 45_000)
         try {
           const requestBody: Record<string, unknown> = {
-            model: task.model || provider.model,
+            model: currentTask.model || provider.model,
             temperature: 0,
-            messages: [{ role: 'user', content: task.prompt }],
+            messages: [{ role: 'user', content: currentTask.prompt }],
           }
-          if (config.value.llm.stream && task.type === 'conversation') requestBody.stream = true
+          if (config.value.llm.stream && currentTask.type === 'conversation') requestBody.stream = true
           // Expose maintenance operations as OpenAI-compatible functions when
           // the provider supports tool calling. The resulting calls are still
           // converted into suggestions and pass the same local validator.
-          if (task.type === 'maintenance') {
+          if (currentTask.type === 'maintenance') {
             requestBody.tools = listMaintenanceMcpTools().map((tool) => ({
               type: 'function',
               function: {
@@ -3386,7 +3402,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
             }>
           }
           const isEventStream = response.headers?.get?.('content-type')?.toLocaleLowerCase().includes('text/event-stream') ?? false
-          if (config.value.llm.stream && task.type === 'conversation' && response.body && isEventStream) {
+          if (config.value.llm.stream && currentTask.type === 'conversation' && response.body && isEventStream) {
             const reader = response.body.getReader()
             const decoder = new TextDecoder()
             let buffer = ''
@@ -3441,7 +3457,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           }
           const message = payload.choices?.[0]?.message
           let content = typeof message?.content === 'string' ? message.content : ''
-          if (task.type === 'maintenance' && message?.tool_calls?.length) {
+          if (currentTask.type === 'maintenance' && message?.tool_calls?.length) {
             const suggestions = message.tool_calls.map((call) => maintenanceToolCallSuggestion(call.function?.name ?? '', call.function?.arguments ?? ''))
             if (suggestions.some((suggestion) => !suggestion)) throw new Error('Provider 返回了无法识别的维护工具调用')
             const validSuggestions = suggestions.filter((suggestion): suggestion is Record<string, unknown> => Boolean(suggestion))
@@ -3465,7 +3481,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
             executingTaskIds.delete(taskId)
             return await executeTask(taskId)
           }
-          return result.ok ? { ok: true } : { ok: false, error: result.errors[0] }
+          if (result.ok) return { ok: true }
+          // Validation errors already caused markTask() to persist the
+          // original response and a repair prompt. Re-queue that prompt for
+          // API tasks, with a bounded budget so a provider cannot loop forever.
+          const canAutoRepair = currentTask.type === 'conversation'
+            && !config.value.llm.stream
+            && !result.errors.some((error) => error.includes('请求的引用已经展开') || error.includes('没有推进披露目录'))
+          if (canAutoRepair && result.errors.length && repairAttempts < 2) {
+            repairAttempts += 1
+            continue
+          }
+          return { ok: false, error: result.errors[0] }
         } catch (error) {
           const current = tasks.value.find((item) => item.id === taskId)
           if (current?.status === 'cancelled') return { ok: false, error: '任务已取消' }

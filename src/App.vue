@@ -2212,7 +2212,7 @@ onBeforeUnmount(() => {
         </div>
         <div v-if="activeView === 'tasks' && selectedTask" class="task-command-bar">
           <span>{{ selectedTask.scopeLabel || taskTypeLabel(selectedTask.type) }}</span>
-          <button v-if="selectedTask.mode === 'api' && ['pending', 'failed', 'needs_review'].includes(selectedTask.status)" class="button primary-button" @click="selectedTask.status === 'pending' ? executeApiTask(selectedTask) : retryTask(selectedTask)"><Send :size="14" />{{ selectedTask.status === 'pending' ? '执行任务' : '重试任务' }}</button>
+          <button v-if="selectedTask.mode === 'api' && ['pending', 'failed', 'needs_review'].includes(selectedTask.status)" class="button primary-button" @click="selectedTask.status === 'pending' || selectedTask.status === 'needs_review' ? executeApiTask(selectedTask) : retryTask(selectedTask)"><Send :size="14" />{{ selectedTask.status === 'needs_review' ? '自动修复并重试' : selectedTask.status === 'pending' ? '执行任务' : '重试任务' }}</button>
           <button v-if="selectedTask.type !== 'segmentation' && ['failed', 'needs_review', 'stale', 'cancelled'].includes(selectedTask.status)" class="button secondary-button" @click="retryTask(selectedTask)"><RefreshCw :size="14" />重新排队</button>
           <button v-if="['pending', 'running'].includes(selectedTask.status)" class="button secondary-button" @click="cancelTask(selectedTask)"><X :size="14" />取消</button>
           <button v-if="selectedTask.mode === 'prompt_paste' && ['pending', 'needs_review'].includes(selectedTask.status)" class="button secondary-button" @click="openPromptTask(selectedTask)"><Clipboard :size="14" />右侧 Prompt 浮层</button>
