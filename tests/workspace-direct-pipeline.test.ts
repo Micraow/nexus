@@ -546,6 +546,20 @@ describe('direct concept extraction import pipeline', () => {
     expect(prompt).toContain('知识主题：调度器')
   })
 
+  it('discloses an explicitly selected existing topic even before Session membership is persisted', () => {
+    const rootId = store.createConcept('网络根')
+    const topicId = store.createConcept('拥塞控制')
+    store.createRelation(rootId, topicId, 'hierarchy')
+    const sessionId = store.createConversationTask({ question: '先问网络根' })
+    const firstTask = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
+    expect(store.applyTaskResult(firstTask.id, JSON.stringify({ answer: '根主题回答', units: [{ title: '根片段', summary: '根证据。', concept_ids: [], concepts: [] }], memberships: [], disclosure_requests: [] })).ok).toBe(true)
+    const root = store.navNodes.find((node) => node.sessionId === sessionId && !node.parentId)!
+    const followUpId = store.createFollowUpTask({ sessionId, parentNodeId: root.id, topicId, question: '切换到拥塞控制继续问' })
+    const prompt = store.tasks.find((item) => item.id === followUpId)!.prompt
+    expect(prompt).toContain(topicId)
+    expect(prompt).toContain('知识主题：拥塞控制')
+  })
+
   it('allows only one unfinished follow-up per Session', () => {
     const sessionId = store.createConversationTask({ question: '第一轮问题' })
     const initialTask = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!

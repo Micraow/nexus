@@ -3483,6 +3483,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const ids = message.metadata?.concept_ids
       if (Array.isArray(ids)) ids.filter((id): id is string => typeof id === 'string').forEach((id) => currentSessionConceptIds.add(id))
     })
+    // A topic explicitly selected for this follow-up is authoritative input
+    // even when it has not yet been linked to the Session by a prior answer.
+    // Include its ancestor path in DISCLOSURE_INDEX so the model can reuse
+    // the real ID instead of echoing it as a response-local Concept.
+    if (input.topicId && concepts.value.some((concept) => concept.id === input.topicId && concept.status === 'active')) {
+      currentSessionConceptIds.add(input.topicId)
+    }
     const expandedSessionConceptPaths = [...currentSessionConceptIds].flatMap((conceptId) => conceptExpansionPath(conceptId, true))
     let taskId = ''
     mutate(() => {

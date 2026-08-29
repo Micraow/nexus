@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { DEFAULT_CONCEPT_LIMIT, normalizeConceptLimit } from '@/services/config'
 import type { ImportPayload } from '@/types/domain'
+import { normalizeText } from '@/utils/id'
 
 export const MAX_CONCEPT_NAME_LENGTH = 24
 
@@ -157,7 +158,7 @@ export function normalizeOriginConceptResultForReuse(
     { id: concept.id, label: concept.name, matchedBy: 'name' as const },
     ...(concept.aliases ?? []).map((alias) => ({ id: concept.id, label: alias, matchedBy: 'alias' as const })),
   ])
-    .map((item) => ({ ...item, normalized: item.label.trim().toLocaleLowerCase() }))
+    .map((item) => ({ ...item, normalized: normalizeText(item.label) }))
     .filter((item) => item.normalized.length >= 2)
   const byLabel = new Map(labels.map((item) => [item.normalized, item]))
   const refMap = new Map<string, string>()
@@ -168,7 +169,7 @@ export function normalizeOriginConceptResultForReuse(
     const clientRef = typeof candidate.client_ref === 'string' ? candidate.client_ref.trim() : ''
     const name = typeof candidate.name === 'string' ? candidate.name.trim() : ''
     if (!clientRef || !name) return true
-    const match = byLabel.get(name.toLocaleLowerCase())
+    const match = byLabel.get(normalizeText(name))
     if (!match) return true
     refMap.set(clientRef, match.id)
     reused.push({ client_ref: clientRef, concept_id: match.id, name, matched_by: match.matchedBy })
