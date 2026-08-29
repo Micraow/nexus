@@ -614,6 +614,7 @@ describe('direct concept extraction import pipeline', () => {
     const premature = store.applyTaskResult(taskId, JSON.stringify({ reason: '尚未检查子主题', suggestions: [], disclosure_requests: [] }))
     expect(premature.ok).toBe(false)
     expect(premature.errors.join('; ')).toContain('已列出但未展开')
+    expect(premature.errors.join('; ')).toContain(otherId)
   })
 
   it('rejects maintenance actions mixed with disclosure requests without applying either', () => {

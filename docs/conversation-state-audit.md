@@ -42,7 +42,7 @@ stateDiagram-v2
 
 任务状态事件（start、retry、cancel、fail_transport、continue_disclosure）与图谱事实写入是两类事务：前者只更新 `llm_tasks`，不会递增 `graph_revision`；后者才使图谱投影缓存失效。这样队列轮询、重试和人工校验不会导致图谱闪烁。
 
-维护结果还有两道独立的提交门禁：维护响应在 `suggestions=[]` 时无论 API 还是 Prompt 粘贴模式都必须带非空总体 `reason`（API 模式对所有响应都执行该要求）；最终动作的 Concept、关系、别名、Session、Message 和 KnowledgeUnit ID 必须来自当前 Prompt 中已经展开并带 `content` 的实体。根目录或 children 中只有标题/摘要的导航引用不构成写入授权，越界结果整体进入 `needs_review`，不应用部分建议。
+维护结果还有两道独立的提交门禁：维护响应在 `suggestions=[]` 时无论 API 还是 Prompt 粘贴模式都必须带非空总体 `reason`（API 模式对所有响应都执行该要求）；最终动作的 Concept、关系、别名、Session、Message 和 KnowledgeUnit ID 必须来自当前 Prompt 中已经展开并带 `content` 的实体。根目录或 children 中只有标题/摘要的导航引用不构成写入授权，越界结果整体进入 `needs_review`，不应用部分建议。若模型省略 `disclosure_requests` 但目录仍有 `pending_ref_ids`，任务同样不能成功；修复 Prompt 会列出待展开 ID（超出前 64 项的部分仍以目录为准），便于批量补发续轮请求。中间轮的总体 `reason` 保存在原始响应中，但只有最终 `success` 才能显示“无建议变更”。
 
 ## 维护时序
 

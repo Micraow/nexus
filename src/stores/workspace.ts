@@ -2682,7 +2682,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const currentDisclosure = parseDisclosureContext(task.prompt)
       const hiddenRefIds = currentDisclosure ? undisclosedReferenceIds(currentDisclosure) : []
       if (hiddenRefIds.length > 0) {
-        const hiddenErrors = [`维护审计尚有 ${hiddenRefIds.length} 个已列出但未展开的引用；请批量返回 disclosure_requests 后再给最终建议`]
+        // Include the exact pending IDs in the repair prompt. The original
+        // DISCLOSURE_INDEX remains authoritative, but surfacing this computed
+        // list makes a manually repaired response deterministic and prevents
+        // the model from interpreting an empty suggestions array as a final
+        // no-op. Keep the message bounded for very large graphs; the full
+        // pending list is still present in the task Prompt.
+        const preview = hiddenRefIds.slice(0, 64).join('、')
+        const suffix = hiddenRefIds.length > 64 ? `（其余 ${hiddenRefIds.length - 64} 个请从 DISCLOSURE_INDEX.pending_ref_ids 读取）` : ''
+        const hiddenErrors = [`维护审计尚有 ${hiddenRefIds.length} 个已列出但未展开的引用；请批量返回 disclosure_requests 后再给最终建议。待展开 refID：${preview}${suffix}`]
         markTask(taskId, 'needs_review', responseText, hiddenErrors)
         return { ok: false, errors: hiddenErrors }
       }
