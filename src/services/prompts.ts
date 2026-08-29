@@ -669,7 +669,7 @@ ${disclosureText}
 ${disclosureAvailability(input.disclosure)}
 
 知识主题与事实归属同步：
-- 顶层 concepts 用于本轮回答中新识别出的稳定知识主题；最多 ${conceptLimit} 项，每个候选必须提供本响应唯一的 client_ref（new:1 到 new:${conceptLimit}）。每个 Concept 名称最长 24 个字符（按 Unicode 字符计数），必须像教材章节的大标题或小标题，是单一、凝练、可区分的主题词组（通常 1～6 个关键词）；标题中禁止用“与/和/及/、/”拼接多个主题，不要把多个主题合并成“甲与乙关系”“甲/乙对比”“甲方案谱系”等复合标题，多个独立概念必须分别返回。只是值得继续探索、证据尚不足的黄色建议不要创建为 Concept。
+- 顶层 concepts 用于本轮回答中新识别出的稳定知识主题；最多 ${conceptLimit} 项，每个候选必须提供本响应唯一的 client_ref（new:1 到 new:${conceptLimit}）。每个 Concept 名称最长 24 个字符（按 Unicode 字符计数），必须像教材章节的大标题或小标题，是单一、凝练、可区分的主题词组（通常 1～6 个关键词）；标题中禁止用“与/和/及/、/”拼接多个主题，不要把多个主题合并成“甲与乙关系”“甲/乙对比”“甲方案谱系”等复合标题，必须拆成同级独立概念或父子hierarchy membership，多个独立概念必须分别返回。只是值得继续探索、证据尚不足的黄色建议不要创建为 Concept。
 ${CONCEPT_NAME_QUALITY_CONTRACT}
 - 顶层 memberships 只能使用上面给出的 Session ID、用户 Message ID 或 assistant Message ID，target_type 只能是 session 或 message。引用已有主题时使用 DISCLOSURE_INDEX 已列出的 Concept refID；引用本轮新主题时使用 client_ref。
 - 每个新主题必须至少归属于用户或 assistant Message；只标记有直接证据的消息，不要为了覆盖全部消息、凑满数量或重复同一主题而逐条复制 membership。只有主题确实概括整个会话时才同时归属于 Session。不要把 Session 归属隐式复制给所有 Message。
