@@ -17,6 +17,9 @@ export const MAX_CONCEPT_LIMIT = 32
 export const DEFAULT_API_CONCURRENCY = 2
 export const MIN_API_CONCURRENCY = 1
 export const MAX_API_CONCURRENCY = 16
+export const DEFAULT_API_RETRIES = 3
+export const MIN_API_RETRIES = 0
+export const MAX_API_RETRIES = 10
 
 export function normalizeTokenBudget(value: unknown, fallback = DEFAULT_TOKEN_BUDGET): number {
   const candidate = typeof value === 'string' && value.trim().length === 0 ? Number.NaN : Number(value)
@@ -36,12 +39,19 @@ export function normalizeApiConcurrency(value: unknown, fallback = DEFAULT_API_C
   return Math.min(MAX_API_CONCURRENCY, Math.max(MIN_API_CONCURRENCY, Math.round(candidate)))
 }
 
+export function normalizeApiRetries(value: unknown, fallback = DEFAULT_API_RETRIES): number {
+  const candidate = typeof value === 'string' && value.trim().length === 0 ? Number.NaN : Number(value)
+  if (!Number.isFinite(candidate)) return fallback
+  return Math.min(MAX_API_RETRIES, Math.max(MIN_API_RETRIES, Math.round(candidate)))
+}
+
 type YamlConfig = {
   llm?: {
     mode?: AppConfig['llm']['mode']
     default_provider?: string | null
     defaultProvider?: string | null
     concurrency?: number
+    retries?: number
     concept_limit?: number
     conceptLimit?: number
     token_budget?: number
@@ -80,6 +90,7 @@ export function serializeConfig(config: AppConfig): string {
       mode: config.llm.mode,
       default_provider: config.llm.defaultProvider,
       concurrency: normalizeApiConcurrency(config.llm.concurrency),
+      retries: normalizeApiRetries(config.llm.retries),
       concept_limit: normalizeConceptLimit(config.llm.conceptLimit),
       token_budget: normalizeTokenBudget(config.llm.tokenBudget),
       stream: Boolean(config.llm.stream),
@@ -124,6 +135,7 @@ export function parseConfig(value: unknown): Partial<AppConfig> {
       mode: raw.llm?.mode ?? null,
       defaultProvider: raw.llm?.default_provider ?? raw.llm?.defaultProvider ?? null,
       concurrency: normalizeApiConcurrency(raw.llm?.concurrency),
+      retries: normalizeApiRetries(raw.llm?.retries),
       conceptLimit: normalizeConceptLimit(raw.llm?.concept_limit ?? raw.llm?.conceptLimit),
       tokenBudget: normalizeTokenBudget(raw.llm?.token_budget ?? raw.llm?.tokenBudget),
       stream: Boolean(raw.llm?.stream),

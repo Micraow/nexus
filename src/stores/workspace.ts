@@ -2,7 +2,7 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { db } from '@/services/db'
 import { httpRequest } from '@/services/http'
-import { DEFAULT_API_CONCURRENCY, DEFAULT_CONCEPT_LIMIT, DEFAULT_TOKEN_BUDGET, normalizeApiConcurrency, normalizeConceptLimit, normalizeTokenBudget, parseConfigText, readConfigText, writeConfig } from '@/services/config'
+import { DEFAULT_API_CONCURRENCY, DEFAULT_API_RETRIES, DEFAULT_CONCEPT_LIMIT, DEFAULT_TOKEN_BUDGET, normalizeApiConcurrency, normalizeApiRetries, normalizeConceptLimit, normalizeTokenBudget, parseConfigText, readConfigText, writeConfig } from '@/services/config'
 import { buildGraph, graphSnapshotIsProgressiveCompatible, graphStats, graphViewFallbackIsCompatible, resolveVisibleConceptIds, toggleExpandedConceptIds } from '@/services/graph'
 import { buildSearchDocuments, searchKnowledge } from '@/services/search'
 import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildOriginConceptPrompt, buildRepairPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, ensureHarnessPrompt, formatMaintenanceActionApi, listMaintenanceMcpTools, listedDisclosureRefIds, MAINTENANCE_ACTION_API, maintenanceToolCallSuggestion, parseDisclosureContext, PROMPT_VERSION, renderQuickPhrase, replaceDisclosureContext } from '@/services/prompts'
@@ -49,7 +49,7 @@ export type { GraphViewOptions } from '@/types/domain'
 type Row = Record<string, unknown>
 
 const DEFAULT_CONFIG: AppConfig = {
-  llm: { mode: null, defaultProvider: null, concurrency: DEFAULT_API_CONCURRENCY, conceptLimit: DEFAULT_CONCEPT_LIMIT, tokenBudget: DEFAULT_TOKEN_BUDGET, stream: false, providers: [], taskOverrides: {} },
+  llm: { mode: null, defaultProvider: null, concurrency: DEFAULT_API_CONCURRENCY, retries: DEFAULT_API_RETRIES, conceptLimit: DEFAULT_CONCEPT_LIMIT, tokenBudget: DEFAULT_TOKEN_BUDGET, stream: false, providers: [], taskOverrides: {} },
   prompts: { overrideDir: '' },
   ui: { theme: 'system', reducedMotion: false, fontFamily: 'system-sans', fontSize: 15, graph: { showUnits: false, showMessages: false, showProposed: false, showRetainedSessions: false } },
   storage: { databasePath: '' },
@@ -3357,7 +3357,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       // separate. A malformed provider response must first produce a repair
       // prompt and be re-queued; it must never be treated as an apply-ready
       // result by the API path.
-      for (let attempt = 0; attempt < 5; attempt += 1) {
+      const transportAttempts = Math.max(1, normalizeApiRetries(config.value.llm.retries, DEFAULT_API_RETRIES) + 1)
+      for (let attempt = 0; attempt < transportAttempts + 2; attempt += 1) {
         const currentTask = tasks.value.find((item) => item.id === taskId)
         if (!currentTask) return { ok: false, error: '找不到任务' }
         if (currentTask.status !== 'pending' && currentTask.status !== 'running') {
@@ -3507,7 +3508,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           if (controller.signal.aborted) lastError = new Error('API 请求超时')
           else lastError = error instanceof Error ? error : new Error('API 请求失败')
           const retryable = Boolean((error as { retryable?: boolean })?.retryable) || controller.signal.aborted || lastError.message.includes('Failed to fetch')
-          if (!retryable || attempt === 2) break
+          if (!retryable || attempt >= transportAttempts - 1) break
           await new Promise((resolve) => window.setTimeout(resolve, 500 * 2 ** attempt))
         } finally {
           window.clearTimeout(timeout)
@@ -3747,6 +3748,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function updateConfig(patch: Partial<AppConfig>): void {
     const nextLlm = { ...config.value.llm, ...(patch.llm ?? {}) }
     nextLlm.concurrency = normalizeApiConcurrency(nextLlm.concurrency, config.value.llm.concurrency)
+    nextLlm.retries = normalizeApiRetries(nextLlm.retries, config.value.llm.retries)
     nextLlm.conceptLimit = normalizeConceptLimit(nextLlm.conceptLimit, config.value.llm.conceptLimit)
     nextLlm.tokenBudget = normalizeTokenBudget(nextLlm.tokenBudget, config.value.llm.tokenBudget)
     config.value = {

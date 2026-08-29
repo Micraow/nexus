@@ -400,6 +400,7 @@ export interface AppConfig {
     mode: TaskMode | null
     defaultProvider: string | null
     concurrency: number
+    retries?: number
     conceptLimit: number
     tokenBudget: number
     /** Request OpenAI-compatible streaming responses for interactive tasks. */

@@ -50,7 +50,7 @@ import SearchSelect from '@/components/SearchSelect.vue'
 import ReadingUnitsView from '@/components/ReadingUnitsView.vue'
 import { cleanGraphText, deriveConceptRelatedPairs } from '@/services/graph'
 import nexusLogo from '../src-tauri/icons/icon.svg'
-import { DEFAULT_CONCEPT_LIMIT, MAX_API_CONCURRENCY, MAX_CONCEPT_LIMIT, MIN_API_CONCURRENCY, MIN_CONCEPT_LIMIT, MIN_TOKEN_BUDGET, normalizeApiConcurrency, normalizeConceptLimit, normalizeTokenBudget, serializeConfig } from '@/services/config'
+import { DEFAULT_CONCEPT_LIMIT, MAX_API_CONCURRENCY, MAX_API_RETRIES, MAX_CONCEPT_LIMIT, MIN_API_CONCURRENCY, MIN_API_RETRIES, MIN_CONCEPT_LIMIT, MIN_TOKEN_BUDGET, normalizeApiConcurrency, normalizeApiRetries, normalizeConceptLimit, normalizeTokenBudget, serializeConfig } from '@/services/config'
 import { saveTextFile } from '@/services/files'
 import type { SaveFileRequest } from '@/services/files'
 import { canCloseConversationBranch, conversationBranchState, conversationTaskForNode, suggestedExplorationQuestion, unfinishedConversationTask } from '@/services/conversation'
@@ -155,6 +155,7 @@ const providerDraft = ref({ id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://
 const tokenBudgetDraft = ref(String(store.config.llm.tokenBudget))
 const conceptLimitDraft = ref(String(store.config.llm.conceptLimit))
 const concurrencyDraft = ref(String(store.config.llm.concurrency))
+const retriesDraft = ref(String(store.config.llm.retries))
 const graphLayoutNonce = ref(0)
 const selectedNavNodeId = ref<string | null>(null)
 const draggedContextId = ref<string | null>(null)
@@ -714,6 +715,12 @@ function setView(view: ViewName): void {
   const viewChanged = view !== activeView.value
   if (view === 'overview' && activeView.value === 'overview') startWelcomeTypewriter()
   activeView.value = view
+  // Imports and background API tasks may finish between navigation events;
+  // refresh the reactive projections when entering another module so users
+  // never need to restart the desktop shell to see new graph facts.
+  if (viewChanged) {
+    try { store.refreshFromDb() } catch { /* initialization may still be in progress */ }
+  }
   if (viewChanged) {
     // Detail and maintenance panels belong to the module that opened them.
     // Clear both when navigating so a stale floating card cannot cover the
@@ -1984,6 +1991,12 @@ function setConcurrency(value: number): void {
   store.updateConfig({ llm: { ...store.config.llm, concurrency } })
   notify(`API 并发数已设为 ${concurrency}`)
 }
+function setRetries(value: number): void {
+  const retries = normalizeApiRetries(value, store.config.llm.retries)
+  retriesDraft.value = String(retries)
+  store.updateConfig({ llm: { ...store.config.llm, retries } })
+  notify(`API 重试次数已设为 ${retries}`)
+}
 
 function setConceptLimit(): void {
   const conceptLimit = normalizeConceptLimit(conceptLimitDraft.value, store.config.llm.conceptLimit || DEFAULT_CONCEPT_LIMIT)
@@ -2107,6 +2120,10 @@ watch(() => store.config.llm.tokenBudget, (tokenBudget) => {
 
 watch(() => store.config.llm.conceptLimit, (conceptLimit) => {
   conceptLimitDraft.value = String(conceptLimit)
+}, { immediate: true })
+
+watch(() => store.config.llm.retries, (retries) => {
+  retriesDraft.value = String(normalizeApiRetries(retries))
 }, { immediate: true })
 
 watch(() => store.config.llm.concurrency, (concurrency) => {
@@ -2460,7 +2477,7 @@ onBeforeUnmount(() => {
         <section v-if="activeView === 'settings'" class="surface-section token-budget-section"><div class="section-heading"><div><span class="eyebrow">CONTEXT WINDOW</span><h3>Token 预算</h3></div><SlidersHorizontal :size="18" /></div><p class="section-description">手动设置长会话分窗和新对话上下文校验使用的估算上限。修改后立即写回配置，新导入和新对话会使用新值。</p><div class="token-budget-control"><label for="token-budget">每个任务的 Token 预算<small>最小 {{ MIN_TOKEN_BUDGET.toLocaleString() }}；默认值仅用于首次启动或无效配置。</small></label><div class="token-budget-input"><input id="token-budget" v-model="tokenBudgetDraft" type="number" :min="MIN_TOKEN_BUDGET" step="1000" inputmode="numeric" @change="setTokenBudget" @keydown.enter.prevent="setTokenBudget" /><span>tokens</span></div></div><div class="token-budget-control"><label for="concept-limit">每次 Concept 上限<small>每个整理任务最多提取 {{ MIN_CONCEPT_LIMIT }}～{{ MAX_CONCEPT_LIMIT }} 个 Concept。</small></label><div class="token-budget-input"><input id="concept-limit" v-model="conceptLimitDraft" type="number" :min="MIN_CONCEPT_LIMIT" :max="MAX_CONCEPT_LIMIT" step="1" inputmode="numeric" @change="setConceptLimit" @keydown.enter.prevent="setConceptLimit" /><span>Concept</span></div></div></section>
         <section v-if="activeView === 'settings'" class="surface-section phrase-section"><div class="section-heading"><div><span class="eyebrow">QUICK PHRASES</span><h3>快捷短语</h3></div><MessageSquare :size="18" /></div><p class="section-description">使用 <code>$(topic)</code> 和 <code>$(context)</code> 插入当前主题与上下文。</p><div class="phrase-list"><div v-for="phrase in store.quickPhrases" :key="phrase.id" class="phrase-row"><span>{{ phrase.template }}</span><div v-if="!phrase.isBuiltin" class="phrase-actions"><button class="icon-button" title="编辑快捷短语" :aria-label="`编辑 ${phrase.template}`" @click="beginEditPhrase(phrase.id, phrase.template)"><Settings2 :size="14" /></button><button class="icon-button" title="删除快捷短语" :aria-label="`删除 ${phrase.template}`" @click="removePhrase(phrase.id)"><Trash2 :size="14" /></button></div><span v-else class="soft-tag">内置</span></div></div><div class="phrase-editor"><input v-model="customPhraseDraft" placeholder="例如：请比较 $(topic) 与 $(context)" @keyup.enter="editingPhraseId ? savePhraseEdit() : addCustomPhrase()" /><button class="button secondary-button" @click="editingPhraseId ? savePhraseEdit() : addCustomPhrase()"><Check :size="14" />{{ editingPhraseId ? '保存' : '添加' }}</button><button v-if="editingPhraseId" class="text-button" @click="editingPhraseId = null; customPhraseDraft = ''">取消</button></div></section>
       </section>
-      <section v-if="activeView === 'settings'" class="surface-section stream-settings-section"><div class="section-heading"><div><span class="eyebrow">CONVERSATION OUTPUT</span><h3>对话输出</h3></div><Send :size="18" /></div><label class="toggle-row"><span><strong>流式传输对话</strong><small>API 模式下逐步显示回答；关闭时等待完整响应</small></span><input :checked="Boolean(store.config.llm.stream)" type="checkbox" @change="store.updateConfig({ llm: { ...store.config.llm, stream: ($event.target as HTMLInputElement).checked } })" /></label></section>
+      <section v-if="activeView === 'settings'" class="surface-section stream-settings-section"><div class="section-heading"><div><span class="eyebrow">CONVERSATION OUTPUT</span><h3>对话输出</h3></div><Send :size="18" /></div><label class="toggle-row"><span><strong>流式传输对话</strong><small>API 模式下逐步显示回答；关闭时等待完整响应</small></span><input :checked="Boolean(store.config.llm.stream)" type="checkbox" @change="store.updateConfig({ llm: { ...store.config.llm, stream: ($event.target as HTMLInputElement).checked } })" /></label><div class="mode-concurrency"><label for="api-retries">失败重试次数<small>自动重试次数，{{ MIN_API_RETRIES }}～{{ MAX_API_RETRIES }}</small></label><input id="api-retries" v-model="retriesDraft" type="number" :min="MIN_API_RETRIES" :max="MAX_API_RETRIES" step="1" @change="setRetries(Number(retriesDraft))" @keydown.enter.prevent="setRetries(Number(retriesDraft))" /></div></section>
     </main>
 
     <section v-if="maintenancePanelOpen && maintenancePageHasContext" class="maintenance-panel surface-section" aria-label="全图知识维护">
