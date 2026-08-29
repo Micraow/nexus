@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia } from 'pinia'
 import { createApp, nextTick } from 'vue'
 import App from '@/App.vue'
@@ -171,6 +171,68 @@ describe('full-graph maintenance entry', () => {
     await nextTick()
 
     expect(target.querySelector<HTMLTextAreaElement>('#task-response')?.value).toBe('')
+  })
+
+  it('continues an API maintenance task after a manually corrected disclosure request', async () => {
+    const pinia = createPinia()
+    const store = useWorkspaceStore(pinia)
+    await store.init()
+    store.clearAllData()
+    const rootId = store.createConcept('页面续轮根主题')
+    const childId = store.createConcept('页面续轮子主题')
+    store.createRelation(rootId, childId, 'hierarchy')
+    store.updateConfig({
+      llm: {
+        ...store.config.llm,
+        mode: 'api',
+        defaultProvider: 'maintenance-ui-provider',
+        providers: [{ id: 'maintenance-ui-provider', name: 'Maintenance UI', baseUrl: 'https://example.test/v1', model: 'maintenance-model', apiKey: 'test-key' }],
+      },
+    })
+    const responses = [
+      JSON.stringify({ reason: '首轮请求未知引用', suggestions: [], disclosure_requests: [{ refID: 'unknown-ref', depth: 1 }] }),
+      JSON.stringify({ reason: '已完成根主题审计，未发现需要修改的地方。', suggestions: [], disclosure_requests: [] }),
+    ]
+    let requestIndex = 0
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: responses[requestIndex++] } }] }),
+    } as Response)))
+
+    const taskId = store.createMaintenanceTask()
+    await expect(store.executeTask(taskId)).resolves.toEqual({ ok: false, error: expect.stringContaining('不在当前目录') })
+    expect(store.tasks.find((task) => task.id === taskId)?.status).toBe('needs_review')
+
+    const target = document.createElement('div')
+    document.body.appendChild(target)
+    const app = createApp(App)
+    app.use(pinia)
+    mounted.push(app)
+    app.mount(target)
+    await nextTick()
+    ;[...target.querySelectorAll<HTMLButtonElement>('.nav-item')]
+      .find((button) => button.textContent?.includes('任务中心'))?.click()
+    await nextTick()
+    target.querySelector<HTMLButtonElement>('.task-row')!.click()
+    await nextTick()
+
+    const textarea = target.querySelector<HTMLTextAreaElement>('#task-response')!
+    textarea.value = JSON.stringify({ reason: '修正后请求根主题展开', suggestions: [], disclosure_requests: [{ refID: rootId, depth: 64 }] })
+    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    const applyButton = [...target.querySelectorAll<HTMLButtonElement>('.response-actions button')]
+      .find((button) => button.textContent?.includes('校验并应用'))
+    expect(applyButton).not.toBeUndefined()
+    applyButton!.click()
+
+    for (let attempt = 0; attempt < 10 && store.tasks.find((task) => task.id === taskId)?.status !== 'success'; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await nextTick()
+    }
+    expect(requestIndex).toBe(2)
+    expect(store.tasks.find((task) => task.id === taskId)?.status).toBe('success')
+    expect(store.tasks.find((task) => task.id === taskId)?.parsedResult).toContain('未发现需要修改')
+    store.clearAllData()
   })
 
   it.each([
