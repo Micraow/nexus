@@ -1289,6 +1289,10 @@ function openConversationSession(sessionId: string): void {
 }
 
 function leaveConversationSession(): void {
+  if (activeConversationUnfinishedTask.value) {
+    notify('请先完成当前回答，再离开会话')
+    return
+  }
   activeConversationSessionId.value = null
   selectedNavNodeId.value = null
   pendingConversationBranch.value = null
@@ -1376,6 +1380,16 @@ function openTaskConversation(task: LLMTask): void {
 }
 
 function selectConversationNode(node: NavTreeNode): void {
+  const pending = pendingConversationBranch.value
+  // A running/needs-review answer belongs to the temporary branch that was
+  // created for its recommendation. Switching the navigator during that
+  // window would render the same task's stream on a different card (usually
+  // the root). Keep the branch selected until its result is applied.
+  if (pending?.started && pending.id !== node.id) {
+    selectedNavNodeId.value = pending.id
+    notify('请先完成当前分支回答，再切换探索节点')
+    return
+  }
   if (selectedNavNodeId.value !== node.id) {
     composerQuestion.value = ''
     composerPhraseId.value = ''
@@ -2099,7 +2113,7 @@ onBeforeUnmount(() => {
                   <div v-if="activeConversationCurrentCard" class="conversation-card-stage" :style="{ '--stack-count': activeConversationBranchCards.length }">
                     <TransitionGroup name="branch-card" tag="div" class="conversation-card-stack">
                       <section v-for="(card, cardIndex) in activeConversationBranchCards" :key="card.node.id" class="conversation-branch-card" :class="{ current: cardIndex === activeConversationBranchCards.length - 1, ancestor: cardIndex < activeConversationBranchCards.length - 1 }" :aria-hidden="cardIndex < activeConversationBranchCards.length - 1 ? 'true' : undefined" :aria-label="`${cardIndex === activeConversationBranchCards.length - 1 ? '当前' : '祖先'}探索分支：${card.node.label}`" :style="{ '--stack-depth': activeConversationBranchCards.length - cardIndex - 1 }">
-                        <div v-if="cardIndex === activeConversationBranchCards.length - 1" class="conversation-branch-card-title current-title"><button class="branch-card-title-main" type="button" @click="selectConversationNode(card.node)"><span class="branch-card-dot" aria-hidden="true" /><strong>{{ displayText(card.node.label, '未命名探索节点') }}</strong><span class="branch-card-depth">第 {{ card.node.depth + 1 }} 层</span></button><button v-if="pendingConversationBranch?.id === card.node.id" class="icon-button branch-card-close" type="button" :disabled="pendingConversationBranch.started" :aria-label="pendingConversationBranch.started ? '探索已开始，不能关闭' : '关闭这条未开始的探索分支'" :title="pendingConversationBranch.started ? '探索已开始，不能关闭' : '关闭分支'" @click="closePendingConversationBranch"><X :size="15" /></button></div>
+                        <div v-if="cardIndex === activeConversationBranchCards.length - 1" class="conversation-branch-card-title current-title"><button class="branch-card-title-main" type="button" @click="selectConversationNode(card.node)"><span class="branch-card-dot" aria-hidden="true" /><strong>{{ displayText(card.node.label, '未命名探索节点') }}</strong><span class="branch-card-depth">第 {{ card.node.depth + 1 }} 层</span></button><button v-if="pendingConversationBranch?.id === card.node.id && !pendingConversationBranch.started" class="icon-button branch-card-close" type="button" aria-label="关闭这条未开始的探索分支" title="关闭分支" @click="closePendingConversationBranch"><X :size="15" /></button></div>
                         <div v-else class="conversation-branch-card-title" aria-hidden="true"><span class="branch-card-dot" aria-hidden="true" /><strong>{{ displayText(card.node.label, '未命名探索节点') }}</strong><span class="branch-card-depth">第 {{ card.node.depth + 1 }} 层</span></div>
                         <div v-if="card.units.length" class="conversation-card-units" aria-label="当前阅读片段"><BookOpen :size="13" /><span>阅读片段：</span><button v-for="unit in card.units" :key="unit.id" type="button" class="conversation-unit-link" @click="openUnit(unit.id)">{{ displayText(unit.title, '未命名阅读片段') }}</button></div>
                         <article v-for="message in card.messages" :key="message.id" :data-conversation-message="message.id" class="conversation-message" :class="message.role"><div class="conversation-message-meta"><strong>{{ message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : '系统' }}</strong><span>消息 #{{ message.orderInSession + 1 }}</span></div><div class="md-body" v-html="renderedMessageContent(message.content, message)" @click="handleRenderedClick($event, message)" @keydown.enter.prevent="handleRenderedClick($event, message)" /></article>

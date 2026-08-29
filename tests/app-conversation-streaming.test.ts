@@ -126,6 +126,14 @@ describe('conversation answer preview', () => {
     target.querySelector<HTMLButtonElement>('[aria-label="发送追问"]')!.click()
     await nextTick()
 
+    // The temporary recommendation branch owns the in-flight task. Selecting
+    // its parent while the Prompt/API result is pending must not move the
+    // stream back onto the root card.
+    const rootNode = target.querySelector<SVGGElement>('[data-node-id^="nav_"]')
+    rootNode?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    expect(target.querySelector('.conversation-branch-card.current strong')?.textContent).toBe('调度器')
+
     const followUpTask = store.tasks
       .filter((task) => task.type === 'conversation' && task.inputRevision.startsWith(`${sessionId}:`))
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]
@@ -148,5 +156,6 @@ describe('conversation answer preview', () => {
     const answer = store.messages.find((message) => message.role === 'assistant' && message.metadata?.taskId === followUpTask.id)
     expect(answer).toBeDefined()
     expect(target.querySelector('.conversation-tree-node.is-current')?.getAttribute('data-node-id')).toBe(answer?.metadata?.navNodeId)
+    expect(target.querySelector('.branch-card-close')).toBeNull()
   })
 })
