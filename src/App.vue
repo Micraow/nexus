@@ -2118,7 +2118,7 @@ onBeforeUnmount(() => {
               <div class="chat-composer" :class="{ focused: composerQuestion.length }">
                 <textarea v-model="composerQuestion" rows="4" placeholder="输入消息…" aria-label="新对话问题" @keydown.ctrl.enter.prevent="submitComposer" @keydown.meta.enter.prevent="submitComposer"></textarea>
                 <div class="chat-composer-topbar">
-                  <div class="chat-select"><span>主题</span><SearchSelect v-model="composerTopicIds" multiple :options="[{ value: null, label: '不指定' }, ...store.activeConcepts.map((concept) => ({ value: concept.id, label: concept.name, hint: concept.summary }))]" aria-label="选择知识主题" /></div>
+                  <div class="chat-select topic-select"><span>主题</span><SearchSelect v-model="composerTopicIds" multiple :options="[{ value: null, label: '不指定' }, ...store.activeConcepts.map((concept) => ({ value: concept.id, label: concept.name, hint: concept.summary }))]" aria-label="选择知识主题" /></div>
                   <div class="chat-select phrase-select"><span>快捷短语</span><select v-model="composerPhraseId" aria-label="选择快捷短语" @change="applyComposerPhrase"><option value="">无</option><option v-for="phrase in store.quickPhrases" :key="phrase.id" :value="phrase.id">{{ phrase.template }}</option></select><ChevronDown :size="13" /></div>
                 </div>
                 <div class="chat-composer-footer">
@@ -2432,7 +2432,7 @@ onBeforeUnmount(() => {
       <section class="composer-modal" role="dialog" aria-modal="true" aria-labelledby="composer-title">
         <div class="modal-header"><div><span class="eyebrow">{{ composerFollowUp ? 'FOLLOW-UP' : 'NEW CONVERSATION' }}</span><h2 id="composer-title">{{ composerFollowUp ? `继续追问：${composerFollowUp.label}` : '发起新对话' }}</h2></div><button class="icon-button" aria-label="关闭新对话" title="关闭" @click="composerOpen = false"><X :size="17" /></button></div>
         <div class="composer-fields">
-          <div class="composer-field"><span>围绕知识主题</span><SearchSelect v-model="composerTopicIds" multiple :options="[{ value: null, label: '不指定主题' }, ...store.activeConcepts.map((concept) => ({ value: concept.id, label: concept.name, hint: concept.summary }))]" aria-label="围绕知识主题" /></div>
+          <div class="composer-field topic-select-field"><span>围绕知识主题</span><SearchSelect v-model="composerTopicIds" multiple :options="[{ value: null, label: '不指定主题' }, ...store.activeConcepts.map((concept) => ({ value: concept.id, label: concept.name, hint: concept.summary }))]" aria-label="围绕知识主题" /></div>
           <label>快捷短语<select v-model="composerPhraseId" @change="applyComposerPhrase"><option value="">选择一个快捷短语</option><option v-for="phrase in store.quickPhrases" :key="phrase.id" :value="phrase.id">{{ phrase.template }}</option></select></label>
           <label class="composer-question">问题<textarea v-model="composerQuestion" rows="5" placeholder="输入你想继续探索的问题"></textarea></label>
           <label class="toggle-row"><span><strong>附带完整原文</strong><small>关闭时只发送标题、摘要和知识主题</small></span><input v-model="composerIncludeFull" type="checkbox" /></label>

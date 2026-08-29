@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Check, ChevronDown, Search } from 'lucide-vue-next'
 import { cleanGraphText } from '@/services/graph'
 
@@ -77,9 +77,32 @@ function closeAndRestoreFocus(): void {
 function closeOnFocusOut(event: FocusEvent): void {
   const nextTarget = event.relatedTarget
   if (nextTarget instanceof Node && rootElement.value?.contains(nextTarget)) return
+  // WebView focus transitions can report a null relatedTarget while the
+  // pointer is moving from the trigger into the popover. Defer that case to
+  // the next microtask so an inside click cannot close the list before its
+  // click handler runs.
+  if (!nextTarget) {
+    queueMicrotask(() => {
+      const active = document.activeElement
+      if (active instanceof Node && rootElement.value?.contains(active)) return
+      open.value = false
+      query.value = ''
+    })
+    return
+  }
   open.value = false
   query.value = ''
 }
+
+function closeOnPointerDown(event: PointerEvent): void {
+  const target = event.target
+  if (target instanceof Node && rootElement.value?.contains(target)) return
+  open.value = false
+  query.value = ''
+}
+
+onMounted(() => document.addEventListener('pointerdown', closeOnPointerDown, true))
+onBeforeUnmount(() => document.removeEventListener('pointerdown', closeOnPointerDown, true))
 
 watch(() => props.modelValue, () => { if (!open.value) query.value = '' })
 </script>
