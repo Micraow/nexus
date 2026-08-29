@@ -304,8 +304,9 @@ describe('prompt harness and progressive disclosure', () => {
     expect(prompt).toContain('只有确无合适上位主题才允许暂作根')
     expect(prompt).toContain('CAVER 路径信息交换')
     expect(prompt).toContain('"status":"proposed"')
-    expect(prompt).toContain('"confidence":0.93')
-    expect(prompt).toContain('"reason":"该名称在本文中作为一个固定协议栈整体反复指代')
+    expect(prompt).toContain('"name":"喜羊羊与灰太狼"')
+    expect(prompt).toContain('"confidence":0.99')
+    expect(prompt).toContain('"reason":"“喜羊羊与灰太狼”是作品的正式固定名称')
   })
 
   it('passes the configured Concept limit to direct Session extraction', () => {

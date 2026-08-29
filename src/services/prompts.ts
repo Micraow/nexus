@@ -17,7 +17,7 @@ Concept 名称输出前机械自检（硬限制，必须逐项执行）：
 5. 输出前再次逐项检查：每个 name 最长 24 个 Unicode 字符。含连接分隔符的名称只有在同一对象提供合法 confidence 和 reason 时才可保留；否则必须拆分，任一项失败都不得输出该 JSON。
 反例（禁止）："DCQCN 与 PFC"、"PathTable/FlowTable 设计"、"CONGA、MP-RDMA 方案对比"。
 正例：把共同上位主题和独立子主题分别声明为 {"client_ref":"new:1","name":"RDMA 网络控制","summary":"RDMA 网络中的流量调节主题。","aliases":[]}、{"client_ref":"new:2","name":"DCQCN 拥塞控制","summary":"基于 ECN 反馈的端到端拥塞控制。","aliases":[]}、{"client_ref":"new:3","name":"PFC 逐跳反压","summary":"按优先级暂停链路流量的逐跳机制。","aliases":[]}，再返回 new:1→new:2、new:1→new:3 的 hierarchy；不得把三个名称重新拼成一个 Concept。
-固定技术名称确实不可拆分时，必须一次性在同一个 JSON Concept 对象中给出字段，不能先省略再补充：{"client_ref":"new:1","name":"PFC 与 ECN 协议栈","summary":"由 PFC 与 ECN 共同构成的固定无损网络协议栈术语。","aliases":[],"confidence":0.93,"reason":"该名称在本文中作为一个固定协议栈整体反复指代，拆成两个 Concept 会丢失其组合语义。"}。只有这种有证据的固定术语才可保留；普通比较或并列必须拆成多个对象。
+固定名称确实不可拆分时，必须一次性在同一个 JSON Concept 对象中给出字段，不能先省略再补充：{"client_ref":"new:1","name":"喜羊羊与灰太狼","summary":"一个整体使用的动画作品名称，而不是两个独立主题。","aliases":[],"confidence":0.99,"reason":"“喜羊羊与灰太狼”是作品的正式固定名称，完整指向同一部动画；拆成两个 Concept 会破坏专名含义。"}。只有这种有证据的固定名称才可保留；普通比较或并列必须拆成多个对象。
 `
 
 const CONCEPT_NAME_FINAL_GATE = '最终 JSON 门禁：输出前逐项扫描 concepts[].name；含作为拼接分隔符使用的“与”“和”“及”“、”“/”“／”时，默认拆成独立 Concept；只有确属不可拆分固定技术名称时，才在该对象提供 0～1 的 confidence 和非空 reason。不能只删连接词继续合并，不能输出后依赖软件拒绝。词内部或名称首尾的“与/和/及”不算拼接分隔符。'
