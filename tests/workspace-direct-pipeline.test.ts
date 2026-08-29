@@ -725,15 +725,40 @@ describe('direct concept extraction import pipeline', () => {
     expect(final.ok, final.errors.join('; ')).toBe(true)
   })
 
-  it('preserves an overall maintenance reason when suggestions are empty', () => {
+  it('rejects an empty maintenance result without an overall reason', () => {
     store.createConcept('无需修改主题')
     const taskId = createAuditedMaintenanceTask()
     const task = store.tasks.find((item) => item.id === taskId)!
     const result = store.applyTaskResult(task.id, JSON.stringify({ suggestions: [], disclosure_requests: [] }))
-    expect(result.ok, result.errors.join('; ')).toBe(true)
-    const parsed = JSON.parse(store.tasks.find((item) => item.id === taskId)?.parsedResult ?? '{}') as { reason?: string; suggestions?: unknown[] }
-    expect(parsed.suggestions).toEqual([])
-    expect(parsed.reason).toBe('模型检查后未发现需要修改的地方。')
+    expect(result.ok).toBe(false)
+    expect(result.errors.join('; ')).toContain('reason 必须是非空字符串')
+    expect(store.tasks.find((item) => item.id === taskId)?.status).toBe('needs_review')
+    expect(store.tasks.find((item) => item.id === taskId)?.parsedResult).toBeNull()
+  })
+
+  it('keeps prompt-paste maintenance disclosure responses pending for the next manual round', () => {
+    const rootId = store.createConcept('手动披露根主题')
+    const childId = store.createConcept('手动披露子主题')
+    store.createRelation(rootId, childId, 'hierarchy')
+    const taskId = store.createMaintenanceTask()
+    const first = store.applyTaskResult(taskId, JSON.stringify({
+      reason: '首轮只检查根目录并请求展开子主题。',
+      suggestions: [],
+      disclosure_requests: [{ refID: rootId, depth: 64 }],
+    }))
+    expect(first.ok).toBe(false)
+    expect(first.continued).toBe(true)
+    expect(store.tasks.find((task) => task.id === taskId)).toEqual(expect.objectContaining({ status: 'pending', parsedResult: null, response: expect.stringContaining('disclosure_requests') }))
+    expect(store.tasks.find((task) => task.id === taskId)?.prompt).toContain(childId)
+
+    const second = store.applyTaskResult(taskId, JSON.stringify({
+      reason: '已检查根主题及其子主题，未发现需要修改的地方。',
+      suggestions: [],
+      disclosure_requests: [],
+    }))
+    expect(second.ok, second.errors.join('; ')).toBe(true)
+    expect(store.tasks.find((task) => task.id === taskId)?.status).toBe('success')
+    expect(store.tasks.find((task) => task.id === taskId)?.parsedResult).toContain('未发现需要修改')
   })
 
   it('marks maintenance output stale when its message catalog changed', () => {

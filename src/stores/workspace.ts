@@ -2570,8 +2570,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const errors: string[] = []
     const conceptLimit = normalizeConceptLimit(config.value.llm.conceptLimit)
     if (task.type === 'maintenance') {
-      if (task.mode === 'api' && (typeof data.reason !== 'string' || !data.reason.trim())) {
-        const reasonErrors = ['reason 必须是非空字符串；维护 API 响应不能省略总体审计说明']
+      const hasSuggestions = Array.isArray(data.suggestions) && data.suggestions.length > 0
+      // An empty maintenance result is not auditable without the envelope
+      // reason. Prompt-paste keeps compatibility with older non-empty action
+      // payloads, while API responses always require the field because the
+      // provider contract is machine-enforced.
+      if ((task.mode === 'api' || !hasSuggestions) && (typeof data.reason !== 'string' || !data.reason.trim())) {
+        const reasonErrors = ['reason 必须是非空字符串；维护响应不能省略总体审计说明']
         markTask(taskId, 'needs_review', responseText, reasonErrors)
         return { ok: false, errors: reasonErrors }
       }
