@@ -194,6 +194,21 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.messageConcepts).toContainEqual(expect.objectContaining({ messageId: openingMessage!.id, conceptId }))
   })
 
+  it('persists every selected topic while using the first as the navigation topic', () => {
+    const primaryId = store.createConcept('主导航主题')
+    const secondaryId = store.createConcept('补充上下文主题')
+    const sessionId = store.createConversationTask({ question: '同时围绕两个主题提问', topicIds: [primaryId, secondaryId, primaryId] })
+    const openingMessage = store.messages.find((message) => message.sessionId === sessionId && message.role === 'user')!
+    const root = store.navNodes.find((node) => node.sessionId === sessionId && !node.parentId)!
+    const task = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
+
+    expect(store.sessionConcepts.filter((link) => link.sessionId === sessionId).map((link) => link.conceptId).sort()).toEqual([primaryId, secondaryId].sort())
+    expect(store.messageConcepts.filter((link) => link.messageId === openingMessage.id).map((link) => link.conceptId).sort()).toEqual([primaryId, secondaryId].sort())
+    expect(root.triggerConceptId).toBe(primaryId)
+    expect(openingMessage.metadata).toMatchObject({ topicId: primaryId, topicIds: [primaryId, secondaryId] })
+    expect(task.prompt).toContain('用户选定知识主题：主导航主题、补充上下文主题')
+  })
+
   it('keeps the store graph roots-only until each hierarchy level is opened', () => {
     const rootId = store.createConcept('图谱根主题')
     const childId = store.createConcept('图谱子主题')

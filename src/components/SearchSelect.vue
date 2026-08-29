@@ -9,22 +9,32 @@ export interface SearchSelectOption {
   hint?: string
 }
 
+export type SearchSelectValue = string | null | string[]
+
 const props = withDefaults(defineProps<{
-  modelValue: string | null
+  modelValue: SearchSelectValue
   options: SearchSelectOption[]
   placeholder?: string
   ariaLabel?: string
   disabled?: boolean
+  multiple?: boolean
 }>(), { placeholder: '搜索并选择', ariaLabel: '搜索选择', disabled: false })
 
-const emit = defineEmits<{ (event: 'update:modelValue', value: string | null): void }>()
+const emit = defineEmits<{ (event: 'update:modelValue', value: SearchSelectValue): void }>()
 const rootElement = ref<HTMLElement | null>(null)
 const triggerElement = ref<HTMLButtonElement | null>(null)
 const searchInput = ref<HTMLInputElement | null>(null)
 const open = ref(false)
 const query = ref('')
 
+const selectedValues = computed<string[]>(() => {
+  if (Array.isArray(props.modelValue)) return props.modelValue.filter((value): value is string => typeof value === 'string')
+  return typeof props.modelValue === 'string' ? [props.modelValue] : []
+})
 const selected = computed(() => props.options.find((option) => option.value === props.modelValue) ?? null)
+const selectedOptions = computed(() => selectedValues.value
+  .map((value) => props.options.find((option) => option.value === value))
+  .filter(Boolean) as SearchSelectOption[])
 const displayText = (value: unknown) => cleanGraphText(value)
 const filtered = computed(() => {
   const needle = query.value.trim().toLocaleLowerCase()
@@ -33,6 +43,18 @@ const filtered = computed(() => {
 })
 
 function choose(value: string | null): void {
+  if (props.multiple) {
+    if (value === null) {
+      emit('update:modelValue', [])
+    } else {
+      const next = selectedValues.value.includes(value)
+        ? selectedValues.value.filter((item) => item !== value)
+        : [...selectedValues.value, value]
+      emit('update:modelValue', next)
+    }
+    query.value = ''
+    return
+  }
   emit('update:modelValue', value)
   open.value = false
   query.value = ''
@@ -64,15 +86,16 @@ watch(() => props.modelValue, () => { if (!open.value) query.value = '' })
 
 <template>
   <div ref="rootElement" class="search-select" :class="{ open, disabled }" @focusout="closeOnFocusOut">
-    <button ref="triggerElement" type="button" class="search-select-trigger" :aria-label="props.ariaLabel" aria-haspopup="listbox" :aria-expanded="open" :disabled="props.disabled" @click="toggleOpen">
-      <span :class="{ placeholder: !selected }">{{ displayText(selected?.label) || props.placeholder }}</span>
+    <button ref="triggerElement" type="button" class="search-select-trigger" :aria-label="props.ariaLabel" aria-haspopup="listbox" :aria-expanded="open" :aria-multiselectable="props.multiple || undefined" :disabled="props.disabled" @click="toggleOpen">
+      <span v-if="props.multiple && selectedOptions.length" class="search-select-chips"><span v-for="option in selectedOptions" :key="option.value ?? 'none'" class="search-select-chip">{{ displayText(option.label) }}</span></span>
+      <span v-else :class="{ placeholder: !selected }">{{ displayText(selected?.label) || props.placeholder }}</span>
       <ChevronDown :size="14" />
     </button>
     <div v-if="open" class="search-select-popover" role="listbox" :aria-label="props.ariaLabel">
       <label class="search-select-input"><Search :size="14" /><input ref="searchInput" v-model="query" :placeholder="props.placeholder" :aria-label="`${props.ariaLabel}搜索`" @keydown.esc.prevent="closeAndRestoreFocus" /></label>
-      <button v-for="option in filtered" :key="option.value ?? 'none'" type="button" class="search-select-option" :class="{ selected: option.value === props.modelValue }" @mousedown.prevent @click="choose(option.value)">
+      <button v-for="option in filtered" :key="option.value ?? 'none'" type="button" class="search-select-option" :class="{ selected: props.multiple ? selectedValues.includes(option.value as string) : option.value === props.modelValue }" @mousedown.prevent @click="choose(option.value)">
         <span><strong>{{ displayText(option.label) }}</strong><small v-if="option.hint">{{ displayText(option.hint) }}</small></span>
-        <Check v-if="option.value === props.modelValue" :size="14" />
+        <Check v-if="props.multiple ? selectedValues.includes(option.value as string) : option.value === props.modelValue" :size="14" />
       </button>
       <p v-if="!filtered.length" class="search-select-empty">没有匹配项</p>
     </div>

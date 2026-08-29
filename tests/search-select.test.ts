@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it } from 'vitest'
-import { createApp, nextTick } from 'vue'
+import { createApp, defineComponent, h, nextTick, ref } from 'vue'
 import SearchSelect from '@/components/SearchSelect.vue'
 
 const mounted: Array<ReturnType<typeof createApp>> = []
@@ -68,5 +68,41 @@ describe('SearchSelect', () => {
     outside.focus()
     await nextTick()
     expect(target.querySelector('.search-select-popover')).toBeNull()
+  })
+
+  it('supports additive multi-select without closing the candidate popover', async () => {
+    const target = document.createElement('div')
+    document.body.appendChild(target)
+    const state = ref<string[]>([])
+    const app = createApp(defineComponent({
+      setup: () => () => h(SearchSelect, {
+        modelValue: state.value,
+        multiple: true,
+        options: [
+          { value: 'c1', label: '网络架构' },
+          { value: 'c2', label: '拥塞控制' },
+        ],
+        'onUpdate:modelValue': (value: string | string[] | null) => { state.value = Array.isArray(value) ? value : value ? [value] : [] },
+      }),
+    }))
+    mounted.push(app)
+    app.mount(target)
+    await nextTick()
+
+    target.querySelector<HTMLButtonElement>('.search-select-trigger')!.click()
+    await nextTick()
+    const options = target.querySelectorAll<HTMLButtonElement>('.search-select-option')
+    options[0].click()
+    await nextTick()
+    expect(target.querySelector('.search-select-popover')).not.toBeNull()
+    options[1].click()
+    await nextTick()
+    expect(state.value).toEqual(['c1', 'c2'])
+    expect(target.querySelectorAll('.search-select-chip')).toHaveLength(2)
+
+    options[0].click()
+    await nextTick()
+    expect(state.value).toEqual(['c2'])
+    expect(target.querySelectorAll('.search-select-option.selected')).toHaveLength(1)
   })
 })

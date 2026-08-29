@@ -115,7 +115,11 @@ const contextIncludeFull = ref(false)
 const composerOpen = ref(false)
 const maintenancePanelOpen = ref(false)
 const composerQuestion = ref('')
-const composerTopicId = ref<string | null>(null)
+const composerTopicIds = ref<string[]>([])
+const composerTopicId = computed<string | null>({
+  get: () => composerTopicIds.value[0] ?? null,
+  set: (value) => { composerTopicIds.value = value ? [value] : [] },
+})
 const composerPhraseId = ref('')
 const composerIncludeFull = ref(false)
 const composerSourceUnitIds = ref<string[]>([])
@@ -1208,6 +1212,7 @@ function submitComposer(): void {
           parentNodeId: composerFollowUp.value!.nodeId,
           question: composerQuestion.value,
           topicId: composerTopicId.value ?? undefined,
+          topicIds: composerTopicIds.value,
           sourceUnitIds: composerSourceUnitIds.value,
           sourceMessageIds: composerSourceMessageIds.value,
           includeFullContent: composerIncludeFull.value,
@@ -1239,6 +1244,7 @@ function submitComposer(): void {
     const targetSessionId = store.createConversationTask({
       question: composerQuestion.value,
       topicId: composerTopicId.value ?? undefined,
+      topicIds: composerTopicIds.value,
       sourceUnitIds: composerSourceUnitIds.value,
       sourceMessageIds: composerSourceMessageIds.value,
       includeFullContent: composerIncludeFull.value,
@@ -1633,7 +1639,16 @@ function applyTask(task: LLMTask): void {
   }
   const result = store.applyTaskResult(task.id, response)
   if (result.continued) {
-    taskFeedback.value = { tone: 'info', text: result.errors.join('；') + '。请复制更新后的 Prompt，完成下一轮回复后再粘贴。' }
+    // The previous JSON belongs to the completed disclosure round. Never
+    // leave it in the editor where a second click could submit it again.
+    delete taskDrafts.value[task.id]
+    if (task.mode === 'api') {
+      taskFeedback.value = { tone: 'info', text: result.errors.join('；') + '，正在自动请求下一轮披露。' }
+      const refreshed = store.tasks.find((item) => item.id === task.id)
+      if (refreshed) void executeApiTask(refreshed)
+    } else {
+      taskFeedback.value = { tone: 'info', text: result.errors.join('；') + '。请复制更新后的 Prompt，完成下一轮回复后再粘贴。' }
+    }
   } else if (result.ok) {
     taskFeedback.value = null
     notify(task.type === 'segmentation' ? '旧版对话分组结果已校验并写入知识库' : task.type === 'maintenance' ? '维护建议已校验，请逐条确认应用' : '结构化结果已校验并写入知识库')
@@ -2103,8 +2118,8 @@ onBeforeUnmount(() => {
               <div class="chat-composer" :class="{ focused: composerQuestion.length }">
                 <textarea v-model="composerQuestion" rows="4" placeholder="输入消息…" aria-label="新对话问题" @keydown.ctrl.enter.prevent="submitComposer" @keydown.meta.enter.prevent="submitComposer"></textarea>
                 <div class="chat-composer-topbar">
-                  <label class="chat-select"><span>主题</span><SearchSelect v-model="composerTopicId" :options="[{ value: null, label: '不指定' }, ...store.activeConcepts.map((concept) => ({ value: concept.id, label: concept.name, hint: concept.summary }))]" aria-label="选择知识主题" /></label>
-                  <label class="chat-select phrase-select"><span>快捷短语</span><select v-model="composerPhraseId" aria-label="选择快捷短语" @change="applyComposerPhrase"><option value="">无</option><option v-for="phrase in store.quickPhrases" :key="phrase.id" :value="phrase.id">{{ phrase.template }}</option></select><ChevronDown :size="13" /></label>
+                  <div class="chat-select"><span>主题</span><SearchSelect v-model="composerTopicIds" multiple :options="[{ value: null, label: '不指定' }, ...store.activeConcepts.map((concept) => ({ value: concept.id, label: concept.name, hint: concept.summary }))]" aria-label="选择知识主题" /></div>
+                  <div class="chat-select phrase-select"><span>快捷短语</span><select v-model="composerPhraseId" aria-label="选择快捷短语" @change="applyComposerPhrase"><option value="">无</option><option v-for="phrase in store.quickPhrases" :key="phrase.id" :value="phrase.id">{{ phrase.template }}</option></select><ChevronDown :size="13" /></div>
                 </div>
                 <div class="chat-composer-footer">
                   <div class="chat-tools"><button class="chat-tool" type="button" @click="setView('graph')"><Plus :size="17" /><span>{{ composerSourceUnitIds.length || composerSourceMessageIds.length ? `已选 ${composerSourceUnitIds.length} 个阅读片段 · ${composerSourceMessageIds.length} 条消息` : '添加知识上下文' }}</span></button><label class="chat-toggle"><input v-model="composerIncludeFull" type="checkbox" /><span>包含原文</span></label></div>
@@ -2417,7 +2432,7 @@ onBeforeUnmount(() => {
       <section class="composer-modal" role="dialog" aria-modal="true" aria-labelledby="composer-title">
         <div class="modal-header"><div><span class="eyebrow">{{ composerFollowUp ? 'FOLLOW-UP' : 'NEW CONVERSATION' }}</span><h2 id="composer-title">{{ composerFollowUp ? `继续追问：${composerFollowUp.label}` : '发起新对话' }}</h2></div><button class="icon-button" aria-label="关闭新对话" title="关闭" @click="composerOpen = false"><X :size="17" /></button></div>
         <div class="composer-fields">
-          <label>围绕知识主题<SearchSelect v-model="composerTopicId" :options="[{ value: null, label: '不指定主题' }, ...store.activeConcepts.map((concept) => ({ value: concept.id, label: concept.name, hint: concept.summary }))]" aria-label="围绕知识主题" /></label>
+          <label>围绕知识主题<SearchSelect v-model="composerTopicIds" multiple :options="[{ value: null, label: '不指定主题' }, ...store.activeConcepts.map((concept) => ({ value: concept.id, label: concept.name, hint: concept.summary }))]" aria-label="围绕知识主题" /></label>
           <label>快捷短语<select v-model="composerPhraseId" @change="applyComposerPhrase"><option value="">选择一个快捷短语</option><option v-for="phrase in store.quickPhrases" :key="phrase.id" :value="phrase.id">{{ phrase.template }}</option></select></label>
           <label class="composer-question">问题<textarea v-model="composerQuestion" rows="5" placeholder="输入你想继续探索的问题"></textarea></label>
           <label class="toggle-row"><span><strong>附带完整原文</strong><small>关闭时只发送标题、摘要和知识主题</small></span><input v-model="composerIncludeFull" type="checkbox" /></label>
