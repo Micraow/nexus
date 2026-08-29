@@ -85,6 +85,17 @@ describe('direct concept extraction import pipeline', () => {
     expect(originTasks[0].prompt).toContain('禁止返回 unit membership')
   })
 
+  it('does not advance graph revision for task-only state transitions', () => {
+    store.updateConfig({ llm: { ...store.config.llm, mode: 'api' } })
+    const sessionId = store.createConversationTask({ question: '检查任务状态边界' })
+    const task = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
+    const before = store.graphRevision
+    expect(store.executeTask).toBeTypeOf('function')
+    store.cancelTask(task.id)
+    expect(store.graphRevision).toBe(before)
+    expect(store.tasks.find((item) => item.id === task.id)?.status).toBe('cancelled')
+  })
+
   it('does not create origin tasks for imported sessions classified as non-knowledge', () => {
     const report = store.importJsonText(JSON.stringify(payload()))
     const triage = store.tasks.find((task) => report.taskIds.includes(task.id) && task.type === 'session_triage')!

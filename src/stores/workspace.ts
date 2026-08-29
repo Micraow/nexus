@@ -416,10 +416,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     return backupReference
   }
 
-  function mutate(callback: () => void): void {
+  function mutate(callback: () => void, options: { graph?: boolean } = {}): void {
     db.transaction(() => {
       callback()
-      db.bumpGraphRevision()
+      if (options.graph !== false) db.bumpGraphRevision()
     })
     refreshFromDb()
   }
@@ -482,7 +482,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   function transitionTask(taskId: string, event: TaskTransitionEvent, patch: TaskTransitionPatch = {}): boolean {
     let changed = false
-    mutate(() => { changed = transitionTaskInTransaction(taskId, event, patch) })
+    // Queue and validation events do not alter graph facts. Keeping this
+    // transaction off graph_revision prevents task polling from invalidating
+    // graph snapshots and triggering a visual redraw.
+    mutate(() => { changed = transitionTaskInTransaction(taskId, event, patch) }, { graph: false })
     return changed
   }
 
