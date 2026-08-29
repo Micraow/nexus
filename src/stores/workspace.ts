@@ -3144,7 +3144,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         errors.push(...validateConceptMembershipPayload(task, data, [
           ...conversationTargetIds,
           ...units.value.filter((unit) => unit.sessionId === targetId).map((unit) => unit.id),
-        ]))
+        ], conversationConceptIds(task)))
         // Legacy responses may still carry relation suggestions. Validate
         // their endpoints against the disclosed catalog before applying them.
         if (Object.prototype.hasOwnProperty.call(data, 'relations')) {
