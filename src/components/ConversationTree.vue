@@ -132,6 +132,19 @@ const inspectedNodeTooltip = computed(() => {
     left: placeLeft ? item.x - NODE_RADIUS - TOOLTIP_GAP : item.x + NODE_RADIUS + TOOLTIP_GAP,
   }
 })
+const mapElement = ref<HTMLElement | null>(null)
+const inspectedNodeTooltipStyle = computed(() => {
+  const tooltip = inspectedNodeTooltip.value
+  if (!tooltip) return {}
+  // Fixed positioning keeps long labels out of the minimap's horizontal
+  // scroller. The map is explicitly sized to the SVG viewBox, so its screen
+  // rect provides the same coordinate origin used by the node layout.
+  const rect = mapElement.value?.getBoundingClientRect()
+  return {
+    left: `${(rect?.left ?? 0) + tooltip.left}px`,
+    top: `${(rect?.top ?? 0) + tooltip.item.y}px`,
+  }
+})
 const nodeLabel = (node: NavTreeNode): string => cleanGraphText(node.label) || '未命名探索节点'
 
 function edgeOnPath(edge: PositionedEdge): boolean {
@@ -140,7 +153,7 @@ function edgeOnPath(edge: PositionedEdge): boolean {
 </script>
 
 <template>
-  <div class="conversation-tree-map" :style="{ minWidth: `${layout.width}px`, minHeight: `${layout.height}px` }">
+  <div ref="mapElement" class="conversation-tree-map" :style="{ minWidth: `${layout.width}px`, minHeight: `${layout.height}px` }">
     <svg class="conversation-tree-svg" :viewBox="`0 0 ${layout.width} ${layout.height}`" :width="layout.width" :height="layout.height" role="tree" aria-label="对话探索树">
       <g class="conversation-tree-edges" aria-hidden="true">
         <path
@@ -190,7 +203,7 @@ function edgeOnPath(edge: PositionedEdge): boolean {
       class="conversation-tree-tooltip"
       :class="`place-${inspectedNodeTooltip.placement}`"
       role="tooltip"
-      :style="{ left: `${inspectedNodeTooltip.left}px`, top: `${inspectedNodeTooltip.item.y}px` }"
+      :style="inspectedNodeTooltipStyle"
     >{{ nodeLabel(inspectedNodeTooltip.item.node) }}</div>
     <p v-if="!layout.nodes.length" class="empty-inline">这个会话还没有探索节点。</p>
   </div>
