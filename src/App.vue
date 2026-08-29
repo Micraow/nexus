@@ -1463,7 +1463,7 @@ async function copyText(value: string, message = '已复制到剪贴板'): Promi
   notify(copied ? message : '复制失败，请手动选择文本')
 }
 
-function renderedMessageContent(content: string, message?: Message): string {
+function renderedMessageContent(content: string, message?: Message, autoLinkConcepts = true): string {
   let concepts = store.activeConcepts
   if (message) {
     const allowed = new Set<string>()
@@ -1472,7 +1472,8 @@ function renderedMessageContent(content: string, message?: Message): string {
     if (message.unitId) store.unitConcepts.filter((link) => link.unitId === message.unitId).forEach((link) => allowed.add(link.conceptId))
     concepts = concepts.filter((concept) => allowed.has(concept.id))
   }
-  return renderMarkdown(content, { concepts: concepts.map((concept) => ({ id: concept.id, name: concept.name })) })
+  const inConversation = Boolean(activeConversationSession.value && message?.sessionId === activeConversationSession.value.id)
+  return renderMarkdown(content, { concepts: concepts.map((concept) => ({ id: concept.id, name: concept.name })), autoLinkConcepts: autoLinkConcepts && !inConversation })
 }
 
 function handleRenderedClick(event: Event, message?: Message): void {

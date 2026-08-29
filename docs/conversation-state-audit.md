@@ -9,7 +9,7 @@
 | `services/task-state.ts` | 声明任务事件、合法来源状态和目标状态 | 写数据库、发请求、决定业务结果 |
 | `services/prompts.ts` | 生成 Prompt、MCP 工具目录和披露目录格式 | 直接修改知识库 |
 | `services/validation.ts` | 校验 JSON 结构、ID 白名单、标题/名称长度和 DAG 输入 | 猜测或修复越界 ID |
-| `stores/workspace.ts` | 持久化任务转换、业务事实事务、队列租约和续轮 | 以 UI 状态代替数据库事实 |
+| `stores/workspace.ts` | 持久化任务转换、业务事实事务、队列租约和续轮；仅业务事实事务递增 `graph_revision` | 以 UI 状态代替数据库事实；任务轮询不得伪造图谱变更 |
 | `App.vue` | 发送用户意图、显示任务和派生卡片状态 | 直接写任务状态或从数组长度推断成功 |
 | `GraphCanvas.vue` | 绘制已投影的图谱、处理节点单击和布局事件 | 修改层级关系或推断隐藏节点 |
 
@@ -39,6 +39,8 @@ stateDiagram-v2
 ```
 
 `success` 是终态。`continue_disclosure` 必须同时保存本轮原始响应、下一轮 Prompt，清空 `parsed_result` 和校验错误，然后回到 `pending`。API 任务取得新的执行租约后再次进入 `running`；Prompt 粘贴任务等待用户复制新的 Prompt。任何仍有 `pending_ref_ids` 的维护任务都不能进入 success。
+
+任务状态事件（start、retry、cancel、fail_transport、continue_disclosure）与图谱事实写入是两类事务：前者只更新 `llm_tasks`，不会递增 `graph_revision`；后者才使图谱投影缓存失效。这样队列轮询、重试和人工校验不会导致图谱闪烁。
 
 维护结果还有两道独立的提交门禁：维护响应在 `suggestions=[]` 时无论 API 还是 Prompt 粘贴模式都必须带非空总体 `reason`（API 模式对所有响应都执行该要求）；最终动作的 Concept、关系、别名、Session、Message 和 KnowledgeUnit ID 必须来自当前 Prompt 中已经展开并带 `content` 的实体。根目录或 children 中只有标题/摘要的导航引用不构成写入授权，越界结果整体进入 `needs_review`，不应用部分建议。
 
