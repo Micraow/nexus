@@ -902,6 +902,17 @@ function render(): void {
       .attr('y2', (edge) => edgePoints(edge).y2)
     nodeSelection.attr('transform', (node) => `translate(${node.x ?? layoutWidth / 2},${node.y ?? height / 2})`)
   }
+  let dragTarget: { nodeId: string; x: number; y: number } | null = null
+  const dragTargetForce = (alpha: number): void => {
+    if (!dragTarget) return
+    const node = nodeById.get(dragTarget.nodeId)
+    if (!node || node.x == null || node.y == null) return
+    // A strong spring keeps the node responsive without making it a hard
+    // fx/fy pin. D3 remains the only writer of the rendered position.
+    const strength = Math.min(1.45, 0.85 + alpha)
+    node.vx = (node.vx ?? 0) + (dragTarget.x - node.x) * strength * alpha
+    node.vy = (node.vy ?? 0) + (dragTarget.y - node.y) * strength * alpha
+  }
 
   const drag = d3
     .drag<SVGGElement, GraphNode & d3.SimulationNodeDatum>()
@@ -912,15 +923,16 @@ function render(): void {
       dragStartPoint = pointer
       dragCurrentPoint = pointer
       dragPointerOffset = { x: (node.x ?? pointer.x) - pointer.x, y: (node.y ?? pointer.y) - pointer.y }
+      dragTarget = { nodeId: node.id, x: node.x ?? pointer.x, y: node.y ?? pointer.y }
       dragMoved = false
       highlightNode(node.id)
       // Reheat the springs while dragging so connected nodes follow the
       // pointer instead of feeling pinned in place. Keep the target finite;
       // an unlimited alpha target makes dense imported graphs oscillate.
-      if (!event.active) simulation?.alphaTarget(0.3).restart()
-      // Do not pin the dragged node or any other node. Writing x/y gives the
-      // pointer immediate control while the running simulation can still
-      // apply springs, repulsion and collision during the gesture.
+      if (!event.active) simulation?.alphaTarget(0.45).restart()
+      // Do not pin the dragged node or any other node. The drag-target force
+      // gives the pointer control while the running simulation still applies
+      // springs, repulsion and collision during the gesture.
       node.fx = null
       node.fy = null
     })
@@ -930,9 +942,7 @@ function render(): void {
       if (dragStartPoint && (Math.abs(pointer.x - dragStartPoint.x) > 4 || Math.abs(pointer.y - dragStartPoint.y) > 4)) dragMoved = true
       const offset = dragPointerOffset ?? { x: 0, y: 0 }
       const nextPosition = { x: pointer.x + offset.x, y: pointer.y + offset.y }
-      node.x = nextPosition.x
-      node.y = nextPosition.y
-      paint()
+      dragTarget = { nodeId: node.id, x: nextPosition.x, y: nextPosition.y }
     })
     .on('end', (event, node) => {
       if (!event.active) {
@@ -947,6 +957,7 @@ function render(): void {
       const finalPosition = { x: pointer.x + offset.x, y: pointer.y + offset.y }
       node.x = finalPosition.x
       node.y = finalPosition.y
+      dragTarget = null
       // Match ForceAtlas-style drag semantics: the pointer owns the node only
       // during the gesture. Persist the coordinate as a seed, then let the
       // springs and repulsion settle the node again after release.
@@ -1005,6 +1016,7 @@ function render(): void {
     // without letting dense sessions collapse into one pile.
     .force('link', linkForce)
     .force('charge', chargeForce)
+    .force('drag-target', dragTargetForce)
     .force('x', d3.forceX<GraphNode & d3.SimulationNodeDatum>((node) => gravityTargets.get(node.id)?.x ?? layoutWidth / 2).strength(largeGraph ? 0.012 : 0.018))
     .force('y', d3.forceY<GraphNode & d3.SimulationNodeDatum>((node) => gravityTargets.get(node.id)?.y ?? height / 2).strength(largeGraph ? 0.012 : 0.018))
     .force('collide', d3.forceCollide<GraphNode & d3.SimulationNodeDatum>().radius((node) => (node as GraphNode).type === 'concept' ? 50 : 28).strength(0.86).iterations(largeGraph ? 1 : 2))
