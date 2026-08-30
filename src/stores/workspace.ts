@@ -3510,7 +3510,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           // Validation errors already caused markTask() to persist the
           // original response and a repair prompt. Re-queue that prompt for
           // API tasks, with a bounded budget so a provider cannot loop forever.
-          const canAutoRepair = currentTask.type === 'conversation'
+          const canAutoRepair = currentTask.mode === 'api'
+            && currentTask.type !== 'segmentation'
+            && currentTask.type !== 'maintenance'
             && !config.value.llm.stream
             && !result.errors.some((error) => error.includes('请求的引用已经展开') || error.includes('没有推进披露目录'))
           if (canAutoRepair && result.errors.length && repairAttempts < 2) {
@@ -3594,6 +3596,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         queueActiveCount.value += batch.length
         await Promise.all(batch.map((task) => executeTask(task.id)))
         queueActiveCount.value = Math.max(0, queueActiveCount.value - batch.length)
+        // Yield to the renderer between batches. Large queues should remain
+        // interactive while network requests and reactive task rows settle.
+        await new Promise((resolve) => window.setTimeout(resolve, 0))
       }
     } finally {
       queueActiveCount.value = 0
