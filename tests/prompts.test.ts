@@ -129,6 +129,10 @@ describe('maintenance prompt', () => {
     expect(prompt).toContain('本轮维护目标再次确认：重点检查重复主题，并为没有阅读片段的消息补建片段。')
     expect(buildMaintenancePrompt({ concepts: [], relations: [], units: [] })).toContain('未提供；请按全图维护规范自主审计')
     expect(buildMaintenancePrompt({ concepts: [], relations: [], units: [], scopeMode: 'local' })).toContain('当前主题及其 hierarchy 子孙分支')
+    const targeted = buildMaintenancePrompt({ concepts: [], relations: [], units: [], scopeMode: 'targeted', userInstruction: '只合并重复主题' })
+    expect(targeted).toContain('自定义维护指令')
+    expect(targeted).toContain('不要把它扩展成全图例行审计')
+    expect(targeted).toContain('与目标无关的未展开分支不阻塞结果')
   })
 
   it('describes a graph-wide scope and exposes only the disclosure index', () => {

@@ -121,6 +121,7 @@ const contextIncludeFull = ref(false)
 const composerOpen = ref(false)
 const maintenancePanelOpen = ref(false)
 const maintenanceInstruction = ref('')
+const splashVisible = ref(true)
 const composerQuestion = ref('')
 const composerTopicIds = ref<string[]>([])
 const composerTopicId = computed<string | null>({
@@ -1084,7 +1085,7 @@ function mergeSelectedConcept(): void {
   }
 }
 
-function createMaintenanceTask(input: { conceptIds?: string[]; unitIds?: string[]; includeFullContent?: boolean; scopeMode?: 'global' | 'local' }, label: string): void {
+function createMaintenanceTask(input: { conceptIds?: string[]; unitIds?: string[]; includeFullContent?: boolean; scopeMode?: 'global' | 'local' | 'targeted' }, label: string): void {
   try {
     const taskId = store.createMaintenanceTask({ ...input, userInstruction: maintenanceInstruction.value.trim().slice(0, 2000) })
     maintenanceInstruction.value = ''
@@ -1104,6 +1105,12 @@ function openMaintenancePanel(): void {
 
 function createGraphMaintenance(): void {
   createMaintenanceTask({}, '全图知识维护任务')
+}
+
+function createInstructionMaintenance(): void {
+  const instruction = maintenanceInstruction.value.trim()
+  if (!instruction) return notify('先输入希望 AI 执行的维护指令')
+  createMaintenanceTask({ scopeMode: 'targeted' }, '自定义维护任务')
 }
 
 function createConceptMaintenance(): void {
@@ -2209,7 +2216,6 @@ watch(fullscreenPageCount, (count) => {
 })
 
 onMounted(async () => {
-  startWelcomeTypewriter()
   await store.init()
   if (!store.selectedSessionId && store.activeSessions[0]) store.setSelectedSession(store.activeSessions[0].id)
   const provider = store.config.llm.providers[0]
@@ -2217,6 +2223,14 @@ onMounted(async () => {
   databasePathDraft.value = store.config.storage.databasePath ?? ''
   void fetchStorageInfo()
   void fetchSystemFonts()
+  // Let the first rendered workspace settle before revealing the interactive
+  // homepage. This prevents the welcome typewriter from visibly stalling on
+  // database hydration and search-index construction.
+  await nextTick()
+  window.setTimeout(() => {
+    splashVisible.value = false
+    startWelcomeTypewriter()
+  }, 180)
 })
 
 onBeforeUnmount(() => {
@@ -2227,6 +2241,10 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="app-shell" @dragover.prevent @drop="handleDrop">
+    <div v-if="splashVisible" class="startup-splash" role="status" aria-label="Nexus 正在启动">
+      <img :src="nexusLogo" alt="Nexus" />
+      <span>NEXUS</span>
+    </div>
     <aside class="sidebar" :class="{ collapsed: isSidebarCollapsed }">
       <div class="brand-lockup">
         <div class="brand-mark"><img :src="nexusLogo" alt="Nexus" /></div>
@@ -2557,9 +2575,9 @@ onBeforeUnmount(() => {
         <button class="button primary-button" @click="createGraphMaintenance"><Sparkles :size="14" />开始全图维护</button>
       </div>
       <div class="maintenance-instruction">
-        <label for="maintenance-instruction-input">告诉 AI 这次优先如何维护 <small>可选；不会缩小全图扫描范围，最多 2000 个字符</small></label>
-        <textarea id="maintenance-instruction-input" v-model="maintenanceInstruction" maxlength="2000" rows="3" placeholder="例如：重点检查 CAVER 下的层级是否合理，并找出可以合并的重复主题。" />
-        <span class="maintenance-instruction-count">{{ maintenanceInstruction.length }} / 2000</span>
+        <label for="maintenance-instruction-input">执行自定义维护指令 <small>只检查完成这条指令所需的内容，不会自动扩展成全图整理，最多 2000 个字符</small></label>
+        <textarea id="maintenance-instruction-input" v-model="maintenanceInstruction" maxlength="2000" rows="3" placeholder="例如：把所有 C++ 相关主题聚合到新建的 C++ 父主题下。" />
+        <div class="maintenance-instruction-footer"><span class="maintenance-instruction-count">{{ maintenanceInstruction.length }} / 2000</span><button class="button secondary-button" :disabled="!maintenanceInstruction.trim()" @click="createInstructionMaintenance"><Sparkles :size="14" />执行此指令</button></div>
       </div>
       <div v-if="(activeView === 'concepts' || activeView === 'graph') && selectedConcept" class="maintenance-scope">
         <div class="maintenance-scope-copy"><strong>局部整理：{{ displayText(selectedConcept.name, '未命名知识主题') }} 分支</strong><span>只检查这个主题及其 hierarchy 子孙；不会扫描其他分支</span></div>

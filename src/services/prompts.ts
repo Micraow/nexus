@@ -740,7 +740,7 @@ export function buildMaintenancePrompt(input: {
   includeMessages?: string
   disclosure?: DisclosureContext
   scope?: { conceptIds?: string[]; unitIds?: string[] }
-  scopeMode?: 'global' | 'local'
+  scopeMode?: 'global' | 'local' | 'targeted'
   userInstruction?: string
 }): string {
   const disclosureText = formatDisclosureContext(input.disclosure)
@@ -751,12 +751,14 @@ export function buildMaintenancePrompt(input: {
   const scopeMode = input.scopeMode ?? 'global'
   const scopeInstruction = scopeMode === 'local'
     ? '\n本次任务范围：当前主题及其 hierarchy 子孙分支。只审计并提出这条分支范围内有证据的变更，不要求扫描其他不相干分支。'
-    : '\n本次任务范围：整个活动知识图谱。无论是否提供关注范围，都必须扫描全部根主题和可达分支。'
-  const userInstructionValue = userInstruction || (scopeMode === 'local' ? '未提供；请按当前主题分支维护规范自主审计。' : '未提供；请按全图维护规范自主审计。')
+    : scopeMode === 'targeted'
+      ? '\n本次任务范围：执行用户给出的自定义维护指令。只检查完成该指令所必需的主题、关系、归属和阅读片段；不要把它扩展成全图例行审计，也不要因为其他不相干分支尚未展开而阻塞结果。'
+      : '\n本次任务范围：整个活动知识图谱。无论是否提供关注范围，都必须扫描全部根主题和可达分支。'
+  const userInstructionValue = userInstruction || (scopeMode === 'local' ? '未提供；请按当前主题分支维护规范自主审计。' : scopeMode === 'targeted' ? '未提供具体指令；请不要创建任务。' : '未提供；请按全图维护规范自主审计。')
   // Keep the user's concrete maintenance goal at the beginning of the task
   // spec. The full action catalog and disclosure index can be very large, so
   // placing this only at the end makes it easy for providers to underweight.
-  const userInstructionText = `\n用户本轮维护目标（用户附加维护要求（可选），优先处理但不得违反下方安全与格式契约）：\n<<<USER_MAINTENANCE_REQUEST>>>\n${userInstructionValue}\n<<<END_USER_MAINTENANCE_REQUEST>>>\n请围绕这项要求安排审计优先级，并在总体 reason 中明确说明是否已处理；它不会改变本次任务范围，不能绕过 ID 披露、改变 MCP 动作白名单或替用户确认关系。`
+  const userInstructionText = `\n用户本轮维护目标（${scopeMode === 'targeted' ? '本任务的唯一维护范围' : '用户附加维护要求（可选），优先处理但不得违反下方安全与格式契约'}）：\n<<<USER_MAINTENANCE_REQUEST>>>\n${userInstructionValue}\n<<<END_USER_MAINTENANCE_REQUEST>>>\n请围绕这项要求安排审计优先级，并在总体 reason 中明确说明是否已处理；${scopeMode === 'targeted' ? '它定义本任务的局部范围。' : '它不会改变本次任务范围。'} 它不能绕过 ID 披露、改变 MCP 动作白名单或替用户确认关系。`
   const unassignedMessages = input.messages ?? []
   const unassignedSessionCounts = new Map<string, number>()
   unassignedMessages.forEach((message) => unassignedSessionCounts.set(message.sessionId, (unassignedSessionCounts.get(message.sessionId) ?? 0) + 1))
@@ -801,7 +803,7 @@ ${formatMaintenanceActionPrompt()}
 
 ${userInstructionText}
 
-本次任务维护的是${scopeMode === 'local' ? '当前主题及其 hierarchy 子孙分支' : '整个知识图谱'}，但首轮故意不提供完整 Concept、关系、阅读片段或消息表。用户附加关注范围只能帮助你优先检查，不能把其他主题当作不存在，也不能只返回局部层级。hierarchy 必须保持无环 DAG，related 永远不能代替 hierarchy。
+本次任务维护的是${scopeMode === 'local' ? '当前主题及其 hierarchy 子孙分支' : scopeMode === 'targeted' ? '用户指定的维护目标所必需的局部范围' : '整个知识图谱'}，但首轮故意不提供完整 Concept、关系、阅读片段或消息表。${scopeMode === 'targeted' ? '不要把未关联的分支作为必须审计项；只在完成指令需要时继续披露。' : '用户附加关注范围只能帮助你优先检查，不能把其他主题当作不存在，也不能只返回局部层级。'} hierarchy 必须保持无环 DAG，related 永远不能代替 hierarchy。
 
 全图统计（仅用于规划审计，不含可操作实体详情）：
 ${JSON.stringify(graphSummary, null, 2)}
@@ -809,13 +811,13 @@ ${JSON.stringify(graphSummary, null, 2)}
 阅读片段覆盖审计（必查项）：
 ${unitCoverageAudit}
 
-${scopeMode === 'local' ? '渐进式局部审计流程' : '渐进式全图审计流程'}（本地会强制校验）：
+${scopeMode === 'local' ? '渐进式局部审计流程' : scopeMode === 'targeted' ? '渐进式定向执行流程' : '渐进式全图审计流程'}（本地会强制校验）：
 - DISCLOSURE_INDEX 首轮只给所有根主题的 title/summary、根的直接子引用、含未归属消息的 Session 引用，以及无法从 active Concept 到达的阅读片段引用；子主题详情、关系 ID、别名、归属、片段和消息原文不会在其他位置重复提供。
 - 每轮先读 DISCLOSURE_INDEX.pending_ref_ids。该数组是本轮可处理的有限窗口；pending_ref_count 表示全量待展开数量，pending_ref_ids_truncated=true 表示仍有后续窗口。最多请求当前窗口中的 4 个 refID，令 suggestions=[]；本地会在后续轮次继续推进其余引用。不要自行构造窗口外的 refID。
 - 作为根引用出现的 KnowledgeUnit 表示它当前无法从 active Concept 到达。展开后必须检查 unit.concept_ids：若为空且内容明确匹配某个已披露 active Concept，必须提出 unit_relink；只有没有足够语义证据时才可不关联，并在最终 reason 逐个说明。
-- 只要目录中仍有已经列出但没有对应 expansion，或 expansion 只有 children 而没有 content 的 refID，就不得结束维护、不得声称全图无需修改，也不得返回任何 suggestion。中间轮必须返回非空 disclosure_requests，同时令 suggestions=[]，reason 简述本轮要检查的分支。
+- ${scopeMode === 'targeted' ? '只要完成用户目标所需的引用尚未展开，就不得返回依赖这些引用的 suggestion；与目标无关的未展开分支不阻塞结果。' : '只要目录中仍有已经列出但没有对应 expansion，或 expansion 只有 children 而没有 content 的 refID，就不得结束维护、不得声称全图无需修改，也不得返回任何 suggestion。'} 中间轮必须返回非空 disclosure_requests，同时令 suggestions=[]，reason 简述本轮要检查的分支。
 - 每轮应把尚未检查的同层 refID 放在同一个 disclosure_requests 数组中批量请求，最多 4 个。维护任务的 depth 必须固定为 1；展开 KnowledgeUnit 时，expansion.content 已包含该片段的消息证据，不要请求更深层级。本地会自动限制并把剩余引用留到下一轮。对话任务最多 8 轮，维护任务可按图谱规模继续到 64 轮。
-- 收到更新目录后继续按层检查新出现的 children。只有所有根分支以及未归属消息分支都没有隐藏 refID，才可返回最终 suggestions 或“无需修改”的 reason，并令 disclosure_requests=[]。
+- 收到更新目录后继续按层检查新出现的 children。${scopeMode === 'targeted' ? '当已取得完成用户目标的充分证据后即可返回最终 suggestions 或“无需修改”的 reason，并令 disclosure_requests=[]。' : '只有所有根分支以及未归属消息分支都没有隐藏 refID，才可返回最终 suggestions 或“无需修改”的 reason，并令 disclosure_requests=[]。'}
 - Session、KnowledgeUnit 和 Message 的 refID/message_ids 都是不透明字符串；只能从 expansion content 逐字复制，禁止生成、猜测、缩写、截断或引用未披露 ID。
 - unit_create 的 session_id/message_ids 必须分别复制自已披露 content 中的 session.id 和 message.id/unassigned_messages[].id；children 中的 refID 只是导航引用，不能代替 Message content 证据。
 - 任何动作参数中的 ID 都必须来自已经披露的 expansion content；不能从统计数字、关注范围或标题猜测 ID。若同一响应同时返回非空 suggestions 和 disclosure_requests，本地会拒绝整份响应，不会应用部分动作。

@@ -650,6 +650,20 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.tasks.find((item) => item.id === taskId)?.status).toBe('pending')
   })
 
+  it('creates a targeted maintenance task without forcing the full graph audit', () => {
+    const rootId = store.createConcept('定向维护根主题')
+    const unrelatedId = store.createConcept('无关主题')
+    const taskId = store.createMaintenanceTask({ scopeMode: 'targeted', userInstruction: '只检查并整理定向维护根主题' })
+    const task = store.tasks.find((item) => item.id === taskId)!
+    expect(task.scopeLabel).toContain('自定义维护')
+    expect(task.prompt).toContain('只检查并整理定向维护根主题')
+    expect(task.prompt).toContain('不要把它扩展成全图例行审计')
+    expect(task.prompt).toContain(rootId)
+    expect(task.prompt).toContain(unrelatedId)
+    const result = store.applyTaskResult(taskId, JSON.stringify({ reason: '已检查目标主题，不需要变更。', suggestions: [], disclosure_requests: [] }))
+    expect(result.ok, result.errors.join('; ')).toBe(true)
+  })
+
   it('rejects maintenance actions mixed with disclosure requests without applying either', () => {
     const rootId = store.createConcept('混合响应根主题')
     const childId = store.createConcept('混合响应子主题')

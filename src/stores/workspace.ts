@@ -1884,11 +1884,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     })
   }
 
-  function createMaintenanceTask(input: { conceptIds?: string[]; unitIds?: string[]; includeFullContent?: boolean; scopeMode?: 'global' | 'local'; userInstruction?: string } = {}): string {
+  function createMaintenanceTask(input: { conceptIds?: string[]; unitIds?: string[]; includeFullContent?: boolean; scopeMode?: 'global' | 'local' | 'targeted'; userInstruction?: string } = {}): string {
     const userInstruction = input.userInstruction?.trim().slice(0, 2000) ?? ''
+    if (input.scopeMode === 'targeted' && !userInstruction) throw new Error('请输入要执行的自定义维护指令')
     const requestedConceptIds = input.conceptIds?.length ? new Set(input.conceptIds) : null
     const requestedUnitIds = input.unitIds?.length ? new Set(input.unitIds) : null
     const localScope = input.scopeMode === 'local' && Boolean(requestedConceptIds?.size)
+    const targetedScope = input.scopeMode === 'targeted'
     // Global maintenance scans the full graph. Local maintenance is limited to
     // the selected Concept subtree and is only enabled explicitly by the UI.
     const conceptScopeIds = new Set(requestedConceptIds ?? [])
@@ -1959,13 +1961,19 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         compact: true,
       }),
       scope: { conceptIds: requestedConceptIds ? [...requestedConceptIds] : [], unitIds: requestedUnitIds ? [...requestedUnitIds] : [] },
-      scopeMode: localScope ? 'local' : 'global',
+      scopeMode: localScope ? 'local' : targetedScope ? 'targeted' : 'global',
       userInstruction,
     })
     let taskId = ''
     mutate(() => {
-      const focusHash = stableHash(JSON.stringify({ concepts: [...(requestedConceptIds ?? [])].sort(), units: [...(requestedUnitIds ?? [])].sort(), scopeMode: localScope ? 'local' : 'global', userInstruction }))
-      taskId = createTask({ type: 'maintenance', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `maintenance:${maintenanceStateHash()}:${focusHash}`, prompt, status: 'pending', scopeLabel: `全库知识图谱 · ${conceptScope.length} 个知识主题 · ${unitScope.length} 个知识单元` })
+      const actualScopeMode = localScope ? 'local' : targetedScope ? 'targeted' : 'global'
+      const focusHash = stableHash(JSON.stringify({ concepts: [...(requestedConceptIds ?? [])].sort(), units: [...(requestedUnitIds ?? [])].sort(), scopeMode: actualScopeMode, userInstruction }))
+      const scopeLabel = actualScopeMode === 'targeted'
+        ? `自定义维护 · ${userInstruction.slice(0, 48)}${userInstruction.length > 48 ? '…' : ''}`
+        : actualScopeMode === 'local'
+          ? `主题分支维护 · ${conceptScope.length} 个知识主题 · ${unitScope.length} 个知识单元`
+          : `全库知识图谱 · ${conceptScope.length} 个知识主题 · ${unitScope.length} 个知识单元`
+      taskId = createTask({ type: 'maintenance', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `maintenance:${maintenanceStateHash()}:${focusHash}`, prompt, status: 'pending', scopeLabel })
     })
     return taskId
   }
@@ -2852,7 +2860,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       return { ok: false, errors }
     }
 
-    if (task.type === 'maintenance' && (!Array.isArray(data.disclosure_requests) || data.disclosure_requests.length === 0)) {
+    const isTargetedMaintenance = task.type === 'maintenance' && task.scopeLabel?.startsWith('自定义维护 ·')
+    if (task.type === 'maintenance' && !isTargetedMaintenance && (!Array.isArray(data.disclosure_requests) || data.disclosure_requests.length === 0)) {
       const currentDisclosure = parseDisclosureContext(task.prompt)
       const hiddenRefIds = currentDisclosure ? undisclosedReferenceIds(currentDisclosure) : []
       if (hiddenRefIds.length > 0) {

@@ -78,6 +78,9 @@ input::placeholder, textarea::placeholder { color: var(--faint); }
 textarea { resize: vertical; }
 
 .app-shell { min-height: 100dvh; display: flex; overflow: visible; background: var(--bg); }
+.startup-splash { position: fixed; z-index: 2000; inset: 0; display: grid; place-content: center; justify-items: center; gap: 14px; background: var(--bg); color: var(--ink); letter-spacing: .18em; font-size: 12px; font-weight: 720; animation: startup-splash-in 180ms ease-out both; }
+.startup-splash img { width: 76px; height: 76px; border-radius: 20px; box-shadow: var(--shadow-sm); }
+@keyframes startup-splash-in { from { opacity: 0; } to { opacity: 1; } }
 .sidebar { position: sticky; top: 0; z-index: 30; width: 232px; min-width: 232px; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; padding: 22px 14px 16px; background: var(--surface); border-right: 1px solid var(--line); transition: width var(--motion) ease, min-width var(--motion) ease; }
 .sidebar.collapsed { width: 72px; min-width: 72px; }
 .brand-lockup { height: 68px; min-height: 68px; display: flex; align-items: center; gap: 11px; padding: 0 10px 24px; }
@@ -403,6 +406,8 @@ textarea { resize: vertical; }
 .maintenance-instruction label small { color: var(--muted); font-size: calc(11px * var(--app-font-scale)); font-weight: 400; line-height: 1.4; }
 .maintenance-instruction textarea { width: 100%; min-height: 74px; resize: vertical; }
 .maintenance-instruction-count { justify-self: end; color: var(--muted); font-size: calc(10px * var(--app-font-scale)); }
+.maintenance-instruction-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.maintenance-instruction-footer .maintenance-instruction-count { justify-self: auto; }
 .maintenance-scope-copy { min-width: 0; flex: 1; display: grid; gap: 3px; }
 .maintenance-scope-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(12px * var(--app-font-scale)); }
 .maintenance-scope-copy span { color: var(--muted); font-size: calc(11px * var(--app-font-scale)); line-height: 1.45; }
