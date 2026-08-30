@@ -350,6 +350,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }))
   }
 
+  function refreshTasksOnly(): void {
+    tasks.value = db.query<Row>('SELECT * FROM llm_tasks ORDER BY created_at DESC').map(taskFromRow)
+  }
+
   function setStreamingTaskText(taskId: string, value: string): void {
     streamingTaskText.value = { ...streamingTaskText.value, [taskId]: value }
   }
@@ -491,7 +495,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     // Queue and validation events do not alter graph facts. Keeping this
     // transaction off graph_revision prevents task polling from invalidating
     // graph snapshots and triggering a visual redraw.
-    mutate(() => { changed = transitionTaskInTransaction(taskId, event, patch) }, { graph: false })
+    db.transaction(() => { changed = transitionTaskInTransaction(taskId, event, patch) })
+    if (changed) refreshTasksOnly()
     return changed
   }
 
@@ -1479,6 +1484,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     mutate(() => {
       db.run('UPDATE concept_relations SET status = ?, updated_at = ? WHERE id = ?', [status, isoNow(), relationId])
       recordOperation(status === 'confirmed' ? '确认知识主题关系' : '拒绝知识主题关系', before, captureConceptOperationSnapshot())
+    })
+  }
+
+  function confirmRelations(relationIds: string[], status: 'confirmed' | 'rejected' = 'confirmed'): void {
+    const ids = [...new Set(relationIds.filter(Boolean))]
+    if (!ids.length) return
+    const before = captureConceptOperationSnapshot()
+    mutate(() => {
+      const now = isoNow()
+      ids.forEach((id) => db.run('UPDATE concept_relations SET status = ?, updated_at = ? WHERE id = ? AND status = \'proposed\'', [status, now, id]))
+      recordOperation(status === 'confirmed' ? `批量确认知识主题关系（${ids.length} 条）` : `批量拒绝知识主题关系（${ids.length} 条）`, before, captureConceptOperationSnapshot())
     })
   }
 
@@ -4137,6 +4153,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     promoteConcept,
     removeConceptFromParent,
     confirmRelation,
+    confirmRelations,
     mergeConcept,
     deleteConcept,
     restoreConcept,

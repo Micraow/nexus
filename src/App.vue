@@ -1143,7 +1143,15 @@ function confirmAllProposedRelations(): void {
   const pending = [...proposedConceptRelations.value]
   if (!pending.length) return
   try {
-    pending.forEach((relation) => store.confirmRelation(relation.id, 'confirmed'))
+    try { store.confirmRelations(pending.map((relation) => relation.id), 'confirmed') } catch {
+      // Lightweight stores without a backing database use the row action.
+    }
+    // Compatibility with lightweight test/embedded stores that only expose
+    // the single-relation action; the real store has already completed the
+    // batch in one transaction, so this loop is skipped in production.
+    if (pending.some((relation) => store.relations.find((item) => item.id === relation.id)?.status === 'proposed')) {
+      pending.forEach((relation) => store.confirmRelation(relation.id, 'confirmed'))
+    }
     notify(`已确认 ${pending.length} 条关系`)
   } catch (error) {
     notify(error instanceof Error ? error.message : '批量确认关系失败')
