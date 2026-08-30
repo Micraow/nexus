@@ -8,7 +8,7 @@
 
 本地优先的 AI 对话知识管理桌面应用 · Windows / Linux / macOS
 
-![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%20%7C%20Linux-2c6e9e)
+![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%20%7C%20Linux%20%7C%20macOS-2c6e9e)
 ![框架](https://img.shields.io/badge/Tauri-2.0-24C8DB)
 ![前端](https://img.shields.io/badge/Vue%203-TypeScript-42b883)
 ![存储](https://img.shields.io/badge/%E5%AD%98%E5%82%A8-%E6%9C%AC%E6%9C%BA%20SQLite-20567d)
