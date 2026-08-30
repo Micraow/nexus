@@ -2643,19 +2643,35 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       return { ok: false, errors }
     }
     const currentRound = current.round ?? 0
-    const maxDisclosureRounds = task.type === 'maintenance' ? 16 : 8
+    const maxDisclosureRounds = task.type === 'maintenance' ? 64 : 8
     if (currentRound >= maxDisclosureRounds) {
       const errors = [`渐进式披露超过 ${maxDisclosureRounds} 轮，已暂停任务供检查`]
       markTask(task.id, 'needs_review', responseText, errors)
       return { ok: false, errors }
     }
     const available = listedDisclosureRefIds(current)
-    const requestErrors = validateDisclosureRequests(data.disclosure_requests, available).map((issue) => `${issue.path}: ${issue.message}`)
-    if (requestErrors.length) {
+    const rawRequests = data.disclosure_requests as unknown[]
+    const structuralErrors = validateDisclosureRequests(rawRequests).map((issue) => `${issue.path}: ${issue.message}`)
+    const unavailableIndexes = new Set<number>()
+    rawRequests.forEach((raw, index) => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return
+      const refID = typeof (raw as Record<string, unknown>).refID === 'string' ? ((raw as Record<string, unknown>).refID as string).trim() : ''
+      if (refID && !available.has(refID)) unavailableIndexes.add(index)
+    })
+    if (structuralErrors.length || (unavailableIndexes.size && (task.mode !== 'api' || unavailableIndexes.size === rawRequests.length))) {
+      const requestErrors = [
+        ...structuralErrors,
+        ...[...unavailableIndexes].map((index) => `disclosure_requests.${index}.refID: refID 不在当前目录中`),
+      ]
       markTask(task.id, 'needs_review', responseText, requestErrors)
       return { ok: false, errors: requestErrors }
     }
-    const requests = data.disclosure_requests as Array<{ refID: string; depth: number }>
+    // API providers occasionally echo a stale ID from a previous disclosure
+    // round alongside valid pending refs. Disclosure is read-only, so discard
+    // only those invalid entries and continue with the valid batch; an all-
+    // invalid batch still requires manual correction above.
+    const requests = rawRequests.filter((_raw, index) => !unavailableIndexes.has(index)) as Array<{ refID: string; depth: number }>
+    if (unavailableIndexes.size) data.disclosure_requests = requests
     const requested = requests.map((item) => item.refID.trim())
     const expansionMap = new Map<string, NonNullable<DisclosureContext['expansions']>[number]>()
     ;(current.expansions ?? []).forEach((expansion) => expansionMap.set(expansion.refID, expansion))

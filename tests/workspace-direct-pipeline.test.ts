@@ -1391,6 +1391,30 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.tasks.find((item) => item.id === taskId)?.prompt).toContain(childId)
   })
 
+  it('continues an API disclosure batch when one stale ref is mixed with valid refs', async () => {
+    const rootId = store.createConcept('混合披露根主题')
+    let requestIndex = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      requestIndex += 1
+      const content = requestIndex === 1
+        ? JSON.stringify({ reason: '请求根主题详情。', suggestions: [], disclosure_requests: [{ refID: 'stale-ref-from-previous-round', depth: 1 }, { refID: rootId, depth: 1 }] })
+        : JSON.stringify({ reason: '已完成披露检查，未发现需要修改的地方。', suggestions: [], disclosure_requests: [] })
+      return { ok: true, json: async () => ({ choices: [{ message: { content } }] }) } as Response
+    }))
+    store.updateConfig({
+      llm: {
+        ...store.config.llm,
+        mode: 'api',
+        defaultProvider: 'mixed-disclosure-provider',
+        providers: [{ id: 'mixed-disclosure-provider', name: 'Mixed disclosure', baseUrl: 'https://example.test/v1', model: 'maintenance-model', apiKey: 'test-key' }],
+      },
+    })
+    const taskId = store.createMaintenanceTask()
+    await expect(store.executeTask(taskId)).resolves.toEqual({ ok: true })
+    expect(requestIndex).toBe(2)
+    expect(store.tasks.find((item) => item.id === taskId)?.status).toBe('success')
+  })
+
   it('keeps automatic maintenance disclosure batches bounded for large graphs', async () => {
     for (let index = 0; index < 30; index += 1) store.createConcept(`批量披露根${index}`)
     const prompts: string[] = []

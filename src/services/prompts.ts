@@ -390,7 +390,9 @@ export function parseDisclosureContext(prompt: string): DisclosureContext | null
     const roots = value.roots.map(disclosureReference)
     if (!roots.length || roots.some((reference) => !reference)) return null
     const round = value.round == null ? 0 : value.round
-    if (!Number.isInteger(round) || Number(round) < 0 || Number(round) > 8) return null
+    // Conversation disclosure remains capped by the task state machine, while
+    // graph-wide maintenance may need more rounds for large catalogs.
+    if (!Number.isInteger(round) || Number(round) < 0 || Number(round) > 64) return null
     if (value.audit_pending_refs != null && typeof value.audit_pending_refs !== 'boolean') return null
     const expansions: DisclosureExpansion[] = []
     for (const raw of value.expansions) {
@@ -784,7 +786,7 @@ ${scopeMode === 'local' ? '渐进式局部审计流程' : '渐进式全图审计
 - 每轮先读 DISCLOSURE_INDEX.pending_ref_ids。该数组只列出已在 roots/children 出现、但仍缺 content 的引用；只要它非空，必须把全部 ID 原样放进同一个 disclosure_requests 批量请求，并令 suggestions=[]。非空时返回最终建议会被本地拒绝；不要自行比对 roots、children 和 expansions 后猜测已完成。
 - 作为根引用出现的 KnowledgeUnit 表示它当前无法从 active Concept 到达。展开后必须检查 unit.concept_ids：若为空且内容明确匹配某个已披露 active Concept，必须提出 unit_relink；只有没有足够语义证据时才可不关联，并在最终 reason 逐个说明。
 - 只要目录中仍有已经列出但没有对应 expansion，或 expansion 只有 children 而没有 content 的 refID，就不得结束维护、不得声称全图无需修改，也不得返回任何 suggestion。中间轮必须返回非空 disclosure_requests，同时令 suggestions=[]，reason 简述本轮要检查的分支。
-- 每轮应把所有尚未检查的同层 refID 放在同一个 disclosure_requests 数组中批量请求，不要一次只请求一个。depth 可按分支需要使用 1～64；优先用足够深度覆盖整条分支，避免超过最多 8 轮。
+- 每轮应把所有尚未检查的同层 refID 放在同一个 disclosure_requests 数组中批量请求，不要一次只请求一个。depth 可按分支需要使用 1～64；优先用足够深度覆盖整条分支；对话任务最多 8 轮，维护任务可按图谱规模继续到 64 轮。
 - 收到更新目录后继续按层检查新出现的 children。只有所有根分支以及未归属消息分支都没有隐藏 refID，才可返回最终 suggestions 或“无需修改”的 reason，并令 disclosure_requests=[]。
 - Session、KnowledgeUnit 和 Message 的 refID/message_ids 都是不透明字符串；只能从 expansion content 逐字复制，禁止生成、猜测、缩写、截断或引用未披露 ID。
 - unit_create 的 session_id/message_ids 必须分别复制自已披露 content 中的 session.id 和 message.id/unassigned_messages[].id；children 中的 refID 只是导航引用，不能代替 Message content 证据。
