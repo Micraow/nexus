@@ -35,9 +35,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: windows-x86
+          - name: windows-amd64
             os: windows-latest
-            target: i686-pc-windows-msvc
+            target: x86_64-pc-windows-msvc
             bundles: msi,nsis
           - name: linux
             os: ubuntu-22.04
