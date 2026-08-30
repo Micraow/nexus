@@ -745,7 +745,7 @@ export function buildMaintenancePrompt(input: {
     : '当前没有未归属消息；阅读片段覆盖无需补建，但仍应检查已有片段的标题、摘要和主题归属。'
   const actionApi = `
 动作 API（MCP tools/list 兼容）：机器目录中的每个 name 都是一个可调用工具，调用参数就是 inputSchema 允许的 JSON 对象。API 模式可以直接返回这些工具调用；Prompt 粘贴模式必须把同样的参数放进 suggestions。每条调用或 suggestion 只能执行一个原子动作，应用前会校验并以可撤销事务写入；不要返回 SQL、脚本或未列出的字段。
-- create_concept：创建主题。参数 name、summary、notes、aliases（可为空字符串数组）、parent_concept_id（无父级用 null）或 parent_concept_ids（可为空数组，二者不能同时出现）；父级关系会以 proposed 等待确认。
+- nexus_maintenance_create_concept（type=create_concept）：创建主题。参数 name、summary、notes、aliases（可为空字符串数组）、parent_concept_id（无父级用 null）或 parent_concept_ids（可为空数组，二者不能同时出现）；父级关系会以 proposed 等待确认。不要因为工具名带有 maintenance 而省略这个创建动作。
 - update_concept：编辑主题。参数 concept_id，及要改变的 name、summary、notes（未提供的字段保持不变）。
 - delete_concept：删除主题的用户语义是归档，参数 concept_id；原始证据保留，可用 restore_concept 恢复。
 - restore_concept：恢复已归档主题，参数 concept_id。

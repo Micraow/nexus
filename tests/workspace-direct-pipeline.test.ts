@@ -1591,6 +1591,7 @@ describe('direct concept extraction import pipeline', () => {
     const taskId = createAuditedMaintenanceTask({ conceptIds: [conceptId] })
     await expect(store.executeTask(taskId)).resolves.toEqual({ ok: true })
     const tools = requestBody?.tools as Array<{ type: string; function: { name: string; parameters: { additionalProperties: boolean } } }>
+    expect(tools.some((tool) => tool.type === 'function' && tool.function.name === 'nexus_maintenance_create_concept')).toBe(true)
     expect(tools.some((tool) => tool.type === 'function' && tool.function.name === 'nexus_maintenance_update_concept')).toBe(true)
     expect(tools.find((tool) => tool.function.name === 'nexus_maintenance_set_hierarchy_parents')?.function.parameters.additionalProperties).toBe(false)
     expect(requestBody?.tool_choice).toBeUndefined()

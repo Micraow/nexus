@@ -60,6 +60,7 @@ import { messageSessionPages, paginateMessages } from '@/services/message-pagina
 import { renderMarkdown } from '@/services/markdown'
 import { copyToClipboard } from '@/services/clipboard'
 import { parseMetadata } from '@/utils/metadata'
+import { normalizeText } from '@/utils/id'
 import { invokeTauri, isTauriRuntime } from '@/services/tauri'
 import { useWorkspaceStore } from '@/stores/workspace'
 import type { AppConfig, Concept, ConceptRelation, GraphNodeType, KnowledgeUnit, LLMTask, MaintenanceSuggestion, Message, NavTreeNode, Session, TaskType } from '@/types/domain'
@@ -100,6 +101,11 @@ const unitDraftSummary = ref('')
 const conceptDraftName = ref('')
 const conceptDraftSummary = ref('')
 const conceptDraftNotes = ref('')
+const createConceptOpen = ref(false)
+const createConceptName = ref('')
+const createConceptSummary = ref('')
+const createConceptNotes = ref('')
+const createConceptParentId = ref<string | null>(null)
 const conceptChildQuery = ref('')
 const conceptParentQuery = ref('')
 const newUnitConcept = ref('')
@@ -813,8 +819,8 @@ function openConcept(conceptId: string): void {
     const detail = activeView.value === 'concepts' ? conceptPageDetail.value : detailDrawer.value
     if (!detail) return
     const behavior = store.config.ui.reducedMotion ? 'auto' : 'smooth'
-    detail.scrollTo({ top: 0, behavior })
-    if (activeView.value === 'concepts' && detail.scrollHeight <= detail.clientHeight) detail.scrollIntoView({ block: 'start', behavior })
+    if (typeof detail.scrollTo === 'function') detail.scrollTo({ top: 0, behavior })
+    if (activeView.value === 'concepts' && detail.scrollHeight <= detail.clientHeight && typeof detail.scrollIntoView === 'function') detail.scrollIntoView({ block: 'start', behavior })
   })
 }
 
@@ -918,6 +924,50 @@ function saveConcept(): void {
     notify('知识主题已保存')
   } catch (error) {
     notify(error instanceof Error ? error.message : '知识主题保存失败')
+  }
+}
+
+function openCreateConceptForm(): void {
+  createConceptName.value = ''
+  createConceptSummary.value = ''
+  createConceptNotes.value = ''
+  createConceptParentId.value = selectedConcept.value?.id ?? null
+  createConceptOpen.value = true
+}
+
+function closeCreateConceptForm(): void {
+  createConceptOpen.value = false
+  createConceptName.value = ''
+  createConceptSummary.value = ''
+  createConceptNotes.value = ''
+  createConceptParentId.value = null
+}
+
+function createConceptFromCatalog(): void {
+  const name = createConceptName.value.trim()
+  if (!name) {
+    notify('请输入知识主题名称')
+    return
+  }
+  const existing = store.activeConcepts.find((concept) => normalizeText(concept.name) === normalizeText(name))
+  if (existing) {
+    closeCreateConceptForm()
+    openConcept(existing.id)
+    notify('这个知识主题已经存在，已打开现有主题')
+    return
+  }
+  try {
+    const conceptId = store.createConcept(name, createConceptNotes.value, createConceptSummary.value)
+    const parentId = createConceptParentId.value
+    if (parentId && parentId !== conceptId) {
+      store.addConceptChild(parentId, conceptId)
+      conceptTreeExpandedIds.value = [...new Set([...conceptTreeExpandedIds.value, parentId])]
+    }
+    closeCreateConceptForm()
+    openConcept(conceptId)
+    notify(parentId ? '子知识主题已创建并加入当前层级' : '根知识主题已创建')
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '创建知识主题失败')
   }
 }
 
@@ -2321,9 +2371,21 @@ onBeforeUnmount(() => {
           <div class="concepts-layout">
             <div class="concept-list surface-section">
               <div class="list-toolbar">
-                <span>{{ store.activeConcepts.length }} 个知识主题</span>
+                <div class="concept-list-heading"><span>{{ store.activeConcepts.length }} 个知识主题</span><button class="icon-button" type="button" title="新建知识主题" aria-label="新建知识主题" @click="openCreateConceptForm"><Plus :size="16" /></button></div>
                 <div class="compact-search"><Search :size="14" /><input v-model="graphSearch" placeholder="过滤知识主题" aria-label="过滤知识主题" /></div>
               </div>
+              <form v-if="createConceptOpen" class="concept-create-form" aria-labelledby="concept-create-title" @submit.prevent="createConceptFromCatalog">
+                <div class="subsection-title"><strong id="concept-create-title">新建知识主题</strong><button class="icon-button" type="button" title="取消新建" aria-label="取消新建" @click="closeCreateConceptForm"><X :size="14" /></button></div>
+                <label class="field-label" for="concept-create-name">名称 <small>≤120 字</small></label>
+                <input id="concept-create-name" v-model="createConceptName" class="drawer-input" maxlength="120" autocomplete="off" placeholder="例如：拥塞控制" />
+                <label class="field-label" for="concept-create-summary">摘要 <small>≤120 字</small></label>
+                <textarea id="concept-create-summary" v-model="createConceptSummary" class="drawer-textarea" maxlength="120" placeholder="用一句话概括主题范围" />
+                <label class="field-label" for="concept-create-notes">主题说明 <small>可选</small></label>
+                <textarea id="concept-create-notes" v-model="createConceptNotes" class="drawer-textarea concept-create-notes" placeholder="记录长期理解、边界或待核实问题" />
+                <label class="field-label">父主题 <small>默认使用打开表单时选中的层级</small></label>
+                <SearchSelect v-model="createConceptParentId" :options="[{ value: null, label: '根主题（无父级）' }, ...store.activeConcepts.map((concept) => ({ value: concept.id, label: concept.name, hint: concept.summary }))]" aria-label="新主题父主题" placeholder="搜索父主题" />
+                <div class="concept-editor-actions"><button class="button primary-button" type="submit"><Plus :size="14" />创建主题</button><button class="button ghost-button" type="button" @click="closeCreateConceptForm">取消</button></div>
+              </form>
               <ConceptTree :concepts="conceptTreeConcepts" :relations="store.relations" :selected-id="selectedConceptId" :expanded-ids="conceptTreeExpandedIdsForView" @select="openConcept" @toggle="toggleConceptTree" />
             </div>
             <div ref="conceptPageDetail" class="concept-detail surface-section" tabindex="-1">

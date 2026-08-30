@@ -843,3 +843,10 @@ body.fullscreen-active { overflow: hidden; }
   .conversation-branch-card, .conversation-minimap .nav-tree-marker, .conversation-tree-node-circle, .conversation-tree-node-halo, .conversation-tree-edge { transition: none; }
   .conversation-branch-card:not(:first-child), .conversation-branch-card.current { transform: none; }
 }
+
+.concept-list-heading { min-width: 0; display: inline-flex; align-items: center; gap: 6px; }
+.concept-list-heading > span { white-space: nowrap; }
+.concept-create-form { display: grid; gap: 7px; margin: 12px; padding: 12px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 7px; }
+.concept-create-form .subsection-title { margin-bottom: 0; }
+.concept-create-form .search-select { width: 100%; }
+.concept-create-notes { min-height: 72px; resize: vertical; }

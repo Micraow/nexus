@@ -213,6 +213,7 @@ describe('maintenance prompt', () => {
     const serialized = JSON.parse(formatMaintenanceActionApi()) as Array<{ input_schema: { additionalProperties: boolean } }>
     expect(serialized.every((action) => action.input_schema.additionalProperties === false)).toBe(true)
     expect(actions.get('create_concept')).toMatchObject({ name: 'nexus_maintenance_create_concept', description: expect.any(String) })
+    expect(formatMaintenanceActionApi()).toContain('"name": "nexus_maintenance_create_concept"')
     expect(actions.get('create_concept')?.inputSchema).toEqual(actions.get('create_concept')?.input_schema)
     expect(actions.get('remove_relation')).toMatchObject({ alias_for: 'delete_relation', deprecated: true })
     expect(actions.get('delete_relation')?.inputSchema.properties.reason).toMatchObject({ type: 'string', minLength: 1 })

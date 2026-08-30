@@ -22,6 +22,47 @@ afterEach(() => {
 })
 
 describe('full-graph maintenance entry', () => {
+  it('creates a topic under the topic selected in the left hierarchy tree', async () => {
+    const pinia = createPinia()
+    const store = useWorkspaceStore(pinia)
+    await store.init()
+    store.clearAllData()
+    const rootId = store.createConcept('手动父主题', '', '父主题摘要')
+    const target = document.createElement('div')
+    document.body.appendChild(target)
+    const app = createApp(App)
+    app.use(pinia)
+    mounted.push(app)
+    app.mount(target)
+    await nextTick()
+
+    ;[...target.querySelectorAll<HTMLButtonElement>('.nav-item')]
+      .find((button) => button.textContent?.includes('知识主题'))!.click()
+    await nextTick()
+    target.querySelector<HTMLButtonElement>('.concept-tree-select')!.click()
+    await nextTick()
+    target.querySelector<HTMLButtonElement>('[aria-label="新建知识主题"]')!.click()
+    await nextTick()
+
+    const parentTrigger = [...target.querySelectorAll<HTMLButtonElement>('.search-select-trigger')]
+      .find((button) => button.getAttribute('aria-label') === '新主题父主题')
+    expect(parentTrigger?.textContent).toContain('手动父主题')
+    const name = target.querySelector<HTMLInputElement>('#concept-create-name')!
+    name.value = '手动子主题'
+    name.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    target.querySelector<HTMLButtonElement>('.concept-create-form button[type="submit"]')!.click()
+    await nextTick()
+
+    const child = store.activeConcepts.find((concept) => concept.name === '手动子主题')
+    expect(child).toBeDefined()
+    expect(store.relations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ parentConceptId: rootId, childConceptId: child!.id, relationType: 'hierarchy', status: 'confirmed' }),
+    ]))
+    expect(target.querySelector('.concept-detail')?.textContent).toContain('手动子主题')
+    store.clearAllData()
+  })
+
   it('uses one global entry and closes the panel when changing modules', async () => {
     const target = document.createElement('div')
     document.body.appendChild(target)
