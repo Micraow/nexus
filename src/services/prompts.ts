@@ -708,6 +708,7 @@ export function buildMaintenancePrompt(input: {
   includeMessages?: string
   disclosure?: DisclosureContext
   scope?: { conceptIds?: string[]; unitIds?: string[] }
+  scopeMode?: 'global' | 'local'
   userInstruction?: string
 }): string {
   const disclosureText = formatDisclosureContext(input.disclosure)
@@ -715,7 +716,11 @@ export function buildMaintenancePrompt(input: {
     ? `\n用户附加关注范围（不改变全库维护范围）：Concept=${JSON.stringify(input.scope.conceptIds ?? [])}，KnowledgeUnit=${JSON.stringify(input.scope.unitIds ?? [])}`
     : ''
   const userInstruction = input.userInstruction?.trim() ?? ''
-  const userInstructionText = `\n用户附加维护要求（可选）：${userInstruction || '未提供；请按全图维护规范自主审计。'}\n这段要求只决定优先关注的审计目标，不会缩小维护范围。你仍必须扫描整个活动知识图谱，并遵守 ID 披露、MCP 动作、层级和用户确认规则。`
+  const scopeMode = input.scopeMode ?? 'global'
+  const scopeInstruction = scopeMode === 'local'
+    ? '\n本次任务范围：当前主题及其 hierarchy 子孙分支。只审计并提出这条分支范围内有证据的变更，不要求扫描其他不相干分支。'
+    : '\n本次任务范围：整个活动知识图谱。无论是否提供关注范围，都必须扫描全部根主题和可达分支。'
+  const userInstructionText = `\n用户附加维护要求（可选）：${userInstruction || (scopeMode === 'local' ? '未提供；请按当前主题分支维护规范自主审计。' : '未提供；请按全图维护规范自主审计。')}\n这段要求只决定当前范围内的优先审计目标，不会改变本次任务范围或越过 ID 披露、MCP 动作、层级和用户确认规则。`
   const unassignedMessages = input.messages ?? []
   const unassignedSessionCounts = new Map<string, number>()
   unassignedMessages.forEach((message) => unassignedSessionCounts.set(message.sessionId, (unassignedSessionCounts.get(message.sessionId) ?? 0) + 1))
@@ -780,6 +785,7 @@ ${unitCoverageAudit}
 
 ${actionApi}
 
+${scopeInstruction}
 ${scopeText}
 ${userInstructionText}
 ${disclosureText}

@@ -134,20 +134,28 @@ pnpm build:extension      # 产物在 extension/dist/
 
 扩展目前只适配 DeepSeek，不会读取或上传其他网站内容。它有三层适配边界：会话链接路径 `/a/chat/s/<id>`、网页端同源 JSON 响应，以及当前消息展示的 `.ds-markdown`。因此普通的样式调整通常不会影响网络捕获；如果 DeepSeek 更换路由、改用非 JSON 通道、取消这些选择器或改动消息字段，列表或导出可能失效。工作台会显示具体失败原因。遇到页面更新时，请先刷新 DeepSeek 标签页、重新构建并加载 `extension/dist/`，再提交带有浏览器版本、页面地址和失败提示的 issue；不要在 issue 中附带会话内容或 API Key。
 
-### 5.2 扩展调试
+### 5.2 打包为 CRX
+
+先运行 `pnpm build:extension` 生成 `extension/dist/`。在 Chrome 的 `chrome://extensions` 开启「开发者模式」，点击「打包扩展程序」，选择 `extension/dist/` 作为扩展根目录。首次打包会生成 `.crx` 和配套 `.pem` 私钥；后续更新必须继续使用同一个 `.pem`，不要把私钥提交到仓库。CRX 适合本地分发和测试，Chrome Web Store 发布则上传扩展目录或 ZIP，由商店负责签名。
+
+### 5.3 自动打包
+
+推送版本 tag（例如 `v1.0.0`）会触发 `.github/workflows/package.yml`，在 GitHub Actions 中生成 Windows x86 的 EXE/MSI、Linux deb/rpm/AppImage 以及 macOS 安装包，并上传为 workflow artifacts。CI 不读取本地 API Key。
+
+### 5.4 扩展调试
 
 - `chrome://extensions` 中点击扩展的「重新加载」，再重新打开工作台；旧工作台页面不会自动加载新脚本。
 - 在 DeepSeek 页面开发者工具的 Console 中查看 content script 错误，在扩展详情页打开 service worker 检查后台错误。
 - 若列表数量少于网页实际数量，先点击「加载全部历史」并等待提示停止增长；DeepSeek 使用虚拟列表时，扩展必须逐屏滚动才能发现更早会话。
 
-### 5.3 真实 DeepSeek 验收
+### 5.5 真实 DeepSeek 验收
 
 1. 使用 Chrome/Chromium 登录 `chat.deepseek.com`，确认侧边栏能看到至少两个会话，并保持该标签页打开。
 2. 执行 `pnpm build:extension`，在 `chrome://extensions` 重新加载 `extension/dist/`，从扩展按钮打开工作台。
 3. 先点「刷新列表」确认当前可见会话，再点「加载全部历史」观察数量是否逐屏增长；勾选会话并执行读取，确认成功项和失败原因均显示。
 4. 点击下载后检查 JSON 的 `conversations` 与 `errors`；下载接口不可用时应看到页面下载回退提示。不要把真实会话内容、Cookie 或 API Key 放进日志和 issue。
 
-### 5.4 对话、图谱与阅读片段验收
+### 5.6 对话、图谱与阅读片段验收
 
 1. 新建对话后，确认首轮问题和回答位于同一张根卡片；点击回答中的黄色推荐词，确认立即出现独立临时分支和新卡片，未提交前可关闭，提交后不可关闭。
 2. 连续追问时检查卡片顶部显示当前阅读片段：首轮必须创建片段且响应不得带 `unit_id`，后续响应只能复用 Prompt 中列出的真实 `unit_id` 或明确创建新片段；检查追问 Prompt 已披露当前 Session 走过的主题路径，避免重复创建同名主题。导入消息没有片段时从任务中心运行全图维护并使用 `unit_create` 补建。
@@ -155,7 +163,7 @@ pnpm build:extension      # 产物在 extension/dist/
 4. 图谱首屏只显示真实根主题。单击主题同时打开详情并逐层展开；刷新和重置布局后节点位置稳定，线段和箭头端点落在圆周而不是圆心，当前节点/路径高亮，阅读片段连线只在悬停时显示。切换到其他菜单后，知识维护浮窗和按钮应自动收起且不残留。
 5. 阅读片段页默认按最近更新排序，并可切换最早更新、最近创建和标题排序；搜索标题、摘要或来源会话后，右侧仍显示所选片段的完整消息内容。普通列表、搜索候选和图谱标签不应泄漏 Markdown 或 Nexus 标记语法；无法解析到本地 active Concept 的 `existing` 标记不得显示为蓝色链接。
 
-### 5.5 任务状态与渐进披露验收
+### 5.7 任务状态与渐进披露验收
 
 完整的状态图、维护/对话时序和模块边界见 [`docs/conversation-state-audit.md`](conversation-state-audit.md)。
 

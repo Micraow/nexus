@@ -172,7 +172,7 @@ const databasePathDraft = ref('')
 const visibleSessionCount = ref(40)
 const visibleCompletedTaskCount = ref(30)
 const taskTypeFilter = ref<TaskType | 'all'>('all')
-const taskStatusFilter = ref<'all' | 'active' | 'review' | 'completed'>('all')
+const taskStatusFilter = ref<'all' | 'active' | 'review' | 'disclosure' | 'completed'>('all')
 const taskSort = ref<'created_desc' | 'created_asc' | 'status'>('created_desc')
 let viewportSaveTimer: number | null = null
 
@@ -659,6 +659,7 @@ const visibleTasks = computed(() => {
     if (taskTypeFilter.value !== 'all' && task.type !== taskTypeFilter.value) return false
     if (taskStatusFilter.value === 'active' && !['pending', 'running'].includes(task.status)) return false
     if (taskStatusFilter.value === 'review' && task.status !== 'needs_review') return false
+    if (taskStatusFilter.value === 'disclosure' && task.phase !== 'awaiting_disclosure') return false
     if (taskStatusFilter.value === 'completed' && !['success', 'failed', 'stale', 'cancelled'].includes(task.status)) return false
     return true
   })
@@ -1033,7 +1034,7 @@ function mergeSelectedConcept(): void {
   }
 }
 
-function createMaintenanceTask(input: { conceptIds?: string[]; unitIds?: string[]; includeFullContent?: boolean }, label: string): void {
+function createMaintenanceTask(input: { conceptIds?: string[]; unitIds?: string[]; includeFullContent?: boolean; scopeMode?: 'global' | 'local' }, label: string): void {
   try {
     const taskId = store.createMaintenanceTask({ ...input, userInstruction: maintenanceInstruction.value.trim().slice(0, 2000) })
     maintenanceInstruction.value = ''
@@ -1057,7 +1058,7 @@ function createGraphMaintenance(): void {
 
 function createConceptMaintenance(): void {
   if (!selectedConcept.value) return
-  createMaintenanceTask({ conceptIds: [selectedConcept.value.id] }, `“${selectedConcept.value.name}”维护任务`)
+  createMaintenanceTask({ conceptIds: [selectedConcept.value.id], scopeMode: 'local' }, `“${selectedConcept.value.name}”分支维护任务`)
 }
 
 function createSessionMaintenance(): void {
@@ -2232,7 +2233,7 @@ onBeforeUnmount(() => {
         </div>
         <div v-if="activeView === 'tasks'" class="task-filter-toolbar" aria-label="任务筛选与排序">
           <label><span>类型</span><select v-model="taskTypeFilter" aria-label="按任务类型筛选"><option value="all">全部类型</option><option v-for="option in taskTypeOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
-          <label><span>状态</span><select v-model="taskStatusFilter" aria-label="按任务状态筛选"><option value="all">全部状态</option><option value="active">待处理与运行中</option><option value="review">需要检查</option><option value="completed">已完成与失败</option></select></label>
+          <label><span>状态</span><select v-model="taskStatusFilter" aria-label="按任务状态筛选"><option value="all">全部状态</option><option value="active">待处理与运行中</option><option value="disclosure">渐进式披露</option><option value="review">需要检查</option><option value="completed">已完成与失败</option></select></label>
           <label><span>排序</span><select v-model="taskSort" aria-label="任务排序方式"><option value="created_desc">最新创建</option><option value="created_asc">最早创建</option><option value="status">按处理状态</option></select></label>
           <span class="task-filter-count">显示 {{ visibleTasks.length }} / {{ store.tasks.length }}</span>
         </div>
@@ -2486,7 +2487,7 @@ onBeforeUnmount(() => {
 
     <section v-if="maintenancePanelOpen && maintenancePageHasContext" class="maintenance-panel surface-section" aria-label="全图知识维护">
       <div class="maintenance-panel-header">
-        <div><span class="eyebrow">KNOWLEDGE MAINTENANCE</span><h3>全图知识维护</h3><span class="maintenance-scope-note">每次任务都会检查整个知识图谱；当前页面对象仅作为优先关注。</span></div>
+        <div><span class="eyebrow">KNOWLEDGE MAINTENANCE</span><h3>知识维护</h3><span class="maintenance-scope-note">可一键扫描全图；选中父主题后也可只整理它的 hierarchy 子孙分支。</span></div>
         <div class="maintenance-panel-actions"><Sparkles :size="18" /><button class="icon-button" aria-label="关闭知识维护" title="关闭知识维护" @click="maintenancePanelOpen = false"><X :size="15" /></button></div>
       </div>
       <div class="maintenance-scope maintenance-global-scope">
@@ -2499,8 +2500,8 @@ onBeforeUnmount(() => {
         <span class="maintenance-instruction-count">{{ maintenanceInstruction.length }} / 2000</span>
       </div>
       <div v-if="(activeView === 'concepts' || activeView === 'graph') && selectedConcept" class="maintenance-scope">
-        <div class="maintenance-scope-copy"><strong>优先关注：{{ displayText(selectedConcept.name, '未命名知识主题') }}</strong><span>先检查这个主题及其证据，随后仍继续扫描全图</span></div>
-        <button class="button primary-button" @click="createConceptMaintenance"><Sparkles :size="14" />生成维护建议</button>
+        <div class="maintenance-scope-copy"><strong>局部整理：{{ displayText(selectedConcept.name, '未命名知识主题') }} 分支</strong><span>只检查这个主题及其 hierarchy 子孙；不会扫描其他分支</span></div>
+        <button class="button primary-button" @click="createConceptMaintenance"><Sparkles :size="14" />整理此主题分支</button>
       </div>
       <div v-if="activeView === 'sessions' && selectedSession" class="maintenance-scope">
         <div class="maintenance-scope-copy"><strong>优先关注：{{ displayText(selectedSession.title, '未命名会话') }}</strong><span>先检查当前会话证据，随后仍继续扫描全图</span></div>

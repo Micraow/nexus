@@ -1,0 +1,79 @@
+name: Package Nexus
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  extension:
+    name: Chrome extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:extension
+      - run: tar -czf nexus-extension-${GITHUB_REF_NAME}.tar.gz -C extension dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexus-extension-${{ github.ref_name }}
+          path: nexus-extension-${{ github.ref_name }}.tar.gz
+
+  desktop:
+    name: Desktop ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x86
+            os: windows-latest
+            target: i686-pc-windows-msvc
+            bundles: msi,nsis
+          - name: linux
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: deb,rpm,appimage
+          - name: macos-x86
+            os: macos-13
+            target: x86_64-apple-darwin
+            bundles: dmg
+          - name: macos-arm64
+            os: macos-14
+            target: aarch64-apple-darwin
+            bundles: dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - run: pnpm install --frozen-lockfile
+      - name: Build desktop bundles
+        run: pnpm exec tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexus-${{ matrix.name }}-${{ github.ref_name }}
+          if-no-files-found: error
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/**
+            src-tauri/target/${{ matrix.target }}/release/nexus-weave*
