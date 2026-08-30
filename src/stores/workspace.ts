@@ -3431,7 +3431,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
             }))
             requestBody.tool_choice = 'auto'
           }
-          const response = await httpRequest(`${provider.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+          const providerBaseUrl = provider.baseUrl.replace(/\/+$/, '')
+          const endpoint = /\/chat\/completions$/i.test(providerBaseUrl) ? providerBaseUrl : `${providerBaseUrl}/chat/completions`
+          const response = await httpRequest(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.apiKey}` },
             body: JSON.stringify(requestBody),
@@ -3570,8 +3572,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         } catch (error) {
           const current = tasks.value.find((item) => item.id === taskId)
           if (current?.status === 'cancelled') return { ok: false, error: '任务已取消' }
+          const rawErrorMessage = error instanceof Error ? error.message : 'API 请求失败'
+          if (/status\s*400/i.test(rawErrorMessage) && currentTask.type === 'maintenance' && !maintenanceToolsDisabled) {
+            // The Tauri HTTP plugin may throw on non-2xx responses instead of
+            // returning a Response, so the response-level tools fallback is
+            // not always reached. Retry maintenance as plain JSON once.
+            maintenanceToolsDisabled = true
+            continue
+          }
           if (controller.signal.aborted) lastError = new Error('API 请求超时')
-          else lastError = error instanceof Error ? error : new Error('API 请求失败')
+          else if (/status\s*400/i.test(rawErrorMessage)) {
+            lastError = new Error(`${rawErrorMessage}。请检查模型名称、Base URL（填写 /v1 根地址或完整 /chat/completions 地址）以及该模型是否支持当前任务格式。`)
+          } else lastError = error instanceof Error ? error : new Error('API 请求失败')
           const retryable = Boolean((error as { retryable?: boolean })?.retryable) || controller.signal.aborted || lastError.message.includes('Failed to fetch')
           if (!retryable || attempt >= transportAttempts - 1) break
           await new Promise((resolve) => window.setTimeout(resolve, 500 * 2 ** attempt))

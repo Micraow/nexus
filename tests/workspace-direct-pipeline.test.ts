@@ -1566,4 +1566,32 @@ describe('direct concept extraction import pipeline', () => {
     expect(requestCount).toBe(2)
     expect(store.tasks.find((task) => task.id === taskId)).toEqual(expect.objectContaining({ status: 'success' }))
   })
+
+  it('falls back to plain JSON when the Tauri provider rejects maintenance tools with HTTP 400', async () => {
+    const conceptId = store.createConcept('维护工具兼容主题')
+    let requestCount = 0
+    let secondRequestBody: Record<string, unknown> | undefined
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      requestCount += 1
+      if (requestCount === 1) throw new Error('Backend request failed with status 400')
+      secondRequestBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: JSON.stringify({ reason: '已使用 JSON 兼容模式完成检查。', suggestions: [{ type: 'update_concept', concept_id: conceptId, summary: '兼容模式摘要', reason: '服务端不支持工具调用' }], disclosure_requests: [] }) } }] }),
+      } as Response
+    }))
+    store.updateConfig({
+      llm: {
+        ...store.config.llm,
+        mode: 'api',
+        defaultProvider: 'maintenance-tools-compat-provider',
+        providers: [{ id: 'maintenance-tools-compat-provider', name: 'Maintenance tools compatibility', baseUrl: 'https://example.test/v1', model: 'maintenance-model', apiKey: 'test-key' }],
+      },
+    })
+    const taskId = createAuditedMaintenanceTask({ conceptIds: [conceptId] })
+    await expect(store.executeTask(taskId)).resolves.toEqual({ ok: true })
+    expect(requestCount).toBe(2)
+    expect(secondRequestBody?.tools).toBeUndefined()
+    expect(secondRequestBody?.tool_choice).toBeUndefined()
+  })
 })
