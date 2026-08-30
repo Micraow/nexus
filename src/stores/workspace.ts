@@ -1875,7 +1875,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     })
   }
 
-  function createMaintenanceTask(input: { conceptIds?: string[]; unitIds?: string[]; includeFullContent?: boolean } = {}): string {
+  function createMaintenanceTask(input: { conceptIds?: string[]; unitIds?: string[]; includeFullContent?: boolean; userInstruction?: string } = {}): string {
+    const userInstruction = input.userInstruction?.trim().slice(0, 2000) ?? ''
     const requestedConceptIds = input.conceptIds?.length ? new Set(input.conceptIds) : null
     const requestedUnitIds = input.unitIds?.length ? new Set(input.unitIds) : null
     // Maintenance is graph-wide by design. A selected Concept/Session/unit is
@@ -1924,10 +1925,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         auditPendingRefs: true,
       }),
       scope: { conceptIds: requestedConceptIds ? [...requestedConceptIds] : [], unitIds: requestedUnitIds ? [...requestedUnitIds] : [] },
+      userInstruction,
     })
     let taskId = ''
     mutate(() => {
-      const focusHash = stableHash(JSON.stringify({ concepts: [...(requestedConceptIds ?? [])].sort(), units: [...(requestedUnitIds ?? [])].sort() }))
+      const focusHash = stableHash(JSON.stringify({ concepts: [...(requestedConceptIds ?? [])].sort(), units: [...(requestedUnitIds ?? [])].sort(), userInstruction }))
       taskId = createTask({ type: 'maintenance', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `maintenance:${maintenanceStateHash()}:${focusHash}`, prompt, status: 'pending', scopeLabel: `全库知识图谱 · ${conceptScope.length} 个知识主题 · ${unitScope.length} 个知识单元` })
     })
     return taskId

@@ -114,6 +114,7 @@ const expandedSessionIds = ref<string[]>([])
 const contextIncludeFull = ref(false)
 const composerOpen = ref(false)
 const maintenancePanelOpen = ref(false)
+const maintenanceInstruction = ref('')
 const composerQuestion = ref('')
 const composerTopicIds = ref<string[]>([])
 const composerTopicId = computed<string | null>({
@@ -1034,7 +1035,8 @@ function mergeSelectedConcept(): void {
 
 function createMaintenanceTask(input: { conceptIds?: string[]; unitIds?: string[]; includeFullContent?: boolean }, label: string): void {
   try {
-    const taskId = store.createMaintenanceTask(input)
+    const taskId = store.createMaintenanceTask({ ...input, userInstruction: maintenanceInstruction.value.trim().slice(0, 2000) })
+    maintenanceInstruction.value = ''
     setView('tasks')
     selectedTaskId.value = taskId
     maintenancePanelOpen.value = true
@@ -2490,6 +2492,11 @@ onBeforeUnmount(() => {
       <div class="maintenance-scope maintenance-global-scope">
         <div class="maintenance-scope-copy"><strong>扫描整个知识图谱</strong><span>从所有根主题开始，检查层级、关系、归属和阅读片段</span></div>
         <button class="button primary-button" @click="createGraphMaintenance"><Sparkles :size="14" />开始全图维护</button>
+      </div>
+      <div class="maintenance-instruction">
+        <label for="maintenance-instruction-input">告诉 AI 这次优先如何维护 <small>可选；不会缩小全图扫描范围，最多 2000 个字符</small></label>
+        <textarea id="maintenance-instruction-input" v-model="maintenanceInstruction" maxlength="2000" rows="3" placeholder="例如：重点检查 CAVER 下的层级是否合理，并找出可以合并的重复主题。" />
+        <span class="maintenance-instruction-count">{{ maintenanceInstruction.length }} / 2000</span>
       </div>
       <div v-if="(activeView === 'concepts' || activeView === 'graph') && selectedConcept" class="maintenance-scope">
         <div class="maintenance-scope-copy"><strong>优先关注：{{ displayText(selectedConcept.name, '未命名知识主题') }}</strong><span>先检查这个主题及其证据，随后仍继续扫描全图</span></div>

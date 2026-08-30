@@ -398,6 +398,11 @@ textarea { resize: vertical; }
 .maintenance-scope-note { display: block; margin-top: 4px; color: var(--muted); font-size: calc(11px * var(--app-font-scale)); line-height: 1.45; }
 .maintenance-scope { display: flex; align-items: center; gap: 12px; padding: 13px 0; border-bottom: 1px solid var(--line); }
 .maintenance-global-scope { background: var(--primary-soft); margin: 13px -10px 0; padding: 13px 10px; border-radius: 7px; }
+.maintenance-instruction { position: relative; display: grid; gap: 6px; padding: 13px 0; border-bottom: 1px solid var(--line); }
+.maintenance-instruction label { display: grid; gap: 3px; font-size: calc(12px * var(--app-font-scale)); font-weight: 650; }
+.maintenance-instruction label small { color: var(--muted); font-size: calc(11px * var(--app-font-scale)); font-weight: 400; line-height: 1.4; }
+.maintenance-instruction textarea { width: 100%; min-height: 74px; resize: vertical; }
+.maintenance-instruction-count { justify-self: end; color: var(--muted); font-size: calc(10px * var(--app-font-scale)); }
 .maintenance-scope-copy { min-width: 0; flex: 1; display: grid; gap: 3px; }
 .maintenance-scope-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(12px * var(--app-font-scale)); }
 .maintenance-scope-copy span { color: var(--muted); font-size: calc(11px * var(--app-font-scale)); line-height: 1.45; }

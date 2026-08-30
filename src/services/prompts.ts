@@ -708,11 +708,14 @@ export function buildMaintenancePrompt(input: {
   includeMessages?: string
   disclosure?: DisclosureContext
   scope?: { conceptIds?: string[]; unitIds?: string[] }
+  userInstruction?: string
 }): string {
   const disclosureText = formatDisclosureContext(input.disclosure)
   const scopeText = input.scope && (input.scope.conceptIds?.length || input.scope.unitIds?.length)
     ? `\n用户附加关注范围（不改变全库维护范围）：Concept=${JSON.stringify(input.scope.conceptIds ?? [])}，KnowledgeUnit=${JSON.stringify(input.scope.unitIds ?? [])}`
     : ''
+  const userInstruction = input.userInstruction?.trim() ?? ''
+  const userInstructionText = `\n用户附加维护要求（可选）：${userInstruction || '未提供；请按全图维护规范自主审计。'}\n这段要求只决定优先关注的审计目标，不会缩小维护范围。你仍必须扫描整个活动知识图谱，并遵守 ID 披露、MCP 动作、层级和用户确认规则。`
   const unassignedMessages = input.messages ?? []
   const unassignedSessionCounts = new Map<string, number>()
   unassignedMessages.forEach((message) => unassignedSessionCounts.set(message.sessionId, (unassignedSessionCounts.get(message.sessionId) ?? 0) + 1))
@@ -778,6 +781,7 @@ ${unitCoverageAudit}
 ${actionApi}
 
 ${scopeText}
+${userInstructionText}
 ${disclosureText}
 
 ${disclosureAvailability(input.disclosure)}

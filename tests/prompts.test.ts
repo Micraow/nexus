@@ -115,6 +115,19 @@ describe('conversation prompt', () => {
 })
 
 describe('maintenance prompt', () => {
+  it('includes an optional user maintenance instruction without changing graph-wide scope', () => {
+    const prompt = buildMaintenancePrompt({
+      concepts: [{ id: 'root', name: '喜羊羊', aliases: [], summary: '草原角色', notes: '' }],
+      relations: [],
+      units: [],
+      userInstruction: '重点检查重复主题，并为没有阅读片段的消息补建片段。',
+    })
+    expect(prompt).toContain('用户附加维护要求（可选）')
+    expect(prompt).toContain('重点检查重复主题，并为没有阅读片段的消息补建片段。')
+    expect(prompt).toContain('不会缩小维护范围')
+    expect(buildMaintenancePrompt({ concepts: [], relations: [], units: [] })).toContain('未提供；请按全图维护规范自主审计')
+  })
+
   it('describes a graph-wide scope and exposes only the disclosure index', () => {
     const prompt = buildMaintenancePrompt({
       concepts: [

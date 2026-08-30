@@ -113,7 +113,11 @@ describe('full-graph maintenance entry', () => {
       createdAt: now,
       updatedAt: now,
     }] satisfies LLMTask[]
-    store.createMaintenanceTask = () => 'maintenance-1'
+    let maintenanceInput: Record<string, unknown> | undefined
+    store.createMaintenanceTask = (input) => {
+      maintenanceInput = input
+      return 'maintenance-1'
+    }
 
     const app = createApp(App)
     app.use(pinia)
@@ -125,11 +129,16 @@ describe('full-graph maintenance entry', () => {
     await nextTick()
     target.querySelector<HTMLButtonElement>('.topbar .maintenance-entry-button')!.click()
     await nextTick()
+    const instruction = target.querySelector<HTMLTextAreaElement>('#maintenance-instruction-input')!
+    instruction.value = '重点检查重复主题并补建阅读片段'
+    instruction.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
     target.querySelector<HTMLButtonElement>('.maintenance-global-scope .primary-button')!.click()
     await nextTick()
 
     expect(target.querySelector('.tasks-view')).not.toBeNull()
     expect(target.querySelector('.maintenance-panel')).not.toBeNull()
+    expect(maintenanceInput).toMatchObject({ userInstruction: '重点检查重复主题并补建阅读片段' })
   })
 
   it('does not project the previous disclosure response as the next-round draft', async () => {

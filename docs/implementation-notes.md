@@ -24,6 +24,7 @@
 - “待确认”关系可能来自历史导入、整理结果或维护任务，并不表示打开主题时一定存在 API 请求；主题详情读取本地事实，不会隐式创建任务。KnowledgeUnit 继续作为可选的证据包和上下文来源，不是 Concept 提取或图谱展示的前置条件。
 - 知识维护任务始终扫描整个 active Concept 图谱；从主题、会话或阅读片段入口触发时，这些对象只作为 Prompt 中的附加关注范围。Prompt 提供全部一级主题及直接子主题引用，并明确根节点是例外、新主题优先匹配最窄父主题、related 不能代替 hierarchy。`MAINTENANCE_ACTION_API` 同时作为 Prompt 和应用校验的机器可读工具目录，使用 MCP 标准 `inputSchema`（并保留 `input_schema` 兼容字段，均为 `additionalProperties=false`），另由 `listMaintenanceMcpTools()` 与 `maintenanceMcpToolsList()` 暴露纯 `{name, description, inputSchema}` 及 `{tools:[...]}` 的 `tools/list` 视图；API 模式把这些 schema 作为 OpenAI-compatible function tools 提供，tool call 按注册工具名转换为 suggestion，Prompt 粘贴模式仍使用同一 schema。动作覆盖 Concept CRUD、别名、关系增删改与审核、多父层级整体替换/解除、归属迁移和阅读片段修订。创建 Concept 可在同一动作中提交别名与多父级；应用前做 DAG、字段白名单、重复别名和长度检测，并通过快照事务记录，可撤销，未知动作/字段不落库。
 - 全图维护入口仅在知识图谱、知识主题、会话以及维护任务详情中显示；打开面板后切换到其他模块会自动收起。创建维护任务先切换到任务中心，再选中任务并保持面板打开，避免页面切换状态清除刚创建的维护上下文。
+- 全图维护面板允许填写可选的“用户附加维护要求”。该文本随任务 Prompt 固化并限制为 2000 个字符，只作为优先审计目标，不能缩小全图扫描范围；空输入与旧行为完全兼容。
 - 当前规模和已有 D3 力向布局、拖拽、键盘/ARIA、高亮及位置持久化已覆盖验收目标。布局使用 ForceAtlas2 类的分量级重力：每个由 hierarchy、manual 或强 related 边组成的结构分量保留自己的初始质心，展开新增子主题时只重新加热所属分量，弱 association/co-occurrence 边不会把独立团块绑成一个拖拽分量；新增节点以父主题附近的确定性坐标播种后交给 D3 弹簧、排斥和碰撞力完成过渡。在缺少性能基准和交互回归证据前不迁移 Sigma.js。若未来迁移，必须先以同一 fixture 对比初始布局稳定性、拖拽阈值、框选、无障碍和大图谱帧耗时。
 
 ## 运行边界
