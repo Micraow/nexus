@@ -2581,6 +2581,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     return [...listed].filter((refID) => !expandedWithContent.has(refID))
   }
 
+  function maintenanceDisclosureBatch(context: DisclosureContext): Array<{ refID: string; depth: number }> {
+    const pending = undisclosedReferenceIds(context)
+    const priority = (refID: string): number => refID.startsWith('concept_') ? 0 : refID.startsWith('session_') ? 1 : refID.startsWith('unit_') ? 2 : 3
+    return pending
+      .sort((left, right) => priority(left) - priority(right) || left.localeCompare(right))
+      .slice(0, 96)
+      .map((refID) => ({ refID, depth: refID.startsWith('concept_') || refID.startsWith('session_') ? 4 : 1 }))
+  }
+
   function hasDisclosureCompletionPayload(task: LLMTask, data: Record<string, unknown>): boolean {
     if (task.type === 'conversation') {
       return typeof data.answer === 'string' && data.answer.trim().length > 0
@@ -2631,8 +2640,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       return { ok: false, errors }
     }
     const currentRound = current.round ?? 0
-    if (currentRound >= 8) {
-      const errors = ['渐进式披露超过 8 轮，已暂停任务供检查']
+    const maxDisclosureRounds = task.type === 'maintenance' ? 16 : 8
+    if (currentRound >= maxDisclosureRounds) {
+      const errors = [`渐进式披露超过 ${maxDisclosureRounds} 轮，已暂停任务供检查`]
       markTask(task.id, 'needs_review', responseText, errors)
       return { ok: false, errors }
     }
@@ -2792,6 +2802,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const currentDisclosure = parseDisclosureContext(task.prompt)
       const hiddenRefIds = currentDisclosure ? undisclosedReferenceIds(currentDisclosure) : []
       if (hiddenRefIds.length > 0) {
+        if (Array.isArray(data.suggestions) && data.suggestions.length === 0 && currentDisclosure) {
+          const continuation = continueDisclosureTask(task, responseText, {
+            ...data,
+            suggestions: [],
+            disclosure_requests: maintenanceDisclosureBatch(currentDisclosure),
+          })
+          if (continuation) return continuation
+        }
         // Include the exact pending IDs in the repair prompt. The original
         // DISCLOSURE_INDEX remains authoritative, but surfacing this computed
         // list makes a manually repaired response deterministic and prevents
