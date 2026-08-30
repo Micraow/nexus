@@ -1391,6 +1391,36 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.tasks.find((item) => item.id === taskId)?.prompt).toContain(childId)
   })
 
+  it('keeps automatic maintenance disclosure batches bounded for large graphs', async () => {
+    for (let index = 0; index < 30; index += 1) store.createConcept(`批量披露根${index}`)
+    const prompts: string[] = []
+    let requestIndex = 0
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { messages?: Array<{ content?: string }> }
+      prompts.push(body.messages?.[0]?.content ?? '')
+      requestIndex += 1
+      const content = requestIndex < 3
+        ? JSON.stringify({ reason: `继续检查第 ${requestIndex} 批引用。`, suggestions: [], disclosure_requests: [] })
+        : JSON.stringify({ reason: '已完成全部根主题审计，未发现需要修改的地方。', suggestions: [], disclosure_requests: [] })
+      return { ok: true, json: async () => ({ choices: [{ message: { content } }] }) } as Response
+    }))
+    store.updateConfig({
+      llm: {
+        ...store.config.llm,
+        mode: 'api',
+        defaultProvider: 'maintenance-batch-provider',
+        providers: [{ id: 'maintenance-batch-provider', name: 'Maintenance batch', baseUrl: 'https://example.test/v1', model: 'maintenance-model', apiKey: 'test-key' }],
+      },
+    })
+    const taskId = store.createMaintenanceTask()
+    await expect(store.executeTask(taskId)).resolves.toEqual({ ok: true })
+    expect(requestIndex).toBe(3)
+    const secondDisclosure = parseDisclosureContext(prompts[1])!
+    const expandedRoots = secondDisclosure.expansions?.filter((expansion) => expansion.content != null) ?? []
+    expect(expandedRoots.length).toBeLessThanOrEqual(24)
+    expect(secondDisclosure.round).toBe(1)
+  })
+
   it('does not let a manual submit consume an API maintenance response while it is running', async () => {
     const rootId = store.createConcept('运行中维护根主题')
     const childId = store.createConcept('运行中维护子主题')
@@ -1539,8 +1569,33 @@ describe('direct concept extraction import pipeline', () => {
     const tools = requestBody?.tools as Array<{ type: string; function: { name: string; parameters: { additionalProperties: boolean } } }>
     expect(tools.some((tool) => tool.type === 'function' && tool.function.name === 'nexus_maintenance_update_concept')).toBe(true)
     expect(tools.find((tool) => tool.function.name === 'nexus_maintenance_set_hierarchy_parents')?.function.parameters.additionalProperties).toBe(false)
+    expect(requestBody?.tool_choice).toBeUndefined()
     const task = store.tasks.find((item) => item.id === taskId)!
     expect(JSON.parse(task.parsedResult ?? '{}')).toMatchObject({ suggestions: [{ type: 'update_concept', concept_id: conceptId, summary: '工具更新摘要', reason: '维护证据' }] })
+  })
+
+  it('accepts legacy singular function_call and object-form tool arguments', async () => {
+    const conceptId = store.createConcept('兼容函数调用主题')
+    let requestCount = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      requestCount += 1
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: null, function_call: { name: 'nexus_maintenance_update_concept', arguments: { concept_id: conceptId, summary: '兼容函数摘要', reason: '旧版工具响应' } } } }] }),
+      } as Response
+    }))
+    store.updateConfig({
+      llm: {
+        ...store.config.llm,
+        mode: 'api',
+        defaultProvider: 'legacy-function-provider',
+        providers: [{ id: 'legacy-function-provider', name: 'Legacy function', baseUrl: 'https://example.test/v1', model: 'maintenance-model', apiKey: 'test-key' }],
+      },
+    })
+    const taskId = createAuditedMaintenanceTask({ conceptIds: [conceptId] })
+    await expect(store.executeTask(taskId)).resolves.toEqual({ ok: true })
+    expect(requestCount).toBe(1)
+    expect(JSON.parse(store.tasks.find((item) => item.id === taskId)!.parsedResult ?? '{}')).toMatchObject({ suggestions: [{ type: 'update_concept', concept_id: conceptId, summary: '兼容函数摘要', reason: '旧版工具响应' }] })
   })
 
   it('automatically repairs a maintenance validation failure using the configured retry budget', async () => {

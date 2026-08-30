@@ -125,6 +125,8 @@ describe('maintenance prompt', () => {
     expect(prompt).toContain('用户附加维护要求（可选）')
     expect(prompt).toContain('重点检查重复主题，并为没有阅读片段的消息补建片段。')
     expect(prompt).toContain('不会改变本次任务范围')
+    expect(prompt.indexOf('<<<USER_MAINTENANCE_REQUEST>>>')).toBeLessThan(prompt.indexOf('动作 API（MCP tools/list 兼容）'))
+    expect(prompt).toContain('本轮维护目标再次确认：重点检查重复主题，并为没有阅读片段的消息补建片段。')
     expect(buildMaintenancePrompt({ concepts: [], relations: [], units: [] })).toContain('未提供；请按全图维护规范自主审计')
     expect(buildMaintenancePrompt({ concepts: [], relations: [], units: [], scopeMode: 'local' })).toContain('当前主题及其 hierarchy 子孙分支')
   })

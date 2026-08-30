@@ -2586,8 +2586,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const priority = (refID: string): number => refID.startsWith('concept_') ? 0 : refID.startsWith('session_') ? 1 : refID.startsWith('unit_') ? 2 : 3
     return pending
       .sort((left, right) => priority(left) - priority(right) || left.localeCompare(right))
-      .slice(0, 96)
-      .map((refID) => ({ refID, depth: refID.startsWith('concept_') || refID.startsWith('session_') ? 4 : 1 }))
+      // Keep each continuation comfortably below common provider context
+      // limits. A deep expansion fans out through children, so 24 roots at
+      // depth 2 is materially safer than the previous 96-at-depth-4 batch.
+      .slice(0, 24)
+      .map((refID) => ({ refID, depth: refID.startsWith('concept_') || refID.startsWith('session_') ? 2 : 1 }))
   }
 
   function hasDisclosureCompletionPayload(task: LLMTask, data: Record<string, unknown>): boolean {
@@ -3447,7 +3450,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
                 parameters: tool.inputSchema,
               },
             }))
-            requestBody.tool_choice = 'auto'
+            // Omitting tool_choice uses the provider's default automatic
+            // selection and is accepted by more OpenAI-compatible endpoints.
+            // Providers that support tools still return message.tool_calls;
+            // unsupported ones can use the plain-JSON fallback below.
           }
           const providerBaseUrl = provider.baseUrl.replace(/\/+$/, '')
           const endpoint = /\/chat\/completions$/i.test(providerBaseUrl) ? providerBaseUrl : `${providerBaseUrl}/chat/completions`
@@ -3489,6 +3495,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
               message?: {
                 content?: string | null
                 tool_calls?: Array<{ function?: { name?: string; arguments?: string | Record<string, unknown> } }>
+                function_call?: { name?: string; arguments?: string | Record<string, unknown> }
               }
             }>
           }
@@ -3542,14 +3549,20 @@ export const useWorkspaceStore = defineStore('workspace', () => {
                 message?: {
                   content?: string | null
                   tool_calls?: Array<{ function?: { name?: string; arguments?: string | Record<string, unknown> } }>
+                  function_call?: { name?: string; arguments?: string | Record<string, unknown> }
                 }
               }>
             }
           }
           const message = payload.choices?.[0]?.message
           let content = typeof message?.content === 'string' ? message.content : ''
-          if (currentTask.type === 'maintenance' && message?.tool_calls?.length) {
-            const suggestions = message.tool_calls.map((call) => maintenanceToolCallSuggestion(call.function?.name ?? '', call.function?.arguments ?? ''))
+          const toolCalls: Array<{ name?: string; arguments?: string | Record<string, unknown> }> = currentTask.type === 'maintenance'
+            ? (message?.tool_calls?.length
+              ? message.tool_calls.map((call) => call.function ?? {})
+              : message?.function_call ? [message.function_call] : [])
+            : []
+          if (toolCalls.length) {
+            const suggestions = toolCalls.map((call) => maintenanceToolCallSuggestion(call.name ?? '', call.arguments ?? ''))
             if (suggestions.some((suggestion) => !suggestion)) throw new Error('Provider 返回了无法识别的维护工具调用')
             const validSuggestions = suggestions.filter((suggestion): suggestion is Record<string, unknown> => Boolean(suggestion))
             const reasons = validSuggestions
@@ -3600,7 +3613,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           }
           if (controller.signal.aborted) lastError = new Error('API 请求超时')
           else if (/status\s*400/i.test(rawErrorMessage)) {
-            lastError = new Error(`${rawErrorMessage}。请检查模型名称、Base URL（填写 /v1 根地址或完整 /chat/completions 地址）以及该模型是否支持当前任务格式。`)
+            const requestVariant = currentTask.type === 'maintenance'
+              ? (maintenanceToolsDisabled ? '纯 JSON 回退请求' : 'MCP 工具请求')
+              : '普通任务请求'
+            lastError = new Error(`${rawErrorMessage}。这是服务商拒绝${requestVariant}请求体，不等同于本地配置校验失败；请优先查看服务商错误详情或上下文长度限制。`)
           } else lastError = error instanceof Error ? error : new Error('API 请求失败')
           const retryable = Boolean((error as { retryable?: boolean })?.retryable) || controller.signal.aborted || lastError.message.includes('Failed to fetch')
           if (!retryable || attempt >= transportAttempts - 1) break
