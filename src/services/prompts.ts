@@ -620,6 +620,7 @@ ${originalTask ? '' : disclosureText}
 如果原始响应包含 memberships 或 concept_ids，请保留其中合法的多归属列表；不要把多个 Concept 压缩为单个 concept_id。
 如果校验错误指出“主题已在当前目录中，必须复用 Concept ID”，这是可审计的确定性修复：从 concepts 数组移除该重复对象，并把其 client_ref 在 concept_ids、memberships.concept_ids、relations.source/target 中逐一替换为错误消息中的真实 Concept ID；不得创建同名副本，也不得把相似但不完全匹配的主题强行合并。可在最终 JSON 外记录 nexus_reuse 审计字段，但不得改变其他有效字段。
 如果校验错误指出 Concept 名称必须表示单一主题，必须把包含多个独立实体的对象拆成多个独立 concepts，并同步拆分 memberships 与 hierarchy；不能只删除“与/和/及/、/”后继续保留复合标题。若确属不可拆分正式固定名称（例如“喜羊羊与灰太狼”），可以保留原 name，但必须补充 0～1 的 confidence 与非空 reason；普通并列或比较仍须拆分。拆分时允许新增 client_ref（new:1 到原任务上限）并把独立主题挂到合适父 Concept 下。
+复合固定名称的修复格式示例（必须一次性提供字段）：{"client_ref":"new:1","name":"喜羊羊与灰太狼","summary":"一部完整动画作品的正式名称。","aliases":[],"confidence":0.99,"reason":"这是不可拆分的正式作品名，整体指向同一部动画；拆分会改变专名含义。"}。confidence 必须是 JSON 数字且在 0～1 内，reason 必须是非空字符串；不要输出空字符串、占位符或把字段放在对象外。
 只返回修正后的 JSON。`)
 }
 

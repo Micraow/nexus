@@ -243,6 +243,8 @@ describe('prompt harness and progressive disclosure', () => {
     expect(repair.indexOf(NEXUS_HARNESS_PROMPT)).toBe(repair.lastIndexOf(NEXUS_HARNESS_PROMPT))
     expect(repair).toContain('原任务规格')
     expect(repair).toContain('只返回 JSON：{"ok":true}')
+    expect(repair).toContain('"confidence":0.99')
+    expect(repair).toContain('喜羊羊与灰太狼')
   })
 
   it('renders and parses recursive references without exposing content in child refs', () => {

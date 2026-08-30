@@ -3534,7 +3534,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           // API tasks, with a bounded budget so a provider cannot loop forever.
           const canAutoRepair = currentTask.mode === 'api'
             && currentTask.type !== 'segmentation'
-            && !config.value.llm.stream
+            && !(config.value.llm.stream && currentTask.type === 'conversation')
             && !result.errors.some((error) => error.includes('请求的引用已经展开') || error.includes('没有推进披露目录') || error.includes('disclosure_requests') || error.includes('refID'))
           if (canAutoRepair && result.errors.length && repairAttempts < maxRepairAttempts) {
             repairAttempts += 1
