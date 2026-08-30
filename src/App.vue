@@ -1721,14 +1721,6 @@ function taskStatusLabel(status: LLMTask['status'], phase?: LLMTask['phase']): s
   return ({ pending: '待处理', running: '处理中', success: '已完成', failed: '失败', needs_review: '需要检查', stale: '已过期', cancelled: '已取消' } as Record<string, string>)[status]
 }
 
-function taskPhaseHint(task: LLMTask): string {
-  if (task.phase === 'awaiting_disclosure') {
-    const round = task.prompt.match(/DISCLOSURE_INDEX[\s\S]*?round[^0-9]*(\d+)/i)?.[1]
-    return `渐进式披露 · 第 ${Number(round ?? 0) + 1} 轮`
-  }
-  return ''
-}
-
 function taskTone(status: LLMTask['status'], phase?: LLMTask['phase']): string {
   if (phase === 'awaiting_disclosure' || phase === 'awaiting_review') return 'warning'
   if (status === 'success') return 'success'
