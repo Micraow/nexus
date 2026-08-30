@@ -278,6 +278,28 @@ describe('prompt harness and progressive disclosure', () => {
     expect(replaced.startsWith(NEXUS_HARNESS_PROMPT)).toBe(true)
   })
 
+  it('bounds the maintenance pending reference window while retaining a total count', () => {
+    const roots = [{ refID: 'root', title: '根', summary: '摘要' }]
+    const children = Array.from({ length: 80 }, (_, index) => ({ refID: `concept_${index}`, title: `主题 ${index}`, summary: '摘要' }))
+    const rendered = formatDisclosureContext({ roots, expansions: [{ refID: 'root', children }], auditPendingRefs: true })
+    const parsed = parseDisclosureContext(buildHarnessPrompt(rendered))
+    // The root itself is also pending until its expansion has content.
+    expect(rendered).toContain('"pending_ref_count": 81')
+    expect(rendered).toContain('"pending_ref_ids_truncated": true')
+    const pendingBlock = rendered.match(/"pending_ref_ids": \[([\s\S]*?)\]/u)?.[1] ?? ''
+    expect((pendingBlock.match(/"(?:root|concept_\d+)"/gu) ?? []).length).toBe(64)
+    expect(parsed?.roots[0]?.refID).toBe('root')
+  })
+
+  it('preserves compact maintenance root pages and their opaque IDs across parsing', () => {
+    const roots = Array.from({ length: 40 }, (_, index) => ({ refID: `root_${index}`, title: `根 ${index}`, summary: '摘要' }))
+    const rendered = formatDisclosureContext({ roots, expansions: [{ refID: 'root_0', children: [] }], auditPendingRefs: true, compact: true })
+    const parsed = parseDisclosureContext(buildHarnessPrompt(rendered))
+    expect(parsed?.roots).toHaveLength(32)
+    expect(parsed?.additionalRootRefIds).toContain('root_39')
+    expect([...new Set([...(parsed?.roots.map((root) => root.refID) ?? []), ...(parsed?.additionalRootRefIds ?? [])])]).toContain('root_39')
+  })
+
   it('does not let an untrusted content marker break disclosure parsing', () => {
     const context = {
       roots: [{ refID: 'root', title: '根', summary: '摘要' }],

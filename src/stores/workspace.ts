@@ -751,7 +751,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
    * from existing ConceptRelation/UnitConcept/Message rows; no graph schema
    * or persistent field is added for the disclosure protocol.
    */
-  function promptDisclosureContext(options: { unitIds?: string[]; messageIds?: string[]; sessionIds?: string[]; includeFullContent?: boolean; includeConceptDetails?: boolean; includeMessageSummaries?: boolean; scopeConceptRoots?: boolean; auditPendingRefs?: boolean; expandedRefIds?: string[]; round?: number } = {}): DisclosureContext {
+  function promptDisclosureContext(options: { unitIds?: string[]; messageIds?: string[]; sessionIds?: string[]; includeFullContent?: boolean; includeConceptDetails?: boolean; includeMessageSummaries?: boolean; scopeConceptRoots?: boolean; auditPendingRefs?: boolean; compact?: boolean; expandedRefIds?: string[]; round?: number } = {}): DisclosureContext {
     const active = activeConcepts.value.slice().sort((left, right) => left.name.localeCompare(right.name, 'zh-CN') || left.id.localeCompare(right.id))
     const activeIds = new Set(active.map((concept) => concept.id))
     const hierarchy = relations.value.filter((relation) =>
@@ -922,9 +922,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
             },
           })
         : undefined
+      // Maintenance's first round only needs the hierarchy navigation index.
+      // Membership/session/message references are high fan-out and are
+      // disclosed after the model explicitly opens a Concept. Keeping them
+      // out of the initial catalog prevents graph-wide prompts from ballooning
+      // to hundreds of kilobytes while preserving the root -> child topology.
+      const navigationChildren = revealDetails
+        ? [...childRefs, ...sessionRefs, ...unitRefs, ...messageRefs]
+        : childRefs
       return {
         refID: concept.id,
-        children: [...childRefs, ...sessionRefs, ...unitRefs, ...messageRefs].filter((reference) => !seen.has(reference.refID) && (seen.add(reference.refID), true)),
+        children: navigationChildren.filter((reference) => !seen.has(reference.refID) && (seen.add(reference.refID), true)),
         ...(content ? { content } : {}),
       }
     }
@@ -986,6 +994,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       expansions: [...expansionMap.values()],
       round: Number.isInteger(options.round) ? Math.max(0, options.round as number) : 0,
       ...(options.auditPendingRefs ? { auditPendingRefs: true } : {}),
+      ...(options.compact ? { compact: true } : {}),
     }
   }
 
@@ -1923,7 +1932,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       .filter((unit) => !unitConcepts.value.some((link) => link.unitId === unit.id && conceptIds.has(link.conceptId)))
       .map((unit) => unit.id)
     const catalogUnitIds = [...new Set([...focusUnitIds, ...unreachableUnitIds])]
-    const initialDisclosureRefIds = [...new Set([...rootConceptIds, ...focusedConceptPathIds, ...unassignedSessionIds, ...catalogUnitIds])]
+    // Expand only a small sample of unassigned sessions in the first round.
+    // All sessions remain listed as roots, so the rest are still pending and
+    // will be disclosed in later bounded rounds without multiplying message
+    // summaries into the initial prompt.
+    const initialSessionExpansionIds = unassignedSessionIds.length > 1 ? [] : unassignedSessionIds.slice(0, 1)
+    const initialRootExpansionIds = rootConceptIds.slice(0, 8)
+    const initialDisclosureRefIds = [...new Set([...initialRootExpansionIds, ...focusedConceptPathIds, ...initialSessionExpansionIds, ...catalogUnitIds])]
     const prompt = buildMaintenancePrompt({
       concepts: conceptScope.map((concept) => ({ id: concept.id, name: concept.name, aliases: aliases.value.filter((alias) => alias.conceptId === concept.id).map((alias) => alias.alias), summary: concept.summary ?? '', notes: concept.notes })),
       relations: relations.value.filter((relation) => conceptIds.has(relation.parentConceptId) && conceptIds.has(relation.childConceptId)).map((relation) => ({ sourceId: relation.parentConceptId, targetId: relation.childConceptId, type: relation.relationType, status: relation.status })),
@@ -1941,6 +1956,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         includeMessageSummaries: false,
         scopeConceptRoots: false,
         auditPendingRefs: true,
+        compact: true,
       }),
       scope: { conceptIds: requestedConceptIds ? [...requestedConceptIds] : [], unitIds: requestedUnitIds ? [...requestedUnitIds] : [] },
       scopeMode: localScope ? 'local' : 'global',
@@ -2577,6 +2593,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function undisclosedReferenceIds(context: DisclosureContext): string[] {
     const expandedWithContent = new Set((context.expansions ?? []).filter((expansion) => expansion.content != null).map((expansion) => expansion.refID))
     const listed = new Set(context.roots.map((reference) => reference.refID))
+    context.additionalRootRefIds?.forEach((refID) => listed.add(refID))
     ;(context.expansions ?? []).forEach((expansion) => expansion.children?.forEach((reference) => listed.add(reference.refID)))
     return [...listed].filter((refID) => !expandedWithContent.has(refID))
   }
@@ -2584,13 +2601,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function maintenanceDisclosureBatch(context: DisclosureContext): Array<{ refID: string; depth: number }> {
     const pending = undisclosedReferenceIds(context)
     const priority = (refID: string): number => refID.startsWith('concept_') ? 0 : refID.startsWith('session_') ? 1 : refID.startsWith('unit_') ? 2 : 3
+    const batchSize = pending.length > 100 ? 4 : 24
     return pending
       .sort((left, right) => priority(left) - priority(right) || left.localeCompare(right))
       // Keep each continuation comfortably below common provider context
-      // limits. A deep expansion fans out through children, so 24 roots at
-      // depth 2 is materially safer than the previous 96-at-depth-4 batch.
-      .slice(0, 24)
-      .map((refID) => ({ refID, depth: refID.startsWith('concept_') || refID.startsWith('session_') ? 2 : 1 }))
+      // limits. A deep expansion fans out through children, so a handful of
+      // roots per round is materially safer than the old 24-at-depth-2 batch.
+      .slice(0, batchSize)
+      .map((refID) => ({ refID, depth: 1 }))
   }
 
   function hasDisclosureCompletionPayload(task: LLMTask, data: Record<string, unknown>): boolean {
@@ -2670,8 +2688,23 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     // round alongside valid pending refs. Disclosure is read-only, so discard
     // only those invalid entries and continue with the valid batch; an all-
     // invalid batch still requires manual correction above.
-    const requests = rawRequests.filter((_raw, index) => !unavailableIndexes.has(index)) as Array<{ refID: string; depth: number }>
-    if (unavailableIndexes.size) data.disclosure_requests = requests
+    const compactMaintenance = task.type === 'maintenance' && task.prompt.length > 100_000
+    const requests = rawRequests
+      .filter((_raw, index) => !unavailableIndexes.has(index))
+      .slice(0, compactMaintenance ? 4 : rawRequests.length)
+      .map((raw) => {
+        const request = raw as { refID: string; depth: number }
+        const requestedDepth = Number.isInteger(request.depth) ? request.depth : 1
+        // Maintenance continuations are intentionally bounded to one level.
+        // Expanding a unit already includes its message evidence in the
+        // expansion content, so deeper fan-out only inflates provider context.
+        // Remaining refs stay pending and are scheduled in the next round.
+        const depth = compactMaintenance
+          ? Math.min(requestedDepth, request.refID.startsWith('unit_') ? 2 : 1)
+          : requestedDepth
+        return { refID: request.refID, depth }
+      })
+    if (unavailableIndexes.size || requests.length !== rawRequests.length) data.disclosure_requests = requests
     const requested = requests.map((item) => item.refID.trim())
     const expansionMap = new Map<string, NonNullable<DisclosureContext['expansions']>[number]>()
     ;(current.expansions ?? []).forEach((expansion) => expansionMap.set(expansion.refID, expansion))
@@ -2709,6 +2742,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       expansions: [...expansionMap.values()],
       round: currentRound + 1,
       ...(current.auditPendingRefs ? { auditPendingRefs: true } : {}),
+      ...(current.compact ? { compact: true } : {}),
+      ...(current.additionalRootRefIds ? { additionalRootRefIds: current.additionalRootRefIds } : {}),
     }
     const nextPrompt = replaceDisclosureContext(task.prompt, nextContext)
     if (expandedThisTurn.size === 0 || !changedExpansion || nextPrompt === task.prompt) {
