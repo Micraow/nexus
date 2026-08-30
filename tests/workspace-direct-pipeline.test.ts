@@ -1541,4 +1541,29 @@ describe('direct concept extraction import pipeline', () => {
     const task = store.tasks.find((item) => item.id === taskId)!
     expect(JSON.parse(task.parsedResult ?? '{}')).toMatchObject({ suggestions: [{ type: 'update_concept', concept_id: conceptId, summary: '工具更新摘要', reason: '维护证据' }] })
   })
+
+  it('automatically repairs a maintenance validation failure using the configured retry budget', async () => {
+    const conceptId = store.createConcept('维护自动修复主题')
+    let requestCount = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      requestCount += 1
+      const content = requestCount === 1
+        ? JSON.stringify({ reason: '首轮动作引用错误，需修复。', suggestions: [{ type: 'update_concept', concept_id: 'missing-concept', summary: '错误引用', reason: '测试校验' }], disclosure_requests: [] })
+        : JSON.stringify({ reason: '已修复并核对主题。', suggestions: [{ type: 'update_concept', concept_id: conceptId, summary: '修复后的摘要', reason: '使用已披露主题 ID' }], disclosure_requests: [] })
+      return { ok: true, json: async () => ({ choices: [{ message: { content } }] }) } as Response
+    }))
+    store.updateConfig({
+      llm: {
+        ...store.config.llm,
+        mode: 'api',
+        retries: 1,
+        defaultProvider: 'maintenance-repair-provider',
+        providers: [{ id: 'maintenance-repair-provider', name: 'Maintenance repair', baseUrl: 'https://example.test/v1', model: 'maintenance-model', apiKey: 'test-key' }],
+      },
+    })
+    const taskId = createAuditedMaintenanceTask({ conceptIds: [conceptId] })
+    await expect(store.executeTask(taskId)).resolves.toEqual({ ok: true })
+    expect(requestCount).toBe(2)
+    expect(store.tasks.find((task) => task.id === taskId)).toEqual(expect.objectContaining({ status: 'success' }))
+  })
 })

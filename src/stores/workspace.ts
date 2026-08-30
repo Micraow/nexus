@@ -1875,15 +1875,32 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     })
   }
 
-  function createMaintenanceTask(input: { conceptIds?: string[]; unitIds?: string[]; includeFullContent?: boolean; userInstruction?: string } = {}): string {
+  function createMaintenanceTask(input: { conceptIds?: string[]; unitIds?: string[]; includeFullContent?: boolean; scopeMode?: 'global' | 'local'; userInstruction?: string } = {}): string {
     const userInstruction = input.userInstruction?.trim().slice(0, 2000) ?? ''
     const requestedConceptIds = input.conceptIds?.length ? new Set(input.conceptIds) : null
     const requestedUnitIds = input.unitIds?.length ? new Set(input.unitIds) : null
-    // Maintenance is graph-wide by design. A selected Concept/Session/unit is
-    // retained only as an attention hint; omitting the rest of the active
-    // graph makes hierarchy repair impossible and encourages flat roots.
-    const conceptScope = activeConcepts.value.slice()
-    const unitScope = units.value.filter((unit) => unit.sessionId && activeSessionIds.value.has(unit.sessionId))
+    const localScope = input.scopeMode === 'local' && Boolean(requestedConceptIds?.size)
+    // Global maintenance scans the full graph. Local maintenance is limited to
+    // the selected Concept subtree and is only enabled explicitly by the UI.
+    const conceptScopeIds = new Set(requestedConceptIds ?? [])
+    if (localScope) {
+      let changed = true
+      while (changed) {
+        changed = false
+        relations.value
+          .filter((relation) => relation.relationType === 'hierarchy' && relation.status !== 'rejected' && conceptScopeIds.has(relation.parentConceptId))
+          .forEach((relation) => {
+            if (!conceptScopeIds.has(relation.childConceptId)) {
+              conceptScopeIds.add(relation.childConceptId)
+              changed = true
+            }
+          })
+      }
+    }
+    const conceptScope = localScope
+      ? activeConcepts.value.filter((concept) => conceptScopeIds.has(concept.id))
+      : activeConcepts.value.slice()
+    const unitScope = units.value.filter((unit) => unit.sessionId && activeSessionIds.value.has(unit.sessionId) && (!localScope || unitConcepts.value.some((link) => link.unitId === unit.id && conceptScopeIds.has(link.conceptId))))
     const focusUnitIds = requestedUnitIds
       ? [...requestedUnitIds]
       : requestedConceptIds
@@ -1892,7 +1909,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     // Maintenance may create optional reading units only from messages that
     // are not already claimed by another unit; omit assigned messages from
     // the catalog to keep the prompt focused and avoid duplicate proposals.
-    const activeMessages = messages.value.filter((message) => activeSessionIds.value.has(message.sessionId) && !message.unitId)
+    const localSessionIds = new Set(unitScope.map((unit) => unit.sessionId))
+    const activeMessages = messages.value.filter((message) => activeSessionIds.value.has(message.sessionId) && (!localScope || localSessionIds.has(message.sessionId)) && !message.unitId)
     if (!conceptScope.length && !unitScope.length && !activeMessages.length) throw new Error('没有可供维护检查的知识主题、阅读片段或消息')
     const conceptIds = new Set(conceptScope.map((concept) => concept.id))
     const hierarchyChildIds = new Set(relations.value
@@ -1925,11 +1943,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         auditPendingRefs: true,
       }),
       scope: { conceptIds: requestedConceptIds ? [...requestedConceptIds] : [], unitIds: requestedUnitIds ? [...requestedUnitIds] : [] },
+      scopeMode: localScope ? 'local' : 'global',
       userInstruction,
     })
     let taskId = ''
     mutate(() => {
-      const focusHash = stableHash(JSON.stringify({ concepts: [...(requestedConceptIds ?? [])].sort(), units: [...(requestedUnitIds ?? [])].sort(), userInstruction }))
+      const focusHash = stableHash(JSON.stringify({ concepts: [...(requestedConceptIds ?? [])].sort(), units: [...(requestedUnitIds ?? [])].sort(), scopeMode: localScope ? 'local' : 'global', userInstruction }))
       taskId = createTask({ type: 'maintenance', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `maintenance:${maintenanceStateHash()}:${focusHash}`, prompt, status: 'pending', scopeLabel: `全库知识图谱 · ${conceptScope.length} 个知识主题 · ${unitScope.length} 个知识单元` })
     })
     return taskId
@@ -3370,6 +3389,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
     let lastError: Error | null = null
     let repairAttempts = 0
+    const maxRepairAttempts = normalizeApiRetries(config.value.llm.retries, DEFAULT_API_RETRIES)
     try {
       // Transport retries and semantic repair retries are deliberately kept
       // separate. A malformed provider response must first produce a repair
@@ -3514,10 +3534,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           // API tasks, with a bounded budget so a provider cannot loop forever.
           const canAutoRepair = currentTask.mode === 'api'
             && currentTask.type !== 'segmentation'
-            && currentTask.type !== 'maintenance'
             && !config.value.llm.stream
-            && !result.errors.some((error) => error.includes('请求的引用已经展开') || error.includes('没有推进披露目录'))
-          if (canAutoRepair && result.errors.length && repairAttempts < 2) {
+            && !result.errors.some((error) => error.includes('请求的引用已经展开') || error.includes('没有推进披露目录') || error.includes('disclosure_requests') || error.includes('refID'))
+          if (canAutoRepair && result.errors.length && repairAttempts < maxRepairAttempts) {
             repairAttempts += 1
             continue
           }
