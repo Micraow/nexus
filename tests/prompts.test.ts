@@ -126,6 +126,7 @@ describe('maintenance prompt', () => {
     expect(prompt).toContain('重点检查重复主题，并为没有阅读片段的消息补建片段。')
     expect(prompt).toContain('不会改变本次任务范围')
     expect(buildMaintenancePrompt({ concepts: [], relations: [], units: [] })).toContain('未提供；请按全图维护规范自主审计')
+    expect(buildMaintenancePrompt({ concepts: [], relations: [], units: [], scopeMode: 'local' })).toContain('当前主题及其 hierarchy 子孙分支')
   })
 
   it('describes a graph-wide scope and exposes only the disclosure index', () => {

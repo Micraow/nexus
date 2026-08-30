@@ -772,7 +772,7 @@ ${JSON.stringify(graphSummary, null, 2)}
 阅读片段覆盖审计（必查项）：
 ${unitCoverageAudit}
 
-渐进式全图审计流程（本地会强制校验）：
+${scopeMode === 'local' ? '渐进式局部审计流程' : '渐进式全图审计流程'}（本地会强制校验）：
 - DISCLOSURE_INDEX 首轮只给所有根主题的 title/summary、根的直接子引用、含未归属消息的 Session 引用，以及无法从 active Concept 到达的阅读片段引用；子主题详情、关系 ID、别名、归属、片段和消息原文不会在其他位置重复提供。
 - 每轮先读 DISCLOSURE_INDEX.pending_ref_ids。该数组只列出已在 roots/children 出现、但仍缺 content 的引用；只要它非空，必须把全部 ID 原样放进同一个 disclosure_requests 批量请求，并令 suggestions=[]。非空时返回最终建议会被本地拒绝；不要自行比对 roots、children 和 expansions 后猜测已完成。
 - 作为根引用出现的 KnowledgeUnit 表示它当前无法从 active Concept 到达。展开后必须检查 unit.concept_ids：若为空且内容明确匹配某个已披露 active Concept，必须提出 unit_relink；只有没有足够语义证据时才可不关联，并在最终 reason 逐个说明。
