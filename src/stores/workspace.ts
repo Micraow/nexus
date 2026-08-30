@@ -3390,6 +3390,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     let lastError: Error | null = null
     let repairAttempts = 0
     const maxRepairAttempts = normalizeApiRetries(config.value.llm.retries, DEFAULT_API_RETRIES)
+    let maintenanceToolsDisabled = false
     try {
       // Transport retries and semantic repair retries are deliberately kept
       // separate. A malformed provider response must first produce a repair
@@ -3419,7 +3420,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           // Expose maintenance operations as OpenAI-compatible functions when
           // the provider supports tool calling. The resulting calls are still
           // converted into suggestions and pass the same local validator.
-          if (currentTask.type === 'maintenance') {
+          if (currentTask.type === 'maintenance' && !maintenanceToolsDisabled) {
             requestBody.tools = listMaintenanceMcpTools().map((tool) => ({
               type: 'function',
               function: {
@@ -3437,8 +3438,31 @@ export const useWorkspaceStore = defineStore('workspace', () => {
             signal: controller.signal,
           })
           if (!response.ok) {
+            if (response.status === 400 && currentTask.type === 'maintenance' && !maintenanceToolsDisabled) {
+              // Some OpenAI-compatible endpoints reject function tools even
+              // though they accept ordinary JSON chat responses. Retry this
+              // maintenance request once without tools; the same validator
+              // still enforces the maintenance contract afterward.
+              maintenanceToolsDisabled = true
+              continue
+            }
             const retryable = response.status === 408 || response.status === 429 || response.status >= 500
-            throw Object.assign(new Error(`Provider 返回 HTTP ${response.status}`), { retryable })
+            let detail = ''
+            try {
+              const raw = await response.text()
+              if (raw.trim()) {
+                try {
+                  const parsed = JSON.parse(raw) as { error?: { message?: string } | string; message?: string }
+                  const error = typeof parsed.error === 'string' ? parsed.error : parsed.error?.message ?? parsed.message
+                  detail = (error || raw).trim().slice(0, 600)
+                } catch {
+                  detail = raw.trim().slice(0, 600)
+                }
+              }
+            } catch {
+              // Some providers close an error response without a readable body.
+            }
+            throw Object.assign(new Error(`Provider 返回 HTTP ${response.status}${detail ? `：${detail}` : ''}`), { retryable })
           }
           let payload: {
             choices?: Array<{
@@ -3524,8 +3548,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           clearStreamingTaskText(taskId)
           if (result.continued) {
             // Disclosure continuation re-queues the same task. Release this
-            // request's guard before immediately starting the next round.
+            // request's guard and yield once so the awaiting_disclosure phase
+            // is rendered in the task list before the next API request.
             executingTaskIds.delete(taskId)
+            await new Promise((resolve) => window.setTimeout(resolve, 400))
             return await executeTask(taskId)
           }
           if (result.ok) return { ok: true }
