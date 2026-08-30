@@ -1820,8 +1820,7 @@ async function executeApiTask(task: LLMTask): Promise<void> {
 }
 
 function startTaskQueue(): void {
-  store.startQueue()
-  notify('API 任务队列已开始')
+  notify(store.startQueue() ? 'API 任务队列已开始' : '当前没有待处理的 API 任务')
 }
 
 function pauseTaskQueue(): void {

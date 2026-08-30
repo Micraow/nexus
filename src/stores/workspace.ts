@@ -3612,9 +3612,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     return ownerUnit?.sessionId ?? targetId ?? null
   }
 
-  function startQueue(): void {
+  function startQueue(): boolean {
+    // Avoid toggling queueRunning (and rerendering a large task table) when
+    // there is nothing eligible to execute.
+    const hasPendingApiTask = tasks.value.some((task) => task.mode === 'api' && task.status === 'pending')
+    if (!hasPendingApiTask) return false
     queuePaused.value = false
     void runQueue()
+    return true
   }
 
   function pauseQueue(): void {
