@@ -1,6 +1,6 @@
 [package]
 name = "nexus-weave"
-version = "1.0.0"
+version = "1.0.4"
 description = "Nexus 织知 —— 本地优先的 AI 对话知识管理工作台"
 authors = ["Nexus Weave"]
 edition = "2021"

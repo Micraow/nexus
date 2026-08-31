@@ -1,3 +1,4 @@
+#![windows_subsystem = "windows"]
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::Serialize;
 use std::collections::BTreeSet;

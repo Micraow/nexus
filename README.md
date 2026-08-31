@@ -62,17 +62,19 @@
 
 > 扩展用于从 DeepSeek 网页端导出会话数据，是 Nexus 的数据入口。
 
-- 访问 [Releases 页面](https://github.com/Micraow/nexus/releases) 下载最新版本的扩展文件，文件名为 `nexus-extension-<版本号>.crx`。
+- 访问 [Releases 页面](https://github.com/Micraow/nexus/releases) 下载最新版本的扩展压缩包，文件名为 `nexus-extension-<版本号>.zip`。
+- 解压该压缩包，得到包含扩展源文件的文件夹（内含 `manifest.json` 等）。
 - 打开 Chrome/Edge 等基于 Chromium 的浏览器，进入扩展管理页面（`chrome://extensions/` 或 `edge://extensions/`）。
 - 开启右上角的 **“开发者模式”**。
-- **推荐方式**：将下载的 `.crx` 文件直接拖拽到扩展管理页面中，浏览器会提示是否添加扩展，点击“添加扩展”即可完成安装。
-- **备选方式**：如果拖拽安装被浏览器拦截（部分新版本 Chrome 限制直接拖拽 `.crx`），可以将 `.crx` 文件解压（可用解压软件或直接改后缀为 `.zip` 解压），然后点击“加载已解压的扩展程序”，选择解压后的文件夹完成安装。
+- 点击 **“加载已解压的扩展程序”**，选择刚才解压出来的文件夹，即可完成安装。
 - 安装后，在浏览器工具栏中点击 Nexus 织知图标，即可打开导出工作台，勾选需要导出的会话，点击导出并保存 JSON 文件。
+
+> 💡 **备选方式**：部分浏览器也支持直接将 `.zip` 文件拖拽到扩展管理页面自动安装（若遇拦截则改用上述解压加载方式）。
 
 ### 2. 安装桌面应用（Nexus 织知）
 
 - 同样在 [Releases 页面](https://github.com/Micraow/nexus/releases) 找到适合您操作系统的安装包：
-  - **Windows**：`.msi` 或 `.exe`（NSIS 安装包）
+  - **Windows**：`.msi` 或 `.exe`
   - **Linux**：`.deb`、`.rpm` 或 `.AppImage`
   - **macOS**：`.dmg`（Apple Silicon）
 - 下载对应文件，双击运行并根据引导完成安装。

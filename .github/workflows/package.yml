@@ -23,11 +23,11 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build:extension
-      - run: tar -czf nexus-extension-${GITHUB_REF_NAME}.tar.gz -C extension dist
+      - run: zip -r nexus-extension-${GITHUB_REF_NAME}.zip -j extension/dist
       - uses: actions/upload-artifact@v4
         with:
           name: nexus-extension-${{ github.ref_name }}
-          path: nexus-extension-${{ github.ref_name }}.tar.gz
+          path: nexus-extension-${{ github.ref_name }}.zip
 
   desktop:
     name: Desktop ${{ matrix.name }}
