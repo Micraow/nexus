@@ -16,7 +16,6 @@
 
 <!-- GitHub 项目状态 -->
 [![GitHub release (latest by date)](https://img.shields.io/github/v/release/Micraow/nexus)](https://github.com/Micraow/nexus/releases)
-[![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/Micraow/nexus/package.yml?branch=main)](https://github.com/Micraow/nexus/actions)
 [![GitHub stars](https://img.shields.io/github/stars/Micraow/nexus)](https://github.com/Micraow/nexus/stargazers)
 [![GitHub forks](https://img.shields.io/github/forks/Micraow/nexus)](https://github.com/Micraow/nexus/network)
 [![GitHub issues](https://img.shields.io/github/issues/Micraow/nexus)](https://github.com/Micraow/nexus/issues)
