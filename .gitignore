@@ -48,3 +48,4 @@ tmp/
 
 data/
 .playwright-mcp/
+.codex-ppt-build
