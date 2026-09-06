@@ -2282,7 +2282,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <button class="button secondary-button" @click="triggerImport"><Upload :size="16" />导入 JSON</button>
-          <button v-if="maintenancePageHasContext" class="button secondary-button maintenance-entry-button" :aria-expanded="maintenancePanelOpen" @click="openMaintenancePanel"><Sparkles :size="16" />知识维护</button>
+          <button v-if="maintenancePageHasContext" class="button secondary-button maintenance-entry-button" :aria-expanded="maintenancePanelOpen" @click="openMaintenancePanel"><Sparkles :size="16" />全图维护</button>
           <input ref="importInput" type="file" accept="application/json,.json" hidden @change="handleImport" />
           <button class="icon-button" title="导出完整知识库" aria-label="导出完整知识库" @click="exportKnowledgeBase"><Database :size="17" /></button>
           <button class="icon-button" title="恢复知识库备份" aria-label="恢复知识库备份" @click="triggerRestore"><FolderOpen :size="17" /></button>
