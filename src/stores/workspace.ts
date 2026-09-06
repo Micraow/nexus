@@ -846,6 +846,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         ? `${message.role} 消息，展开后查看内容`
         : message.content.trim().replace(/\s+/g, ' ').slice(0, 240),
     })
+    const evidenceExcerpt = (message: Message): string => {
+      const indexed = evidenceChunks.value.filter((chunk) => chunk.messageId === message.id).sort((left, right) => left.chunkIndex - right.chunkIndex)
+      if (!indexed.length) return message.content.slice(0, 1600)
+      return indexed.slice(0, 2).map((chunk) => chunk.content).join('\n').slice(0, 1600)
+    }
     const messageEvidence = (message: Message) => {
       const linked = messageConcepts.value.filter((link) => link.messageId === message.id && activeIds.has(link.conceptId)).map((link) => link.conceptId)
       const declared = Array.isArray(message.metadata?.concept_ids)
@@ -858,7 +863,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         unit_id: message.unitId ?? null,
         role: message.role,
         order_in_session: message.orderInSession,
-        content: message.content,
+        content: evidenceExcerpt(message),
+        content_truncated: evidenceExcerpt(message).length < message.content.length,
         concept_ids: [...new Set([...linked, ...declared])],
       }
     }
