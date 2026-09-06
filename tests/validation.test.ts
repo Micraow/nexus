@@ -154,6 +154,14 @@ describe('direct origin Concept response validation', () => {
     expect(invalid.some((issue) => issue.message.includes('至少归属于一条 Message'))).toBe(true)
   })
 
+  it('treats empty confidence reasons as optional for ordinary Concept names', () => {
+    const issues = validateOriginConceptResult({
+      concepts: [{ client_ref: 'new:1', name: '单一主题', summary: '', aliases: [], confidence: 0, reason: '' }],
+      memberships: [{ target_type: 'message', target_id: 'm1', concept_ids: ['new:1'] }],
+    }, { targetIds: ['m1'], conceptIds: [] })
+    expect(issues).toHaveLength(0)
+  })
+
   it('only permits proposed LLM relation status', () => {
     const invalid = validateOriginConceptResult({
       concepts: [{ client_ref: 'new:1', name: 'TCP 拥塞控制', summary: '', aliases: [] }],

@@ -779,6 +779,8 @@ ${originalTask ? `原任务规格（只保留字段、ID 白名单和输出契�
 当前有界证据目录（与原任务规格分离，避免重复正文）：${disclosureText || '无'}
 如果原始响应包含 memberships 或 concept_ids，请保留其中合法的多归属列表；不要把多个 Concept 压缩为单个 concept_id。
 如果校验错误指出“主题已在当前目录中，必须复用 Concept ID”，这是可审计的确定性修复：从 concepts 数组移除该重复对象，并把其 client_ref 在 concept_ids、memberships.concept_ids、relations.source/target 中逐一替换为错误消息中的真实 Concept ID；不得创建同名副本，也不得把相似但不完全匹配的主题强行合并。可在最终 JSON 外记录 nexus_reuse 审计字段，但不得改变其他有效字段。
+如果错误路径以 units.N.concept_ids 开头，它只约束第 N 个 unit 的既有主题引用：只能保留 DISCLOSURE_INDEX 中已有的真实 Concept refID，不能放入本响应新建 Concept 的 client_ref（例如 new:1）；如果本轮没有已披露主题，应将该数组设为 []。这与顶层 memberships[].concept_ids 不同：顶层 memberships 可以引用本响应 concepts 中的 client_ref，也可以引用已有 refID。
+disclosure_requests 只能是对象数组，不能是字符串数组；每项必须严格写成 {"refID":"目录中已有的真实 ID","depth":1}。title、summary 不属于请求对象，只属于 DISCLOSURE_INDEX 的目录引用。每轮最多四项。
 如果校验错误指出 Concept 名称必须表示单一主题，必须把包含多个独立实体的对象拆成多个独立 concepts，并同步拆分 memberships 与 hierarchy；不能只删除“与/和/及/、/”后继续保留复合标题。若确属不可拆分正式固定名称（例如“喜羊羊与灰太狼”），可以保留原 name，但必须补充 0～1 的 confidence 与非空 reason；普通并列或比较仍须拆分。拆分时允许新增 client_ref（new:1 到原任务上限）并把独立主题挂到合适父 Concept 下。
 复合固定名称的修复格式示例（必须一次性提供字段）：{"client_ref":"new:1","name":"喜羊羊与灰太狼","summary":"一部完整动画作品的正式名称。","aliases":[],"confidence":0.99,"reason":"这是不可拆分的正式作品名，整体指向同一部动画；拆分会改变专名含义。"}。confidence 必须是 JSON 数字且在 0～1 内，reason 必须是非空字符串；不要输出空字符串、占位符或把字段放在对象外。
 只返回修正后的 JSON。`, profile)
@@ -925,7 +927,7 @@ ${scopeMode === 'local' ? '渐进式局部审计流程' : scopeMode === 'targete
 - DISCLOSURE_INDEX 首轮只给所有根主题的 title/summary、根的直接子引用、含未归属消息的 Session 引用，以及无法从 active Concept 到达的阅读片段引用；子主题详情、关系 ID、别名、归属、片段和消息原文不会在其他位置重复提供。
 - 每轮先读 DISCLOSURE_INDEX.pending_ref_ids。该数组是本轮可处理的有限窗口；pending_ref_count 表示全量待展开数量，pending_ref_ids_truncated=true 表示仍有后续窗口。最多请求当前窗口中的 4 个 refID，令 suggestions=[]；本地会在后续轮次继续推进其余引用。不要自行构造窗口外的 refID。
 - 作为根引用出现的 KnowledgeUnit 表示它当前无法从 active Concept 到达。展开后必须检查 unit.concept_ids：若为空且内容明确匹配某个已披露 active Concept，必须提出 unit_relink；只有没有足够语义证据时才可不关联，并在最终 reason 逐个说明。
-- ${scopeMode === 'targeted' ? '只要完成用户目标所需的引用尚未展开，就不得返回依赖这些引用的 suggestion；与目标无关的未展开分支不阻塞结果。' : '只要目录中仍有已经列出但没有对应 expansion，或 expansion 只有 children 而没有 content 的 refID，就不得结束维护、不得声称全图无需修改，也不得返回任何 suggestion。'} 中间轮必须返回非空 disclosure_requests，同时令 suggestions=[]，reason 简述本轮要检查的分支。
+- ${scopeMode === 'targeted' ? '只要完成用户目标所需的引用尚未展开，就不得返回依赖这些引用的 suggestion；与目标无关的未展开分支不阻塞结果。' : '通常应先按需展开与当前问题或候选动作直接相关的引用；如果剩余 pending 分支与当前判断无关，可以用 coverage="partial" 结束本轮，但 reason 必须明确未覆盖范围，不能声称全图或全部已审计。若要声称全图无需修改，才必须继续展开所有相关 pending 引用并使用 coverage="complete"。'} 中间轮必须返回非空 disclosure_requests，同时令 suggestions=[]，reason 简述本轮要检查的分支。
 - 每轮应把尚未检查的同层 refID 放在同一个 disclosure_requests 数组中批量请求，最多 4 个。维护任务的 depth 必须固定为 1；展开 KnowledgeUnit 时，expansion.content 已包含该片段的消息证据，不要请求更深层级。本地会自动限制并把剩余引用留到下一轮。对话任务最多 8 轮，维护任务可按图谱规模继续到 64 轮。
 - 收到更新目录后继续按层检查新出现的 children。${scopeMode === 'targeted' ? '当已取得完成用户目标的充分证据后即可返回最终 suggestions 或“无需修改”的 reason，并令 disclosure_requests=[]。' : '只有所有根分支以及未归属消息分支都没有隐藏 refID，才可返回最终 suggestions 或“无需修改”的 reason，并令 disclosure_requests=[]。'}
 - Session、KnowledgeUnit 和 Message 的 refID/message_ids 都是不透明字符串；只能从 expansion content 逐字复制，禁止生成、猜测、缩写、截断或引用未披露 ID。
@@ -942,7 +944,7 @@ ${disclosureText}
 ${disclosureAvailability(input.disclosure)}
 
 只返回 JSON：
-{"reason":"对当前图谱是否需要变更的简短总体判断；即使没有建议也必须填写","suggestions":[{"type":"create_concept|update_concept|delete_concept|restore_concept|merge|alias|remove_alias|add_relation|relation|update_relation|delete_relation|remove_relation|set_relation_status|confirm_relation|reject_relation|move_concept|set_hierarchy_parents|remove_hierarchy|membership_relink|unit_relink|unit_create|unit_revision|archive_concept","reason":"可审计的事实依据","...":"严格使用动作 API 定义的参数"}],"disclosure_requests":[]}
+{"reason":"对当前图谱是否需要变更的简短总体判断；即使没有建议也必须填写","coverage":"complete|partial","suggestions":[{"type":"create_concept|update_concept|delete_concept|restore_concept|merge|alias|remove_alias|add_relation|relation|update_relation|delete_relation|remove_relation|set_relation_status|confirm_relation|reject_relation|move_concept|set_hierarchy_parents|remove_hierarchy|membership_relink|unit_relink|unit_create|unit_revision|archive_concept","reason":"可审计的事实依据","...":"严格使用动作 API 定义的参数"}],"disclosure_requests":[]}
 reason 是给用户看的总体说明：概括你检查了什么、为何提出或没有提出变更，并分别交代 Concept/关系检查与阅读片段覆盖检查。所有 suggestions[].title 最长 30 个字符，这是拒绝超限结果的硬约束，不得先输出长标题再期待软件截断。只返回确有依据的建议；关系建议最多 2 条，不能仅凭共同出现推断 related；新主题优先匹配已有或同批次中最窄且有直接证据的父主题，只有没有足够层级证据时才允许成为根；不要把所有主题平铺为一级。存在未归属消息时，不能只写“层级无需修改”就返回空建议，必须先按 Session 判断是否应执行 unit_create；没有建议时仍返回非空 reason，明确说明“未发现需要修改的地方”或指出缺少证据。不要输出解释文字。
 
 动作响应的规范格式：{"reason":"总体判断（必填）","suggestions":[{"type":"create_concept|update_concept|delete_concept|restore_concept|merge|alias|remove_alias|add_relation|relation|update_relation|delete_relation|remove_relation|set_relation_status|confirm_relation|reject_relation|move_concept|set_hierarchy_parents|remove_hierarchy|membership_relink|unit_relink|unit_create|unit_revision|archive_concept","reason":"可审计的事实依据","...":"严格使用上方动作 API 定义的参数"}],"disclosure_requests":[]}。每条 suggestion 的 type 与参数必须能一一映射到机器目录中的 nexus_maintenance_* 工具；没有变更时返回空 suggestions，但 reason 仍不可省略。`)

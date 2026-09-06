@@ -269,6 +269,9 @@ describe('prompt harness and progressive disclosure', () => {
     expect(repair).toContain('只返回 JSON：{"ok":true}')
     expect(repair).toContain('"confidence":0.99')
     expect(repair).toContain('喜羊羊与灰太狼')
+    expect(repair).toContain('units.N.concept_ids')
+    expect(repair).toContain('disclosure_requests')
+    expect(repair).toContain('"depth":1')
   })
 
   it('rebuilds an already wrapped prompt with the requested task profile', () => {

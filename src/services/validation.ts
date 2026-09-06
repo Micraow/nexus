@@ -304,8 +304,11 @@ export function validateOriginConceptResult(
         if (candidate.confidence != null && (typeof candidate.confidence !== 'number' || !Number.isFinite(candidate.confidence) || candidate.confidence < 0 || candidate.confidence > 1)) {
           issues.push({ path: `${path}.confidence`, message: 'confidence 必须是 0 到 1 之间的数字' })
         }
-        if (candidate.reason != null && (typeof candidate.reason !== 'string' || !candidate.reason.trim())) {
-          issues.push({ path: `${path}.reason`, message: 'reason 必须是非空字符串' })
+        // `confidence`/`reason` explain why a compound-looking name is kept
+        // intact. For ordinary single-topic names these fields are optional;
+        // an emitter that serializes an empty `reason` must not be rejected.
+        if (candidate.reason != null && typeof candidate.reason !== 'string') {
+          issues.push({ path: `${path}.reason`, message: 'reason 必须是字符串' })
         }
         validateConceptName(name, {
           allowCompoundWithEvidence: options.allowCompoundWithEvidence,

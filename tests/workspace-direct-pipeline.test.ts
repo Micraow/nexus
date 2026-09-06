@@ -915,6 +915,21 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.tasks.find((item) => item.id === taskId)?.parsedResult).toBeNull()
   })
 
+  it('allows a demand-driven partial maintenance result without forcing unrelated disclosure', () => {
+    const rootId = store.createConcept('按需披露根主题')
+    store.createConcept('未相关根主题')
+    const taskId = store.createMaintenanceTask()
+    const result = store.applyTaskResult(taskId, JSON.stringify({
+      reason: '已检查当前可见根主题；其余未展开分支与本轮目标无直接关系，暂不判断。',
+      coverage: 'partial',
+      suggestions: [],
+      disclosure_requests: [],
+    }))
+    expect(result.ok, result.errors.join('; ')).toBe(true)
+    expect(store.tasks.find((task) => task.id === taskId)?.parsedResult).toContain('partial')
+    expect(rootId).toBeTruthy()
+  })
+
   it('keeps prompt-paste maintenance disclosure responses pending for the next manual round', () => {
     const rootId = store.createConcept('手动披露根主题')
     const childId = store.createConcept('手动披露子主题')
@@ -1361,7 +1376,7 @@ describe('direct concept extraction import pipeline', () => {
     })
     const sessionId = store.createConversationTask({ question: '返回一个带无效主题 ID 的答案' })
     const task = store.tasks.find((item) => item.type === 'conversation' && item.inputRevision.startsWith(`${sessionId}:`))!
-    await expect(store.executeTask(task.id)).resolves.toEqual({ ok: false, error: 'concept_ids.0: Concept ID 不在当前目录中' })
+    await expect(store.executeTask(task.id)).resolves.toEqual({ ok: false, error: 'units.0.concept_ids.0: Concept ID 不在当前目录中' })
 
     const retained = store.tasks.find((item) => item.id === task.id)!
     expect(retained.status).toBe('needs_review')

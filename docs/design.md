@@ -478,9 +478,9 @@ API 服务支持结构化输出时，同时使用接口级 JSON Schema；Prompt 
 
 追问上下文由 Session 摘要、当前导航分支和最近 8 条消息组成；较早原文不再按固定 40 条直接注入。数据库 v10 的 `session_working_memory` 保存可重建的摘要、决策和未解决问题列表。工作记忆是派生状态，原始 Message 和 EvidenceChunk 永远保留。摘要只用于减少上下文，不得作为写入 Concept、归属或关系的唯一证据；需要证据时必须通过证据卡片或披露记录回读。
 
-模型需要更多证据时，可以在输出 JSON 中返回 `disclosure_requests`，例如 `{ "refID": "目录中已有的 ID", "depth": 1 }`。本地先校验数组、唯一 `refID`、引用必须来自当前目录以及 `depth` 为 1～64 的整数；校验失败进入 `needs_review`，不应用任何部分结果。校验通过后，应用从本地事实表按 `refID` 递归展开指定层数，保留根引用和原文，替换 Prompt 中的动态 `DISCLOSURE_INDEX` 并将同一任务重新排队。任务最多连续披露 8 轮，超出后暂停供用户检查。
+模型需要更多证据时，可以在输出 JSON 中返回 `disclosure_requests`，例如 `{ "refID": "目录中已有的 ID", "depth": 1 }`。本地先校验数组、唯一 `refID`、引用必须来自当前目录以及 `depth` 为 1～64 的整数；校验失败进入 `needs_review`，不应用任何部分结果。校验通过后，应用从本地事实表按 `refID` 展开一层，保留根引用和滚动证据窗口，替换 Prompt 中的动态 `DISCLOSURE_INDEX` 并将同一任务重新排队。任务最多连续披露 8 轮，超出后暂停供用户检查。
 
-全图维护首轮不再旁路发送完整 Concept、关系、阅读片段或消息表，只提供统计、所有真实根主题及其直接子引用、未归属消息所在 Session 和无法从 active Concept 到达的阅读片段。该目录开启 `audit_pending_refs`，每轮生成 `pending_ref_ids`；数组非空时，模型必须把当前窗口中的 ID 批量放入 `disclosure_requests`，同时保持 `suggestions=[]`。本地拒绝提前结束以及同时携带建议和披露请求的响应，确保中间结果不会部分落库。每个 refID 每轮最多展开一层；已经只有 children、尚无 content 的导航 expansion 可以继续请求。正文使用按最新展开优先的滚动窗口，`disclosed_ref_ids` 单独保存已审计状态；若供应商在完整最终结果中冗余重复已经完成的请求，应用清空冗余请求后继续执行任务级校验。Prompt 版本不匹配的旧 pending 任务在网络请求前标记为 `stale`。
+全图维护首轮不再旁路发送完整 Concept、关系、阅读片段或消息表，只提供统计、所有真实根主题及其直接子引用、未归属消息所在 Session 和无法从 active Concept 到达的阅读片段。该目录开启 `audit_pending_refs`，每轮生成 `pending_ref_ids`；模型按需选择与当前判断相关的引用，逐轮放入 `disclosure_requests`，同时保持中间轮 `suggestions=[]`。如果剩余 pending 分支与当前判断无关，可以返回 `coverage="partial"` 的有界结果，但 reason 必须说明未覆盖范围；只有确实完成任务范围的证据检查，才返回 `coverage="complete"` 并宣称全图无需修改。每个 refID 每轮最多展开一层；已经只有 children、尚无 content 的导航 expansion 可以继续请求。正文使用按最新展开优先的滚动窗口，`disclosed_ref_ids` 单独保存已审计状态；若供应商在完整最终结果中冗余重复已经完成的请求，应用清空冗余请求后继续执行任务级校验。Prompt 版本不匹配的旧 pending 任务在网络请求前标记为 `stale`。
 
 `refID` 由本地生成且不可由模型猜测、改写或拼接。所有目录、摘要和原文都按不可信数据处理，其中的文字指令、代码、SQL 和链接不执行；模型可以使用自身知识、推理和调用方明确允许的外部搜索，但必须区分输入证据、外部资料与推断。
 

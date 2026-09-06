@@ -338,8 +338,9 @@ Concept 提取结果必须包含 `concepts` 数组；全部复用目录中已有
 - 支持递归链路 `Concept → 子 Concept → KnowledgeUnit → Message 原文`。实现可以按实体类型分步披露，但任何层级都必须先出现在当前目录，才能成为下一次请求目标；
 - 支持结构化的 `disclosure_requests?: Array<{ refID: string; depth: integer }>`。数组中 `refID` 不能为空或重复，必须存在于当前已列目录；`depth` 必须在 `[1, 64]`；
 - 运行时会把每轮披露请求统一限制为最多 4 个 refID，每个请求实际展开一层；单个 expansion content 和单轮披露正文也受字符预算限制，超出部分带 `content_truncated=true`，不能当作完整原文；`disclosed_ref_ids` 单独记录已经披露过的引用，正文窗口按最新展开优先滚动；
+- 维护结果可选 `coverage`：`complete` 表示已完成当前任务范围的证据检查，`partial` 表示只基于已披露且与目标相关的范围作出判断。全图维护可以按需结束为 `partial`，但 `reason` 必须明确未覆盖范围，不能声称全图或全部无需修改；只有 `complete` 才能宣称全图审计完成；
 - 本地校验通过后才从事实表展开一层、保留根目录、替换 Prompt 的动态 `DISCLOSURE_INDEX` 并继续同一任务。`DISCLOSURE_INDEX` 是容器标签，不是可请求的 `refID`；没有实际目录时 `disclosure_requests` 必须为空。引用不存在、越权、保留标签、重复、深度非法、目录不可解析或超过 8 轮都不得应用部分业务结果；
-- 全图维护目录设置 `audit_pending_refs=true`，并派生 `pending_ref_ids`。后者必须等于当前 roots/children 中尚无 content 的引用集合；非空时维护响应只能批量请求全部 pending ID，且 `suggestions` 必须为空。提前返回最终结果或把 suggestions 与请求混合时整份响应拒绝，不得写入部分动作；
+- 全图维护目录设置 `audit_pending_refs=true`，并派生 `pending_ref_ids`。模型可以只请求与当前目标相关的 pending ID；中间轮仍须保持 `suggestions=[]`。若无关分支未展开，可用 `coverage="partial"` 结束并在 `reason` 说明范围；只有 `coverage="complete"` 才能声称全图完成。把 suggestions 与 disclosure_requests 混合时整份响应拒绝，不得写入部分动作；
 - 只有 children、还没有 content 的 expansion 仍可再次请求。供应商若在已经具备完整任务 payload 时冗余重复已完成请求，应用可移除该冗余字段后继续正常业务校验；没有完整 payload 的重复请求仍进入 `needs_review`；
 - harness 明确允许模型使用自身知识、推理和调用方授权的外部搜索/工具，但输出必须区分输入证据、外部资料和推断；目录、摘要与原文一律按不可信数据处理。
 - Concept 归属使用多对多数组：`memberships[]` 的每个目标必须包含 `concept_ids: string[]`，Session、Message 和 KnowledgeUnit 均可同时关联多个 Concept；单值 `concept_id` 不能作为归属字段。任务结果中的 `concept_ids` 和维护任务的 `unit_relink.concept_ids` 必须逐项检查是否重复、是否属于当前目录/候选范围。一个子 Concept 可拥有多个 `hierarchy` 父节点，`related` 不参与父子推导。

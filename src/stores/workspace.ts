@@ -2922,7 +2922,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (task.type === 'maintenance' && !isTargetedMaintenance && (!Array.isArray(data.disclosure_requests) || data.disclosure_requests.length === 0)) {
       const currentDisclosure = parseDisclosureContext(task.prompt)
       const hiddenRefIds = currentDisclosure ? undisclosedReferenceIds(currentDisclosure) : []
-      if (hiddenRefIds.length > 0) {
+      const coverage = data.coverage
+      const partialCoverage = coverage === 'partial'
+      if (coverage != null && coverage !== 'partial' && coverage !== 'complete') {
+        const coverageErrors = ['coverage 只能是 partial 或 complete']
+        markTask(taskId, 'needs_review', responseText, coverageErrors)
+        return { ok: false, errors: coverageErrors }
+      }
+      if (hiddenRefIds.length > 0 && !partialCoverage) {
         if (Array.isArray(data.suggestions) && data.suggestions.length === 0 && currentDisclosure) {
           const continuation = continueDisclosureTask(task, responseText, {
             ...data,
@@ -2942,6 +2949,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         const hiddenErrors = [`维护审计尚有 ${hiddenRefIds.length} 个已列出但未展开的引用；请批量返回 disclosure_requests 后再给最终建议。待展开 refID：${preview}${suffix}`]
         markTask(taskId, 'needs_review', responseText, hiddenErrors)
         return { ok: false, errors: hiddenErrors }
+      }
+      if (hiddenRefIds.length > 0 && partialCoverage && Array.isArray(data.suggestions) && data.suggestions.length === 0 && /全图|全部|无需修改|未发现需要修改/u.test(String(data.reason ?? ''))) {
+        const coverageErrors = ['coverage=partial 时，reason 不能声称已完成全图或全部审计；请说明尚未展开的范围，或继续返回 disclosure_requests']
+        markTask(taskId, 'needs_review', responseText, coverageErrors)
+        return { ok: false, errors: coverageErrors }
       }
     }
 
@@ -3282,7 +3294,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           }),
         }
       }) : []
-      normalizedUnits.forEach((unit) => {
+      normalizedUnits.forEach((unit, unitIndex) => {
         if (!unit.unitId && !unit.title) errors.push('新建对话阅读片段标题不能为空')
         if (!unit.unitId && validateUnitText(unit.title, unit.summary).length) errors.push('新建对话阅读片段标题或摘要超出长度限制')
         unit.concepts.forEach((concept) => {
@@ -3294,7 +3306,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           if (concept.summary.length > 120) errors.push('对话返回的知识主题摘要不能超过 120 个字符')
         })
         if (unit.conceptIdsProvided) {
-          errors.push(...validateConceptIdList(unit.conceptIdsRaw, conversationConceptIds(task)).map((issue) => `${issue.path}: ${issue.message}`))
+          errors.push(...validateConceptIdList(unit.conceptIdsRaw, conversationConceptIds(task)).map((issue) => `units.${unitIndex}.${issue.path}: ${issue.message}`))
         }
         if (unit.unitId) {
           const existingUnit = units.value.find((candidate) => candidate.id === unit.unitId)
