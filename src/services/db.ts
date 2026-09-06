@@ -15,7 +15,7 @@ const STORAGE_KEY = 'nexus:sqlite:v1'
 const BROWSER_STORAGE_DB = 'nexus:storage'
 const BROWSER_STORAGE_STORE = 'kv'
 const BACKUP_STORAGE_PREFIX = 'nexus:sqlite:backup:'
-const CURRENT_SCHEMA_VERSION = 8
+const CURRENT_SCHEMA_VERSION = 9
 
 export interface DatabaseIntegrityReport {
   ok: boolean
@@ -82,6 +82,21 @@ CREATE TABLE IF NOT EXISTS messages (
   metadata TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session_order ON messages(session_id, order_in_session);
+CREATE TABLE IF NOT EXISTS evidence_chunks (
+  id TEXT PRIMARY KEY,
+  message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  chunk_index INTEGER NOT NULL,
+  char_start INTEGER NOT NULL,
+  char_end INTEGER NOT NULL,
+  content TEXT NOT NULL,
+  token_count INTEGER NOT NULL,
+  content_hash TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(message_id, chunk_index)
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_chunks_session ON evidence_chunks(session_id, message_id, chunk_index);
+CREATE INDEX IF NOT EXISTS idx_evidence_chunks_hash ON evidence_chunks(content_hash);
 CREATE TABLE IF NOT EXISTS knowledge_units (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -336,6 +351,28 @@ const migrations: Array<{ version: number; apply: (database: Database) => void }
       database.run("UPDATE llm_tasks SET phase = CASE WHEN status = 'running' THEN 'executing' WHEN status = 'success' THEN 'committed' WHEN status = 'needs_review' THEN 'awaiting_review' WHEN status = 'failed' THEN 'failed' WHEN status = 'stale' THEN 'stale' WHEN status = 'cancelled' THEN 'cancelled' WHEN response LIKE '%\"disclosure_requests\"%' AND response LIKE '%\"refID\"%' THEN 'awaiting_disclosure' ELSE 'queued' END")
     },
   },
+  {
+    version: 9,
+    apply(database) {
+      database.run(`
+        CREATE TABLE IF NOT EXISTS evidence_chunks (
+          id TEXT PRIMARY KEY,
+          message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+          session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+          chunk_index INTEGER NOT NULL,
+          char_start INTEGER NOT NULL,
+          char_end INTEGER NOT NULL,
+          content TEXT NOT NULL,
+          token_count INTEGER NOT NULL,
+          content_hash TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(message_id, chunk_index)
+        );
+        CREATE INDEX IF NOT EXISTS idx_evidence_chunks_session ON evidence_chunks(session_id, message_id, chunk_index);
+        CREATE INDEX IF NOT EXISTS idx_evidence_chunks_hash ON evidence_chunks(content_hash);
+      `)
+    },
+  },
 ]
 
 export class SqliteStore {
@@ -525,6 +562,21 @@ export class SqliteStore {
         PRIMARY KEY (message_id, concept_id)
       );
       CREATE INDEX IF NOT EXISTS idx_message_concepts_concept ON message_concepts(concept_id);
+      CREATE TABLE IF NOT EXISTS evidence_chunks (
+        id TEXT PRIMARY KEY,
+        message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        chunk_index INTEGER NOT NULL,
+        char_start INTEGER NOT NULL,
+        char_end INTEGER NOT NULL,
+        content TEXT NOT NULL,
+        token_count INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(message_id, chunk_index)
+      );
+      CREATE INDEX IF NOT EXISTS idx_evidence_chunks_session ON evidence_chunks(session_id, message_id, chunk_index);
+      CREATE INDEX IF NOT EXISTS idx_evidence_chunks_hash ON evidence_chunks(content_hash);
     `)
     this.requireDb().run(
       "UPDATE llm_tasks SET status = 'cancelled', error_message = COALESCE(NULLIF(error_message, ''), ?) WHERE type = 'segmentation' AND status IN ('pending', 'running', 'needs_review')",

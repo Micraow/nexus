@@ -75,6 +75,29 @@ export interface Message {
   metadata?: Record<string, unknown> | null
 }
 
+/** Persisted, addressable evidence slice derived from one Message. */
+export interface EvidenceChunk {
+  id: string
+  messageId: string
+  sessionId: string
+  chunkIndex: number
+  charStart: number
+  charEnd: number
+  content: string
+  tokenCount: number
+  contentHash: string
+  updatedAt: string
+}
+
+export interface SessionWorkingMemory {
+  sessionId: string
+  summary: string
+  decisions: string[]
+  unresolvedQuestions: string[]
+  updatedAt: string
+  revision: number
+}
+
 /** A many-to-many Concept assignment emitted by structured LLM tasks. */
 export type ConceptMembershipTarget = 'session' | 'message' | 'unit'
 export interface ConceptMembership {

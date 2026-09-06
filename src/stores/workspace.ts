@@ -10,6 +10,8 @@ import { conversationMessageBranchNodeId } from '@/services/conversation'
 import { hasCompoundConceptConnector, importPayloadSchema, normalizeOriginConceptResultForReuse, parseImportPayload, validateConceptIdList, validateConceptMemberships, validateConceptName, validateDisclosureRequests, validateOriginConceptResult, validateSegmentationResult, validateUnitText } from '@/services/validation'
 import type { DisclosureContext } from '@/services/prompts'
 import { combineSegmentationChunks, splitMessageChunks } from '@/utils/chunks'
+import { buildEvidenceChunks } from '@/utils/chunks'
+import { buildWorkingMemory, formatEvidenceCards, searchEvidence } from '@/services/context-runtime'
 import { wouldCreateHierarchyCycle } from '@/utils/graph-rules'
 import { createId, isoNow, normalizeText, parseIsoTimestamp, stableHash } from '@/utils/id'
 import { parseMetadata } from '@/utils/metadata'
@@ -41,6 +43,8 @@ import type {
   Session,
   SessionConcept,
   UnitConcept,
+  EvidenceChunk,
+  SessionWorkingMemory,
 } from '@/types/domain'
 import type { GraphWorkerResponse } from '@/workers/graph.worker'
 
@@ -184,6 +188,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const loading = ref(false)
   const sessions = ref<Session[]>([])
   const messages = ref<Message[]>([])
+  const evidenceChunks = ref<EvidenceChunk[]>([])
+  const workingMemories = ref<Record<string, SessionWorkingMemory>>({})
   const units = ref<KnowledgeUnit[]>([])
   const concepts = ref<Concept[]>([])
   const aliases = ref<ConceptAlias[]>([])
@@ -242,6 +248,21 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function refreshFromDb(): void {
     sessions.value = db.query<Row>('SELECT * FROM sessions ORDER BY updated_at DESC').map(sessionFromRow)
     messages.value = db.query<Row>('SELECT * FROM messages ORDER BY session_id, order_in_session').map(messageFromRow)
+    const indexed = db.query<Row>('SELECT * FROM evidence_chunks ORDER BY session_id, message_id, chunk_index').map((row) => ({
+      id: text(row.id), messageId: text(row.message_id), sessionId: text(row.session_id), chunkIndex: number(row.chunk_index),
+      charStart: number(row.char_start), charEnd: number(row.char_end), content: text(row.content), tokenCount: number(row.token_count),
+      contentHash: text(row.content_hash), updatedAt: text(row.updated_at),
+    }))
+    const expected = buildEvidenceChunks(messages.value)
+    const indexedById = new Map(indexed.map((chunk) => [chunk.id, chunk]))
+    const stale = indexed.length !== expected.length || expected.some((chunk) => indexedById.get(chunk.id)?.contentHash !== chunk.contentHash)
+    if (stale) {
+      db.transaction(() => {
+        db.run('DELETE FROM evidence_chunks')
+        expected.forEach((chunk) => db.run('INSERT INTO evidence_chunks(id, message_id, session_id, chunk_index, char_start, char_end, content, token_count, content_hash, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [chunk.id, chunk.messageId, chunk.sessionId, chunk.chunkIndex, chunk.charStart, chunk.charEnd, chunk.content, chunk.tokenCount, chunk.contentHash, chunk.updatedAt]))
+      })
+      evidenceChunks.value = expected
+    } else evidenceChunks.value = indexed
     units.value = db.query<Row>('SELECT * FROM knowledge_units ORDER BY created_at DESC').map(unitFromRow)
     concepts.value = db.query<Row>('SELECT * FROM concepts ORDER BY name COLLATE NOCASE').map(conceptFromRow)
     aliases.value = db.query<Row>('SELECT * FROM concept_aliases ORDER BY alias COLLATE NOCASE').map((row) => ({
@@ -4012,7 +4033,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     mutate(() => db.run('DELETE FROM quick_phrases WHERE id = ? AND is_builtin = 0', [id]))
   }
 
-  function buildConversationHistory(sessionId: string, maxMessages = 40, branchNodeId?: string, excludeMessageId?: string): string {
+  function buildConversationHistory(sessionId: string, maxMessages = 8, branchNodeId?: string, excludeMessageId?: string): string {
     const sessionMessages = messages.value
       .filter((message) => message.sessionId === sessionId)
       .sort((left, right) => left.orderInSession - right.orderInSession)
@@ -4044,8 +4065,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (!history.length) return ''
     const visible = history.length > maxMessages ? history.slice(-maxMessages) : history
     const omitted = history.length - visible.length
-    const prefix = omitted > 0 ? `（已省略较早的 ${omitted} 条消息）\n` : ''
-    return prefix + visible.map((message) => `消息 #${message.orderInSession + 1} [${message.role}]\n${message.content}`).join('\n\n')
+    const session = sessions.value.find((item) => item.id === sessionId)
+    const memory = buildWorkingMemory({ sessionId, summary: session?.summary ?? '', messages: history, maxRecent: maxMessages })
+    const prefix = omitted > 0 ? `（已省略较早的 ${omitted} 条消息；完整原文仍保存在本地证据索引）\n` : ''
+    const memoryBlock = `会话工作记忆（派生摘要，不替代本地原文）：${memory.summary || '暂无'}\n`
+    return memoryBlock + prefix + visible.map((message) => `消息 #${message.orderInSession + 1} [${message.role}]\n${message.content}`).join('\n\n')
   }
 
   function buildNavigationPath(sessionId: string, nodeId: string): string {
@@ -4065,14 +4089,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const sourceUnits = sourceUnitIds.map((id) => units.value.find((unit) => unit.id === id)).filter(Boolean) as KnowledgeUnit[]
     const unitBlocks = sourceUnits.map((unit, index) => {
       const session = sessions.value.find((item) => item.id === unit.sessionId)
-      const full = includeFullContent ? `\n原文：${unitMessages(unit.id).map((message) => `${message.role}: ${message.content}`).join('\n')}` : ''
+      const full = includeFullContent ? `\n原文证据：${formatEvidenceCards(searchEvidence(evidenceChunks.value, { messageIds: unitMessages(unit.id).map((message) => message.id), maxTokens: 1400 }))}` : ''
       return `# ${index + 1} ${unit.title || '未命名知识单元'}\n来源 Session：${session?.title || ''}\n摘要：${unit.summary || ''}\nConcept：${unitConceptNames(unit.id).join('、')}${full}`
     })
     const messageBlocks = sourceMessageIds.map((id, index) => {
       const message = messages.value.find((item) => item.id === id)
       if (!message) return ''
       const session = sessions.value.find((item) => item.id === message.sessionId)
-      return `# 消息 ${index + 1}\n来源 Session：${session?.title || ''}\n角色：${message.role}\n原文：${message.content}`
+      const cards = searchEvidence(evidenceChunks.value, { messageIds: [message.id], maxTokens: includeFullContent ? 1400 : 480 })
+      return `# 消息 ${index + 1}\n来源 Session：${session?.title || ''}\n角色：${message.role}\n证据：${formatEvidenceCards(cards)}`
     }).filter(Boolean)
     return [...unitBlocks, ...messageBlocks].join('\n\n')
   }
@@ -4188,7 +4213,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         db.run('INSERT OR IGNORE INTO message_concepts(message_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [messageId, topicId, 'manual', now])
       })
       db.run('UPDATE sessions SET message_count = message_count + 1, updated_at = ? WHERE id = ?', [now, session.id])
-      taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${session.id}:${revision}`, prompt: buildConversationPrompt({ question, topic, context: contextWithTopics, navigationPath: buildNavigationPath(session.id, parentNode.id), conversationHistory: buildConversationHistory(session.id, 40, parentNode.id, messageId), sessionTitle: session.title, sessionSummary: session.summary ?? '', availableUnits: units.value.filter((unit) => unit.sessionId === session.id).map((unit) => ({ id: unit.id, title: unit.title ?? '', summary: unit.summary ?? '' })), conceptLimit: config.value.llm.conceptLimit, targetSessionId: session.id, targetMessageId: messageId, targetAssistantMessageId: assistantMessageId, disclosure: promptDisclosureContext({ unitIds: input.sourceUnitIds ?? [], messageIds: input.sourceMessageIds ?? [], includeFullContent: input.includeFullContent ?? false, includeConceptDetails: true, expandedRefIds: expandedSessionConceptPaths }) }), status: 'pending', scopeLabel: `${session.title} · 追问` })
+      taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${session.id}:${revision}`, prompt: buildConversationPrompt({ question, topic, context: contextWithTopics, navigationPath: buildNavigationPath(session.id, parentNode.id), conversationHistory: buildConversationHistory(session.id, 8, parentNode.id, messageId), sessionTitle: session.title, sessionSummary: session.summary ?? '', availableUnits: units.value.filter((unit) => unit.sessionId === session.id).map((unit) => ({ id: unit.id, title: unit.title ?? '', summary: unit.summary ?? '' })), conceptLimit: config.value.llm.conceptLimit, targetSessionId: session.id, targetMessageId: messageId, targetAssistantMessageId: assistantMessageId, disclosure: promptDisclosureContext({ unitIds: input.sourceUnitIds ?? [], messageIds: input.sourceMessageIds ?? [], includeFullContent: input.includeFullContent ?? false, includeConceptDetails: true, expandedRefIds: expandedSessionConceptPaths }) }), status: 'pending', scopeLabel: `${session.title} · 追问` })
       db.run('UPDATE messages SET metadata = ? WHERE id = ?', [JSON.stringify({ mode: 'follow_up', topicId: primaryTopicId ?? null, topicIds, parentNodeId: parentNode.id, taskId, answerMessageId: assistantMessageId }), messageId])
       writeSourceReferences(session.id, input.sourceUnitIds ?? [], input.sourceMessageIds ?? [], input.includeFullContent ?? false)
     })
@@ -4232,6 +4257,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       db.run('DELETE FROM manual_graph_edges')
       db.run('DELETE FROM knowledge_units')
       db.run('DELETE FROM messages')
+      db.run('DELETE FROM evidence_chunks')
       db.run('DELETE FROM sessions')
       db.run('DELETE FROM concepts')
       db.run('DELETE FROM llm_tasks')
@@ -4248,6 +4274,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     loading,
     sessions,
     messages,
+    evidenceChunks,
+    workingMemories,
     units,
     concepts,
     aliases,

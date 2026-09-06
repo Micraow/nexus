@@ -464,6 +464,10 @@ API 服务支持结构化输出时，同时使用接口级 JSON Schema；Prompt 
 
 当任务需要参考较大的知识树时，Prompt 在 `DISCLOSURE_INDEX` 中提供首层目录和已经展开的记录。目录项至少包含不透明的 `refID`、`title` 和 `summary`；摘要是导航线索，不得冒充消息原文。展开记录可提供 `children`（下一层同样只含 `refID`/标题/摘要）和明确披露的结构化 `content`。Concept、Session、KnowledgeUnit、Message 的 content 都带 `entity_type`、原始 `id`、归属及该实体允许披露的正文，动作 ID 只能从这些结构化证据逐字复制。没有实际目录时会明确要求 `disclosure_requests: []`；`DISCLOSURE_INDEX` 文字标签本身永远不是可请求的 refID。当前 `PROMPT_VERSION` 为 `2026-08-v9-maintenance-disclosure-audit`。
 
+#### 6.0.1 证据切块与上下文预算（Phase 2）
+
+原始消息和模型上下文是两个层次。`messages.content` 是不可变事实；数据库 v9 的 `evidence_chunks` 是可重建索引，每个切片带 `message_id`、`char_start/char_end`、`token_count`、`content_hash` 和稳定 `id`。切片只用于检索和披露，不构成 KnowledgeUnit 边界。上下文服务按关键词/范围召回切片，并在 `maxTokens` 下排序截取；默认返回摘要或相关 excerpt，只有用户明确选择完整证据时才提高预算。API 和 Prompt 粘贴模式都使用相同的证据卡片 JSON，不依赖供应商的 system/developer 消息角色。
+
 模型需要更多证据时，可以在输出 JSON 中返回 `disclosure_requests`，例如 `{ "refID": "目录中已有的 ID", "depth": 1 }`。本地先校验数组、唯一 `refID`、引用必须来自当前目录以及 `depth` 为 1～64 的整数；校验失败进入 `needs_review`，不应用任何部分结果。校验通过后，应用从本地事实表按 `refID` 递归展开指定层数，保留根引用和原文，替换 Prompt 中的动态 `DISCLOSURE_INDEX` 并将同一任务重新排队。任务最多连续披露 8 轮，超出后暂停供用户检查。
 
 全图维护首轮不再旁路发送完整 Concept、关系、阅读片段或消息表，只提供统计、所有真实根主题及其直接子引用、未归属消息所在 Session 和无法从 active Concept 到达的阅读片段。该目录开启 `audit_pending_refs`，每轮生成 `pending_ref_ids`；数组非空时，模型必须把全部 ID 批量放入 `disclosure_requests`，同时保持 `suggestions=[]`。本地拒绝提前结束以及同时携带建议和披露请求的响应，确保中间结果不会部分落库。已经只有 children、尚无 content 的导航 expansion 可以继续请求；若供应商在完整最终结果中冗余重复已经完成的请求，应用清空冗余请求后继续执行任务级校验。Prompt 版本不匹配的旧 pending 任务在网络请求前标记为 `stale`。

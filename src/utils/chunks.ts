@@ -1,5 +1,6 @@
 import type { SegmentationResult } from '@/services/validation'
-import type { Message } from '@/types/domain'
+import type { EvidenceChunk, Message } from '@/types/domain'
+import { stableHash } from '@/utils/id'
 
 export interface MessageChunk {
   messages: Message[]
@@ -10,6 +11,46 @@ export interface MessageChunk {
 
 export function estimateTokens(messages: Message[]): number {
   return Math.ceil(messages.reduce((total, message) => total + message.content.length, 0) / 4)
+}
+
+/** Split one message into addressable evidence slices while preserving offsets. */
+export function splitMessageEvidence(message: Message, maxTokens = 420, overlapChars = 80): EvidenceChunk[] {
+  const text = message.content ?? ''
+  if (!text.length) return []
+  const maxChars = Math.max(240, maxTokens * 4)
+  const overlap = Math.max(0, Math.min(overlapChars, Math.floor(maxChars / 3)))
+  const chunks: EvidenceChunk[] = []
+  let start = 0
+  let index = 0
+  while (start < text.length) {
+    let end = Math.min(text.length, start + maxChars)
+    if (end < text.length) {
+      const boundary = Math.max(start + Math.floor(maxChars * 0.6), text.lastIndexOf('\n', end))
+      if (boundary > start) end = boundary
+    }
+    const content = text.slice(start, end)
+    chunks.push({
+      id: `${message.id}:chunk:${index}`,
+      messageId: message.id,
+      sessionId: message.sessionId,
+      chunkIndex: index,
+      charStart: start,
+      charEnd: end,
+      content,
+      tokenCount: Math.max(1, Math.ceil(content.length / 4)),
+      contentHash: stableHash(content),
+      updatedAt: message.timestamp ?? new Date(0).toISOString(),
+    })
+    if (end >= text.length) break
+    const next = Math.max(start + 1, end - overlap)
+    start = next
+    index += 1
+  }
+  return chunks
+}
+
+export function buildEvidenceChunks(messages: Message[], maxTokens = 420): EvidenceChunk[] {
+  return messages.flatMap((message) => splitMessageEvidence(message, maxTokens))
 }
 
 /**
