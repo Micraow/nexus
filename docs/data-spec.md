@@ -332,7 +332,7 @@ Concept 提取结果必须包含 `concepts` 数组；全部复用目录中已有
 
 ### 4.4 Prompt Harness 与渐进式披露
 
-- 每个生成的 Prompt 必须以前缀稳定、带版本号的 harness 开始；当前版本使用 `NEXUS_HARNESS_PROMPT`、`PROGRESSIVE_DISCLOSURE_PROTOCOL` 和 `PROMPT_VERSION=2026-08-v9-maintenance-disclosure-audit`。任务规格和数据追加在固定前缀之后，续跑不得改写固定前缀；版本不匹配的旧 pending 任务必须在发起网络请求前转为 `stale`；
+- 每个生成的 Prompt 必须以前缀稳定、带版本号的 harness 开始；当前版本使用 `NEXUS_HARNESS_PROMPT`、`PROGRESSIVE_DISCLOSURE_PROTOCOL`、`CONTEXT_RUNTIME_PROTOCOL` 和 `PROMPT_VERSION=2026-09-v10-context-runtime`。任务规格和数据追加在固定前缀之后，续跑不得改写固定前缀；版本不匹配的旧 pending 任务必须在发起网络请求前转为 `stale`；
 - `DISCLOSURE_INDEX.roots[]` 每项必须包含 `{ refID, title, summary }`。`refID` 是本地实体的不透明标识；模型不得创造、改写或拼接；
 - `DISCLOSURE_INDEX.expansions[]` 以已有 `refID` 为键，可包含下一层 `children[]`，以及明确披露的 `content`。`children` 仍是摘要目录，只有 `content` 可以作为动作证据；Concept、Session、KnowledgeUnit、Message 的 content 使用结构化 JSON，包含 `entity_type`、原始 `id`、归属及允许披露的正文；
 - 支持递归链路 `Concept → 子 Concept → KnowledgeUnit → Message 原文`。实现可以按实体类型分步披露，但任何层级都必须先出现在当前目录，才能成为下一次请求目标；

@@ -6,7 +6,7 @@ import { DEFAULT_CONCEPT_LIMIT, normalizeConceptLimit } from '@/services/config'
  * lets provider-side prompt caches reuse the behavioural contract while each
  * task appends its own spec and data below it.
  */
-export const PROMPT_VERSION = '2026-08-v9-maintenance-disclosure-audit'
+export const PROMPT_VERSION = '2026-09-v10-context-runtime'
 
 const CONCEPT_NAME_QUALITY_CONTRACT = `
 Concept 名称输出前机械自检（硬限制，必须逐项执行）：

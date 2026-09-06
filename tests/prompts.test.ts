@@ -377,7 +377,7 @@ describe('prompt harness and progressive disclosure', () => {
       buildConversationPrompt({ question: '继续比较', context: '', topic: 'RDMA' }),
     ]
 
-    expect(PROMPT_VERSION).toBe('2026-08-v9-maintenance-disclosure-audit')
+    expect(PROMPT_VERSION).toBe('2026-09-v10-context-runtime')
     prompts.forEach((prompt) => {
       expect(prompt).toContain('逐个扫描 concepts[i].name 的全部 Unicode 字符')
       expect(prompt).toContain('出现“与”“和”“及”“、”“/”“／”任一字符')
