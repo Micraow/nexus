@@ -3537,6 +3537,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         const controller = new AbortController()
         abortControllers.set(taskId, controller)
         const timeout = window.setTimeout(() => controller.abort(), 45_000)
+        const toolsWereSent = !maintenanceToolsDisabled
         try {
           const requestBody: Record<string, unknown> = {
             model: currentTask.model || provider.model,
@@ -3576,7 +3577,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
             signal: controller.signal,
           })
           if (!response.ok) {
-            if (response.status === 400 && currentTask.type === 'maintenance' && !maintenanceToolsDisabled) {
+            if (response.status === 400 && !maintenanceToolsDisabled && requestBody.tools) {
               // Some OpenAI-compatible endpoints reject function tools even
               // though they accept ordinary JSON chat responses. Retry this
               // maintenance request once without tools; the same validator
@@ -3737,7 +3738,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           const current = tasks.value.find((item) => item.id === taskId)
           if (current?.status === 'cancelled') return { ok: false, error: '任务已取消' }
           const rawErrorMessage = error instanceof Error ? error.message : 'API 请求失败'
-          if (/status\s*400/i.test(rawErrorMessage) && currentTask.type === 'maintenance' && !maintenanceToolsDisabled) {
+          if (/status\s*400/i.test(rawErrorMessage) && toolsWereSent && !maintenanceToolsDisabled) {
             // The Tauri HTTP plugin may throw on non-2xx responses instead of
             // returning a Response, so the response-level tools fallback is
             // not always reached. Retry maintenance as plain JSON once.
