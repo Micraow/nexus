@@ -1130,3 +1130,11 @@ sequenceDiagram
 | Prompt 粘贴模式 | 生成 Prompt，用户在网页端执行并粘贴回复 |
 | API 模式 | 通过用户配置的 OpenAI 兼容端点执行任务 |
 | graph_revision | 影响图谱派生结果的业务数据版本号 |
+### Rolling disclosure evidence
+
+The disclosure catalog separates traversal state from prompt payload. The
+`disclosed_ref_ids` ledger records which references have already supplied
+complete content, while `expansions[].content` is a rolling, newest-first
+evidence window. Old navigation edges remain available without permanently
+consuming the content budget. A model may request a previously disclosed ref
+again when its exact fields are needed for a final mutation proposal.

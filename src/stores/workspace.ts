@@ -2643,7 +2643,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const disclosureTaskTypes = new Set<LLMTask['type']>(['concept_extraction', 'origin_concepts', 'conversation', 'maintenance'])
 
   function undisclosedReferenceIds(context: DisclosureContext): string[] {
-    const expandedWithContent = new Set((context.expansions ?? []).filter((expansion) => expansion.content != null).map((expansion) => expansion.refID))
+    const expandedWithContent = new Set(context.disclosedRefIds ?? [])
+    ;(context.expansions ?? []).filter((expansion) => expansion.content != null).forEach((expansion) => expandedWithContent.add(expansion.refID))
     const listed = new Set(context.roots.map((reference) => reference.refID))
     context.additionalRootRefIds?.forEach((refID) => listed.add(refID))
     ;(context.expansions ?? []).forEach((expansion) => expansion.children?.forEach((reference) => listed.add(reference.refID)))
@@ -2757,6 +2758,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const requested = requests.map((item) => item.refID.trim())
     const expansionMap = new Map<string, NonNullable<DisclosureContext['expansions']>[number]>()
     ;(current.expansions ?? []).forEach((expansion) => expansionMap.set(expansion.refID, expansion))
+    const disclosedRefIds = new Set(current.disclosedRefIds ?? [])
+    ;(current.expansions ?? []).filter((expansion) => expansion.content != null).forEach((expansion) => disclosedRefIds.add(expansion.refID))
     const expandedThisTurn = new Set<string>()
     let changedExpansion = false
 
@@ -2779,7 +2782,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           expandedThisTurn.add(refID)
           const previous = expansionMap.get(refID)
           if (!previous || JSON.stringify(previous) !== JSON.stringify(expansion)) changedExpansion = true
+          // Refresh insertion order so formatDisclosureContext gives this
+          // round's evidence priority inside the rolling content window.
+          expansionMap.delete(refID)
           expansionMap.set(refID, expansion)
+          if (expansion.content != null) disclosedRefIds.add(refID)
           expansion.children?.forEach((child) => {
             if (!seenAtRequest.has(child.refID)) next.push(child.refID)
           })
@@ -2794,6 +2801,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       ...(current.auditPendingRefs ? { auditPendingRefs: true } : {}),
       ...(current.compact ? { compact: true } : {}),
       ...(current.additionalRootRefIds ? { additionalRootRefIds: current.additionalRootRefIds } : {}),
+      ...(disclosedRefIds.size ? { disclosedRefIds: [...disclosedRefIds] } : {}),
     }
     const nextPrompt = replaceDisclosureContext(task.prompt, nextContext)
     if (expandedThisTurn.size === 0 || !changedExpansion || nextPrompt === task.prompt) {

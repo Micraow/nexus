@@ -10,6 +10,7 @@ import {
   buildSessionTriagePrompt,
   buildTitleSummaryPrompt,
   CONTEXT_RUNTIME_PROTOCOL,
+  MAX_DISCLOSURE_CONTENT_CHARS_PER_ROUND,
   MAX_EXPANSION_CONTENT_CHARS,
   formatDisclosureContext,
   formatMaintenanceActionApi,
@@ -318,6 +319,24 @@ describe('prompt harness and progressive disclosure', () => {
     })
     expect(rendered.length).toBeLessThan(MAX_EXPANSION_CONTENT_CHARS * 2)
     expect(rendered).toContain('content_truncated')
+  })
+
+  it('prioritizes current disclosure content while retaining a compact audit ledger', () => {
+    const expansions = Array.from({ length: 20 }, (_, index) => ({
+      refID: `ref_${index}`,
+      content: JSON.stringify({ id: `ref_${index}`, content: String(index).repeat(MAX_EXPANSION_CONTENT_CHARS) }),
+    }))
+    const rendered = formatDisclosureContext({
+      roots: expansions.map((item) => ({ refID: item.refID, title: item.refID, summary: '摘要' })),
+      expansions,
+      auditPendingRefs: true,
+    })
+    const parsed = parseDisclosureContext(buildHarnessPrompt(rendered))!
+    expect(rendered.length).toBeLessThan(MAX_DISCLOSURE_CONTENT_CHARS_PER_ROUND + 10_000)
+    expect(parsed.disclosedRefIds).toEqual(expansions.map((item) => item.refID))
+    expect(parsed.expansions?.find((item) => item.refID === 'ref_19')?.content).toBeDefined()
+    expect(parsed.expansions?.find((item) => item.refID === 'ref_0')?.content).toBeUndefined()
+    expect(rendered).toContain('"pending_ref_count": 0')
   })
 
   it('preserves compact maintenance root pages and their opaque IDs across parsing', () => {
