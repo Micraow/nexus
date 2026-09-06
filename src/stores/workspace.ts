@@ -80,6 +80,14 @@ function compactSessionText(value: unknown, maxLength: number): string {
   return Array.from(normalized).slice(0, maxLength).join('')
 }
 
+const CONVERSATION_HISTORY_CHAR_BUDGET = 12_000
+function boundedConversationMessage(value: string, maxLength = 2_200): string {
+  if (value.length <= maxLength) return value
+  const head = Math.floor(maxLength * 0.72)
+  const tail = Math.floor(maxLength * 0.22)
+  return `${value.slice(0, head)}…[历史消息已截断]…${value.slice(-tail)}`
+}
+
 function isGeneratedConversationTitle(session: Session): boolean {
   return session.source === 'in_app'
     && (session.title === '新的知识对话' || /^围绕 .+ 的新对话$/.test(session.title))
@@ -4129,7 +4137,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const memory = buildWorkingMemory({ sessionId, summary: session?.summary ?? '', messages: history, maxRecent: maxMessages })
     const prefix = omitted > 0 ? `（已省略较早的 ${omitted} 条消息；完整原文仍保存在本地证据索引）\n` : ''
     const memoryBlock = `会话工作记忆（派生摘要，不替代本地原文）：${memory.summary || '暂无'}\n`
-    return memoryBlock + prefix + visible.map((message) => `消息 #${message.orderInSession + 1} [${message.role}]\n${message.content}`).join('\n\n')
+    let used = memoryBlock.length + prefix.length
+    const rendered: string[] = []
+    for (const message of visible) {
+      const line = `消息 #${message.orderInSession + 1} [${message.role}]\n${boundedConversationMessage(message.content)}`
+      if (used + line.length > CONVERSATION_HISTORY_CHAR_BUDGET && rendered.length) break
+      rendered.push(line)
+      used += line.length
+    }
+    const omittedByBudget = visible.length - rendered.length
+    const budgetNotice = omittedByBudget > 0 ? `\n…[历史消息超过 ${CONVERSATION_HISTORY_CHAR_BUDGET} 字符预算，省略 ${omittedByBudget} 条；需要时通过 evidence 工具读取]` : ''
+    return memoryBlock + prefix + rendered.join('\n\n') + budgetNotice
   }
 
   function buildNavigationPath(sessionId: string, nodeId: string): string {

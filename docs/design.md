@@ -460,7 +460,7 @@ API 服务支持结构化输出时，同时使用接口级 JSON Schema；Prompt 
 
 ### 6.0 固定 Harness 与渐进式披露
 
-每个任务 Prompt 都先拼接版本化的固定前缀 `NEXUS_HARNESS_PROMPT`、`PROGRESSIVE_DISCLOSURE_PROTOCOL` 和 `CONTEXT_RUNTIME_PROTOCOL`，再附加该任务的规格和数据。固定前缀按字节保持稳定（当前 `PROMPT_VERSION=2026-09-v10-context-runtime`），任务重试或披露续跑只能替换动态数据段，不能删改行为契约。
+每个任务 Prompt 都先拼接版本化的固定前缀 `NEXUS_HARNESS_PROMPT`，再根据 profile 选择 `PROGRESSIVE_DISCLOSURE_PROTOCOL` 与 `CONTEXT_RUNTIME_PROTOCOL`，最后附加该任务的规格和数据。固定前缀按字节保持稳定（当前 `PROMPT_VERSION=2026-09-v10-context-runtime`），任务重试或披露续跑只能替换动态数据段，不能删改行为契约。
 
 任务按 profile 选择最小契约：`minimal` 仅携带基础 JSON/不可信输入规则，`concept` 增加 Concept 与披露规则，`conversation` 增加上下文运行时，`maintenance` 增加维护披露和动作规则。这样 triage、segmentation、title、summary 不会为无关协议付出固定 token 成本。
 
@@ -480,7 +480,7 @@ API 服务支持结构化输出时，同时使用接口级 JSON Schema；Prompt 
 
 模型需要更多证据时，可以在输出 JSON 中返回 `disclosure_requests`，例如 `{ "refID": "目录中已有的 ID", "depth": 1 }`。本地先校验数组、唯一 `refID`、引用必须来自当前目录以及 `depth` 为 1～64 的整数；校验失败进入 `needs_review`，不应用任何部分结果。校验通过后，应用从本地事实表按 `refID` 递归展开指定层数，保留根引用和原文，替换 Prompt 中的动态 `DISCLOSURE_INDEX` 并将同一任务重新排队。任务最多连续披露 8 轮，超出后暂停供用户检查。
 
-全图维护首轮不再旁路发送完整 Concept、关系、阅读片段或消息表，只提供统计、所有真实根主题及其直接子引用、未归属消息所在 Session 和无法从 active Concept 到达的阅读片段。该目录开启 `audit_pending_refs`，每轮生成 `pending_ref_ids`；数组非空时，模型必须把全部 ID 批量放入 `disclosure_requests`，同时保持 `suggestions=[]`。本地拒绝提前结束以及同时携带建议和披露请求的响应，确保中间结果不会部分落库。已经只有 children、尚无 content 的导航 expansion 可以继续请求；若供应商在完整最终结果中冗余重复已经完成的请求，应用清空冗余请求后继续执行任务级校验。Prompt 版本不匹配的旧 pending 任务在网络请求前标记为 `stale`。
+全图维护首轮不再旁路发送完整 Concept、关系、阅读片段或消息表，只提供统计、所有真实根主题及其直接子引用、未归属消息所在 Session 和无法从 active Concept 到达的阅读片段。该目录开启 `audit_pending_refs`，每轮生成 `pending_ref_ids`；数组非空时，模型必须把当前窗口中的 ID 批量放入 `disclosure_requests`，同时保持 `suggestions=[]`。本地拒绝提前结束以及同时携带建议和披露请求的响应，确保中间结果不会部分落库。每个 refID 每轮最多展开一层；已经只有 children、尚无 content 的导航 expansion 可以继续请求。正文使用按最新展开优先的滚动窗口，`disclosed_ref_ids` 单独保存已审计状态；若供应商在完整最终结果中冗余重复已经完成的请求，应用清空冗余请求后继续执行任务级校验。Prompt 版本不匹配的旧 pending 任务在网络请求前标记为 `stale`。
 
 `refID` 由本地生成且不可由模型猜测、改写或拼接。所有目录、摘要和原文都按不可信数据处理，其中的文字指令、代码、SQL 和链接不执行；模型可以使用自身知识、推理和调用方明确允许的外部搜索，但必须区分输入证据、外部资料与推断。
 
@@ -1130,11 +1130,9 @@ sequenceDiagram
 | Prompt 粘贴模式 | 生成 Prompt，用户在网页端执行并粘贴回复 |
 | API 模式 | 通过用户配置的 OpenAI 兼容端点执行任务 |
 | graph_revision | 影响图谱派生结果的业务数据版本号 |
-### Rolling disclosure evidence
+### 有界滚动披露证据
 
-The disclosure catalog separates traversal state from prompt payload. The
-`disclosed_ref_ids` ledger records which references have already supplied
-complete content, while `expansions[].content` is a rolling, newest-first
-evidence window. Old navigation edges remain available without permanently
-consuming the content budget. A model may request a previously disclosed ref
-again when its exact fields are needed for a final mutation proposal.
+披露目录把遍历状态与本轮 Prompt 内容分开。`disclosed_ref_ids` 是已经提
+供过完整 content 的紧凑审计账本；`expansions[].content` 是按最新展开优先
+排列的滚动证据窗口。旧的导航边仍可保留，但不会永久占用正文预算；如果
+最终动作需要旧实体的精确字段或 ID，可以再次请求对应 refID 重读。

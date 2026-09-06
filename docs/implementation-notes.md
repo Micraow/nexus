@@ -36,7 +36,7 @@
 
 Prompt 契约同步：`services/prompts.ts` 的固定 Harness 现在包含 `CONTEXT_RUNTIME_PROTOCOL`，以紧凑 JSON 默认值和短文本规则声明 `summary+excerpt` 默认披露、8 条历史消息、显式全文授权及三种证据工具。这样 Prompt 粘贴模式即使没有 API tool schema，也能遵守与 API 模式相同的上下文边界。
 
-Prompt 膨胀审计修复：`buildHarnessPrompt` 支持 `minimal`、`concept`、`conversation`、`maintenance` 四种 profile；分类、分段、标题和摘要任务不再携带披露/维护协议。所有披露续轮统一限制为每轮最多 4 个 refID、depth=1；`formatDisclosureContext` 对单 expansion 和单轮内容执行字符预算，并标记 `content_truncated`。当父级 Unit/Concept 与其子 Message 同轮被请求时，续轮去除重复子引用。
+Prompt 膨胀审计修复：`buildHarnessPrompt` 支持 `minimal`、`concept`、`conversation`、`maintenance` 四种 profile；分类、分段、标题和摘要任务不再携带披露/维护协议。所有披露续轮统一限制为每轮最多 4 个 refID、每个请求展开一层；`formatDisclosureContext` 对单 expansion 和单轮内容执行字符预算，并标记 `content_truncated`，同时用 `disclosed_ref_ids` 保存独立的已审计账本，正文窗口按最新展开优先。父级与子级同轮请求时分别读取，不能删除子引用。
 
 JSON 修复协议明确区分事实与派生结果：原始 Session/Message/evidence 正文不可修改；Concept 名称、client_ref 映射、memberships、hierarchy 和 units 元数据允许为修复命名、层级和结构而重写，但必须同步所有引用。修复 Prompt 对原任务和原始响应设置上限，避免多轮修复递归膨胀。
 - 维护响应在 `suggestions=[]`、未提供 `disclosure_requests` 但目录仍有 pending refs 时，会由应用按最多 96 个引用一批自动生成下一轮请求；Concept/Session 使用有限深度展开，避免把上千个引用一次性塞给模型。维护任务最多 16 轮，仍未完成才进入人工检查。
@@ -168,19 +168,15 @@ JSON 修复协议明确区分事实与派生结果：原始 Session/Message/evid
 - 知识主题页的左栏使用可折叠 hierarchy 树，主题行单击选中并打开右侧内容，树节点的独立折叠控件负责展开/收起；过滤时保留命中主题的祖先节点，父子跳转后详情列滚动回顶。会话探索树使用大圆点、细连接线和悬停/聚焦标签，切换分支时只替换当前前景卡片。图谱主题节点不提供独立 `+/-` 控件，主体单击同时打开详情并展开/收起，新增或移除的节点通过透明度和稳定坐标过渡。
 - 任务队列状态更新只刷新任务投影；批量确认关系使用单事务，避免大量任务或关系逐条重建搜索索引和图谱缓存。
 - 维护 API 请求优先发送 canonical MCP function tools；不设置可选的 `tool_choice`，以兼容只支持默认自动选择的 OpenAI-compatible Provider。响应解析同时接受标准 `message.tool_calls` 与旧版单数 `message.function_call`，参数既可为 JSON 字符串也可为对象；工具调用仍转换为 suggestions 并经过同一白名单校验。Provider 拒绝工具请求时仅对维护任务回退一次纯 JSON。大图维护使用有界渐进披露：首轮只展开少量根分支，Concept 导航默认隐藏高扇出归属引用，`pending_ref_ids` 只发送有限窗口并附带总数；每轮最多处理 4 个引用、depth=1，KnowledgeUnit 内容自带消息证据。这样不会把全图复制进每次 provider 请求，也不会触发小上下文模型的续轮溢出；剩余引用由本地状态机继续排队。用户附加维护要求在任务正文首部和末尾重复标注，并在总体 reason 中交代处理情况。
-### Bounded disclosure depth
+### 有界披露深度
 
-Disclosure continuation expands at most one level per requested `refID`. A
-parent expansion's `children` are navigation references only and never count
-as disclosure of each child's `content`. If a parent and one of its already
-listed children are requested in the same batch, both requests are processed;
-the child request must not be removed as redundant.
-### Prompt profile normalization
+每个请求的 `refID` 最多展开一层。父级 expansion 的 `children` 只是导航引用，
+不代表子项的 `content` 已经披露；如果同一批次同时请求父级和已列出的子级，
+两个请求都会执行，不能把子请求当作重复项删除。
 
-Persisted and imported tasks are normalized with the profile implied by their
-task type. Rewrapping extracts the task specification and rebuilds the fixed
-prefix, so a legacy or incorrectly wrapped triage/title prompt cannot inherit
-the maintenance and context-runtime protocols. Repair prompts remove the
-dynamic disclosure block from the copied task specification, preserve both
-the beginning and the output-contract tail, and append one bounded current
-disclosure section.
+### Prompt profile 归一化
+
+持久化和导入的任务会根据任务类型选择对应 profile。重新包装时先提取任务
+规格再重建固定前缀，因此旧的或错误包装的 triage/title Prompt 不会继承维护
+与上下文运行时协议。修复 Prompt 会移除复制任务中的动态披露正文，保留开头与
+输出契约尾部，再追加一个有界的当前披露区段。

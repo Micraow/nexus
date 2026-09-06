@@ -91,7 +91,7 @@ describe('conversation prompt', () => {
     expect(prompt).toContain('严禁使用“原文”“正文”“主题名称”等占位文字')
     expect(prompt).toContain('教材的章节大标题或小标题')
     expect(prompt).toContain('多个具有独立知识含义的概念词，可以分别标记多个推荐词')
-    expect(prompt).toContain('每个具有独立知识含义且尚未在目录确认存在的概念词都可以分别作为 suggested marker')
+    expect(prompt).toContain('每个回复最多 24 个 marker')
     expect(prompt).toContain('不要把多个概念合并成一个 marker')
     expect(prompt).toContain('最外层只能返回一个 JSON 对象，禁止 Markdown 围栏')
     expect(prompt).toContain('没有目录证据的独立概念一律使用 suggested')
@@ -117,10 +117,10 @@ describe('conversation prompt', () => {
 
   it('requires broad technical-term coverage for answer markers', () => {
     const prompt = buildConversationPrompt({ question: '解释 RDMA 中的 DCQCN、ECN、PFC 和 RoCEv2', context: '' })
-    expect(prompt).toContain('推荐词技术覆盖审计（硬约束）')
+    expect(prompt).toContain('推荐词技术覆盖审计（有界约束）')
     expect(prompt).toContain('协议/标准、算法、架构/拓扑、组件、数据结构、控制机制')
     expect(prompt).toContain('英文缩写、连字符词和 CamelCase 词')
-    expect(prompt).toContain('不要因为词是英文、缩写、大小写混排或出现在代码/列表/表格中而漏标')
+    expect(prompt).toContain('不要把普通名词、连接词、代码中的每个词或同一实体的每次重复都包起来')
   })
 
   it('only shows a real current unit id in reuse examples', () => {

@@ -25,7 +25,7 @@ const CONCEPT_NAME_FINAL_GATE = '最终 JSON 门禁：输出前逐项扫描 conc
 const PREFIX_HIERARCHY_GATE = '前缀层级门禁：若新 Concept 名称以目录中已有主题开头（例如已有“CAVER”，候选为“CAVER 路径信息交换”），必须优先改成短子主题“路径信息交换”，并在 relations 返回 {"source":"已有 CAVER 的真实 refID","target":"new:1","type":"hierarchy","status":"proposed"}。只有证据证明完整前缀名称本身是不可拆分的正式专名时，才保留原名，并在同一 Concept 对象同时返回 confidence 与 reason；不能只省略 relations，也不能把它作为新的一级根。'
 
 const TECHNICAL_MARKER_COVERAGE_CONTRACT = `
-推荐词技术覆盖审计（硬约束）：完成 answer 草稿后，从全文逐段扫描所有具有独立知识含义的技术实体，至少检查协议/标准、算法、架构/拓扑、组件、数据结构、控制机制、英文缩写、连字符词和 CamelCase 词。只要该实体在正文中以真实词组首次出现，就必须单独包在一个 Nexus marker 中；已有目录主题用 existing，目录没有明确证据的用 suggested。不要因为词是英文、缩写、大小写混排或出现在代码/列表/表格中而漏标，也不要把相邻技术实体合并在同一个 marker。普通连接词、泛化名词和同一实体的后续重复不必标记。输出前逐个核对正文中的技术词与 marker 数量，优先保证覆盖而不是只标记少数大主题。`
+推荐词技术覆盖审计（有界约束）：完成 answer 草稿后，优先标记首次出现且对后续探索最有价值的技术实体，包括协议/标准、算法、架构/拓扑、组件、数据结构、控制机制、英文缩写、连字符词和 CamelCase 词。每个独立主题只标记首次真实出现，同一主题后续重复不再标记；已有目录主题用 existing，目录没有明确证据的用 suggested。每个回复最多 24 个 marker；超出时保留与用户问题、证据和后续探索最相关的项，不要把普通名词、连接词、代码中的每个词或同一实体的每次重复都包起来。相邻技术实体必须分别标记，不要把多个概念合并成一个 marker。`
 
 function promptConceptLimit(value: unknown): number {
   return normalizeConceptLimit(value, DEFAULT_CONCEPT_LIMIT)
