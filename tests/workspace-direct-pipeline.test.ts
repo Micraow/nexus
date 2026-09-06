@@ -847,7 +847,7 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.tasks.find((task) => task.id === taskId)?.status).toBe('success')
   })
 
-  it('audits multiple maintenance roots and their descendants in one batched continuation', () => {
+  it('audits multiple maintenance roots and their descendants in bounded level batches', () => {
     const rootA = store.createConcept('批量审计根 A')
     const childA = store.createConcept('批量审计子 A')
     const grandchildA = store.createConcept('批量审计孙 A')
@@ -865,16 +865,36 @@ describe('direct concept extraction import pipeline', () => {
     }))
     expect(first.continued, first.errors.join('; ')).toBe(true)
 
-    const task = store.tasks.find((item) => item.id === taskId)!
-    const disclosure = parseDisclosureContext(task.prompt)!
+    let task = store.tasks.find((item) => item.id === taskId)!
+    let disclosure = parseDisclosureContext(task.prompt)!
     expect(disclosure.round).toBe(1)
-    const expectedIds = [rootA, childA, grandchildA, rootB, childB]
-    expectedIds.forEach((refID) => {
+    ;[rootA, rootB].forEach((refID) => {
       expect(disclosure.expansions?.find((expansion) => expansion.refID === refID)?.content, refID).toBeDefined()
     })
+    expect(disclosure.expansions?.find((expansion) => expansion.refID === childA)?.content).toBeUndefined()
     expect(JSON.parse(disclosure.expansions?.find((expansion) => expansion.refID === rootA)?.content ?? '{}')).toMatchObject({
       concept: { entity_type: 'concept', id: rootA },
     })
+
+    const second = store.applyTaskResult(taskId, JSON.stringify({
+      reason: '批量检查两个根主题的直接子主题',
+      suggestions: [],
+      disclosure_requests: [childA, childB].map((refID) => ({ refID, depth: 1 })),
+    }))
+    expect(second.continued, second.errors.join('; ')).toBe(true)
+    task = store.tasks.find((item) => item.id === taskId)!
+    disclosure = parseDisclosureContext(task.prompt)!
+    expect(disclosure.round).toBe(2)
+    ;[childA, childB].forEach((refID) => {
+      expect(disclosure.expansions?.find((expansion) => expansion.refID === refID)?.content, refID).toBeDefined()
+    })
+
+    const third = store.applyTaskResult(taskId, JSON.stringify({
+      reason: '继续检查新发现的孙主题',
+      suggestions: [],
+      disclosure_requests: [{ refID: grandchildA, depth: 1 }],
+    }))
+    expect(third.continued, third.errors.join('; ')).toBe(true)
 
     const final = store.applyTaskResult(taskId, JSON.stringify({
       reason: '已检查两个根分支及其全部子孙，未发现需要修改的地方',
@@ -1381,6 +1401,7 @@ describe('direct concept extraction import pipeline', () => {
     store.createRelation(rootId, childId, 'hierarchy')
     const responses = [
       JSON.stringify({ reason: '首轮只规划并请求展开根分支。', suggestions: [], disclosure_requests: [{ refID: rootId, depth: 64 }] }),
+      JSON.stringify({ reason: '根主题详情已检查，继续请求子主题详情。', suggestions: [], disclosure_requests: [{ refID: childId, depth: 1 }] }),
       JSON.stringify({ reason: '已检查根主题及其子主题，未发现需要修改的地方。', suggestions: [], disclosure_requests: [] }),
     ]
     let requestIndex = 0
@@ -1399,7 +1420,7 @@ describe('direct concept extraction import pipeline', () => {
     const taskId = store.createMaintenanceTask()
     const task = store.tasks.find((item) => item.id === taskId)!
     await expect(store.executeTask(task.id)).resolves.toEqual({ ok: true })
-    expect(requestIndex).toBe(2)
+    expect(requestIndex).toBe(3)
     expect(store.tasks.find((item) => item.id === taskId)).toEqual(expect.objectContaining({ status: 'success' }))
     expect(store.tasks.find((item) => item.id === taskId)?.parsedResult).toContain('未发现需要修改')
     expect(store.tasks.find((item) => item.id === taskId)?.prompt).toContain(childId)

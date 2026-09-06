@@ -168,3 +168,10 @@ JSON 修复协议明确区分事实与派生结果：原始 Session/Message/evid
 - 知识主题页的左栏使用可折叠 hierarchy 树，主题行单击选中并打开右侧内容，树节点的独立折叠控件负责展开/收起；过滤时保留命中主题的祖先节点，父子跳转后详情列滚动回顶。会话探索树使用大圆点、细连接线和悬停/聚焦标签，切换分支时只替换当前前景卡片。图谱主题节点不提供独立 `+/-` 控件，主体单击同时打开详情并展开/收起，新增或移除的节点通过透明度和稳定坐标过渡。
 - 任务队列状态更新只刷新任务投影；批量确认关系使用单事务，避免大量任务或关系逐条重建搜索索引和图谱缓存。
 - 维护 API 请求优先发送 canonical MCP function tools；不设置可选的 `tool_choice`，以兼容只支持默认自动选择的 OpenAI-compatible Provider。响应解析同时接受标准 `message.tool_calls` 与旧版单数 `message.function_call`，参数既可为 JSON 字符串也可为对象；工具调用仍转换为 suggestions 并经过同一白名单校验。Provider 拒绝工具请求时仅对维护任务回退一次纯 JSON。大图维护使用有界渐进披露：首轮只展开少量根分支，Concept 导航默认隐藏高扇出归属引用，`pending_ref_ids` 只发送有限窗口并附带总数；每轮最多处理 4 个引用、depth=1，KnowledgeUnit 内容自带消息证据。这样不会把全图复制进每次 provider 请求，也不会触发小上下文模型的续轮溢出；剩余引用由本地状态机继续排队。用户附加维护要求在任务正文首部和末尾重复标注，并在总体 reason 中交代处理情况。
+### Bounded disclosure depth
+
+Disclosure continuation expands at most one level per requested `refID`. A
+parent expansion's `children` are navigation references only and never count
+as disclosure of each child's `content`. If a parent and one of its already
+listed children are requested in the same batch, both requests are processed;
+the child request must not be removed as redundant.

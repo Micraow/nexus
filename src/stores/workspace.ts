@@ -2760,14 +2760,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const expandedThisTurn = new Set<string>()
     let changedExpansion = false
 
-    // Expand the returned directory, rather than reconstructing edges from
-    // only one parent. This preserves multi-parent Concepts and follows the
-    // exact Concept -> Unit -> Message shape shown to the model.
-    const parentChildren = new Set<string>()
-    requests.forEach((request) => current.expansions?.find((expansion) => expansion.refID === request.refID)?.children?.forEach((child) => parentChildren.add(child.refID)))
-    const effectiveRequests = requests.filter((request) => !parentChildren.has(request.refID))
-    if (effectiveRequests.length !== requests.length) data.disclosure_requests = effectiveRequests
-    for (const request of effectiveRequests) {
+    // A parent's children are navigation entries, not the child's content.
+    // When both are requested in one batch each ref must therefore be
+    // expanded independently; dropping the child would silently lose the
+    // evidence the model explicitly requested.
+    for (const request of requests) {
       let frontier = [request.refID.trim()]
       const seenAtRequest = new Set<string>()
       for (let level = 0; level < request.depth && frontier.length; level += 1) {

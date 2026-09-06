@@ -281,6 +281,7 @@ describe('full-graph maintenance entry', () => {
     })
     const responses = [
       JSON.stringify({ reason: '首轮请求未知引用', suggestions: [], disclosure_requests: [{ refID: 'unknown-ref', depth: 1 }] }),
+      JSON.stringify({ reason: '根主题已检查，继续请求子主题详情。', suggestions: [], disclosure_requests: [{ refID: childId, depth: 1 }] }),
       JSON.stringify({ reason: '已完成根主题审计，未发现需要修改的地方。', suggestions: [], disclosure_requests: [] }),
     ]
     let requestIndex = 0
@@ -315,11 +316,11 @@ describe('full-graph maintenance entry', () => {
     expect(applyButton).not.toBeUndefined()
     applyButton!.click()
 
-    for (let attempt = 0; attempt < 10 && store.tasks.find((task) => task.id === taskId)?.status !== 'success'; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0))
+    for (let attempt = 0; attempt < 100 && store.tasks.find((task) => task.id === taskId)?.status !== 'success'; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
       await nextTick()
     }
-    expect(requestIndex).toBe(2)
+    expect(requestIndex).toBe(3)
     expect(store.tasks.find((task) => task.id === taskId)?.status).toBe('success')
     expect(store.tasks.find((task) => task.id === taskId)?.parsedResult).toContain('未发现需要修改')
     store.clearAllData()
