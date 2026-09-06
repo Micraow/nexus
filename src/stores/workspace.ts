@@ -5,10 +5,10 @@ import { httpRequest } from '@/services/http'
 import { DEFAULT_API_CONCURRENCY, DEFAULT_API_RETRIES, DEFAULT_CONCEPT_LIMIT, DEFAULT_TOKEN_BUDGET, normalizeApiConcurrency, normalizeApiRetries, normalizeConceptLimit, normalizeTokenBudget, parseConfigText, readConfigText, writeConfig } from '@/services/config'
 import { buildGraph, graphSnapshotIsProgressiveCompatible, graphStats, graphViewFallbackIsCompatible, resolveVisibleConceptIds, toggleExpandedConceptIds } from '@/services/graph'
 import { buildSearchDocuments, searchKnowledge } from '@/services/search'
-import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildOriginConceptPrompt, buildRepairPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, ensureHarnessPrompt, formatMaintenanceActionApi, listMaintenanceMcpTools, listedDisclosureRefIds, MAINTENANCE_ACTION_API, maintenanceToolCallSuggestion, parseDisclosureContext, PROMPT_VERSION, renderQuickPhrase, replaceDisclosureContext } from '@/services/prompts'
+import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildOriginConceptPrompt, buildRepairPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, ensureHarnessPrompt, formatMaintenanceActionApi, listMaintenanceMcpTools, listedDisclosureRefIds, MAINTENANCE_ACTION_API, MAX_DISCLOSURE_DEPTH, MAX_DISCLOSURE_REQUESTS_PER_ROUND, maintenanceToolCallSuggestion, parseDisclosureContext, PROMPT_VERSION, renderQuickPhrase, replaceDisclosureContext } from '@/services/prompts'
 import { conversationMessageBranchNodeId } from '@/services/conversation'
 import { hasCompoundConceptConnector, importPayloadSchema, normalizeOriginConceptResultForReuse, parseImportPayload, validateConceptIdList, validateConceptMemberships, validateConceptName, validateDisclosureRequests, validateOriginConceptResult, validateSegmentationResult, validateUnitText } from '@/services/validation'
-import type { DisclosureContext } from '@/services/prompts'
+import type { DisclosureContext, PromptProfile } from '@/services/prompts'
 import { combineSegmentationChunks, splitMessageChunks } from '@/utils/chunks'
 import { buildEvidenceChunks } from '@/utils/chunks'
 import { buildWorkingMemory, contextToolCall, CONTEXT_RUNTIME_TOOLS, formatEvidenceCards, searchEvidence } from '@/services/context-runtime'
@@ -788,7 +788,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
    * from existing ConceptRelation/UnitConcept/Message rows; no graph schema
    * or persistent field is added for the disclosure protocol.
    */
-  function promptDisclosureContext(options: { unitIds?: string[]; messageIds?: string[]; sessionIds?: string[]; includeFullContent?: boolean; includeConceptDetails?: boolean; includeMessageSummaries?: boolean; scopeConceptRoots?: boolean; auditPendingRefs?: boolean; compact?: boolean; expandedRefIds?: string[]; round?: number } = {}): DisclosureContext {
+  function promptDisclosureContext(options: { unitIds?: string[]; messageIds?: string[]; sessionIds?: string[]; includeFullContent?: boolean; suppressContent?: boolean; includeConceptDetails?: boolean; includeMessageSummaries?: boolean; scopeConceptRoots?: boolean; auditPendingRefs?: boolean; compact?: boolean; expandedRefIds?: string[]; round?: number } = {}): DisclosureContext {
     const active = activeConcepts.value.slice().sort((left, right) => left.name.localeCompare(right.name, 'zh-CN') || left.id.localeCompare(right.id))
     const activeIds = new Set(active.map((concept) => concept.id))
     const hierarchy = relations.value.filter((relation) =>
@@ -1012,13 +1012,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     // Explicitly selected full-content units/messages are already authorized
     // by the caller and can be revealed in the initial prompt.
     selectedUnitIds.forEach((id) => {
-      if (options.includeFullContent) {
+      if (options.includeFullContent && !options.suppressContent) {
         const unit = units.value.find((item) => item.id === id)
         if (unit) expansionMap.set(id, unitExpansion(unit, true))
       }
     })
     selectedMessageIds.forEach((id) => {
-      if (!options.includeFullContent) return
+      if (!options.includeFullContent || options.suppressContent) return
       const message = messages.value.find((item) => item.id === id)
       if (message) expansionMap.set(id, messageExpansion(message))
     })
@@ -1030,7 +1030,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const session = activeSessions.value.find((item) => item.id === refID)
       if (session) expansionMap.set(refID, sessionExpansion(session))
       const message = messages.value.find((item) => item.id === refID)
-      if (message && options.includeFullContent) expansionMap.set(refID, messageExpansion(message))
+      if (message && options.includeFullContent && !options.suppressContent) expansionMap.set(refID, messageExpansion(message))
     })
     return {
       roots,
@@ -1695,7 +1695,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     // Keep the current disclosure catalog in a repair prompt so a user can
     // correct an invalid response without losing the IDs they were shown.
     const disclosure = status === 'needs_review' && response ? parseDisclosureContext(task.prompt) : null
-    const nextPrompt = status === 'needs_review' && response ? buildRepairPrompt(response, errors ?? [], disclosure ?? undefined, task.prompt) : task.prompt
+    const profile: PromptProfile = task.type === 'maintenance' ? 'maintenance' : task.type === 'conversation' ? 'conversation' : task.type === 'concept_extraction' || task.type === 'origin_concepts' ? 'concept' : 'minimal'
+    const nextPrompt = status === 'needs_review' && response ? buildRepairPrompt(response, errors ?? [], disclosure ?? undefined, task.prompt, profile) : task.prompt
     transitionTask(taskId, event, {
       ...(response !== undefined ? { response } : {}),
       validationErrors: errors ?? null,
@@ -2739,20 +2740,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     // round alongside valid pending refs. Disclosure is read-only, so discard
     // only those invalid entries and continue with the valid batch; an all-
     // invalid batch still requires manual correction above.
-    const compactMaintenance = task.type === 'maintenance' && task.prompt.length > 100_000
     const requests = rawRequests
       .filter((_raw, index) => !unavailableIndexes.has(index))
-      .slice(0, compactMaintenance ? 4 : rawRequests.length)
+      .slice(0, MAX_DISCLOSURE_REQUESTS_PER_ROUND)
       .map((raw) => {
         const request = raw as { refID: string; depth: number }
-        const requestedDepth = Number.isInteger(request.depth) ? request.depth : 1
-        // Maintenance continuations are intentionally bounded to one level.
-        // Expanding a unit already includes its message evidence in the
+        const requestedDepth = Number.isInteger(request.depth) ? request.depth : MAX_DISCLOSURE_DEPTH
+        // Every continuation is intentionally bounded to one level.
+        // Expanding a unit already includes bounded evidence excerpts in the
         // expansion content, so deeper fan-out only inflates provider context.
         // Remaining refs stay pending and are scheduled in the next round.
-        const depth = compactMaintenance
-          ? Math.min(requestedDepth, request.refID.startsWith('unit_') ? 2 : 1)
-          : requestedDepth
+        const depth = Math.min(requestedDepth, MAX_DISCLOSURE_DEPTH)
         return { refID: request.refID, depth }
       })
     if (unavailableIndexes.size || requests.length !== rawRequests.length) data.disclosure_requests = requests
@@ -2765,7 +2763,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     // Expand the returned directory, rather than reconstructing edges from
     // only one parent. This preserves multi-parent Concepts and follows the
     // exact Concept -> Unit -> Message shape shown to the model.
-    for (const request of requests) {
+    const parentChildren = new Set<string>()
+    requests.forEach((request) => current.expansions?.find((expansion) => expansion.refID === request.refID)?.children?.forEach((child) => parentChildren.add(child.refID)))
+    const effectiveRequests = requests.filter((request) => !parentChildren.has(request.refID))
+    if (effectiveRequests.length !== requests.length) data.disclosure_requests = effectiveRequests
+    for (const request of effectiveRequests) {
       let frontier = [request.refID.trim()]
       const seenAtRequest = new Set<string>()
       for (let level = 0; level < request.depth && frontier.length; level += 1) {
@@ -4186,7 +4188,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const rootId = createId('nav')
       db.run('INSERT INTO nav_tree_nodes(id, session_id, parent_id, trigger_concept_id, label, depth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [rootId, targetSessionId, null, primaryTopicId ?? null, topic ? `围绕 ${topic}` : '新的知识对话', 0, now])
       const selectedTopicPath = topicIds.flatMap((topicId) => conceptExpansionPath(topicId, true))
-      const taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${targetSessionId}:1`, prompt: buildConversationPrompt({ question, topic, context, targetSessionId, targetMessageId: messageId, targetAssistantMessageId: assistantMessageId, navigationPath: `1. ${topic ? `围绕 ${topic}` : '新的知识对话'}`, conversationHistory: '', sessionTitle: topic ? `围绕 ${topic} 的新对话` : '新的知识对话', sessionSummary: '', availableUnits: [], conceptLimit: config.value.llm.conceptLimit, disclosure: promptDisclosureContext({ unitIds: sourceUnitIds, messageIds: sourceMessageIds, expandedRefIds: selectedTopicPath, includeFullContent: input.includeFullContent ?? false, includeConceptDetails: true }) }), status: 'pending', scopeLabel: `新对话 · ${topic || '知识探索'}` })
+      const taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${targetSessionId}:1`, prompt: buildConversationPrompt({ question, topic, context, targetSessionId, targetMessageId: messageId, targetAssistantMessageId: assistantMessageId, navigationPath: `1. ${topic ? `围绕 ${topic}` : '新的知识对话'}`, conversationHistory: '', sessionTitle: topic ? `围绕 ${topic} 的新对话` : '新的知识对话', sessionSummary: '', availableUnits: [], conceptLimit: config.value.llm.conceptLimit, disclosure: promptDisclosureContext({ unitIds: sourceUnitIds, messageIds: sourceMessageIds, expandedRefIds: selectedTopicPath, includeFullContent: input.includeFullContent ?? false, suppressContent: true, includeConceptDetails: true }) }), status: 'pending', scopeLabel: `新对话 · ${topic || '知识探索'}` })
       db.run('UPDATE messages SET metadata = ? WHERE id = ?', [JSON.stringify({ mode: 'new', topicId: primaryTopicId ?? null, topicIds, parentNodeId: rootId, taskId, answerMessageId: assistantMessageId, sourceSessionId: sourceSession ?? null }), messageId])
       writeSourceReferences(targetSessionId, sourceUnitIds, sourceMessageIds, input.includeFullContent ?? false)
     })
@@ -4266,7 +4268,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         db.run('INSERT OR IGNORE INTO message_concepts(message_id, concept_id, source, created_at) VALUES (?, ?, ?, ?)', [messageId, topicId, 'manual', now])
       })
       db.run('UPDATE sessions SET message_count = message_count + 1, updated_at = ? WHERE id = ?', [now, session.id])
-      taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${session.id}:${revision}`, prompt: buildConversationPrompt({ question, topic, context: contextWithTopics, navigationPath: buildNavigationPath(session.id, parentNode.id), conversationHistory: buildConversationHistory(session.id, 8, parentNode.id, messageId), sessionTitle: session.title, sessionSummary: session.summary ?? '', availableUnits: units.value.filter((unit) => unit.sessionId === session.id).map((unit) => ({ id: unit.id, title: unit.title ?? '', summary: unit.summary ?? '' })), conceptLimit: config.value.llm.conceptLimit, targetSessionId: session.id, targetMessageId: messageId, targetAssistantMessageId: assistantMessageId, disclosure: promptDisclosureContext({ unitIds: input.sourceUnitIds ?? [], messageIds: input.sourceMessageIds ?? [], includeFullContent: input.includeFullContent ?? false, includeConceptDetails: true, expandedRefIds: expandedSessionConceptPaths }) }), status: 'pending', scopeLabel: `${session.title} · 追问` })
+      taskId = createTask({ type: 'conversation', mode: config.value.llm.mode ?? 'prompt_paste', providerId: config.value.llm.defaultProvider, model: null, promptVersion: PROMPT_VERSION, inputRevision: `${session.id}:${revision}`, prompt: buildConversationPrompt({ question, topic, context: contextWithTopics, navigationPath: buildNavigationPath(session.id, parentNode.id), conversationHistory: buildConversationHistory(session.id, 8, parentNode.id, messageId), sessionTitle: session.title, sessionSummary: session.summary ?? '', availableUnits: units.value.filter((unit) => unit.sessionId === session.id).map((unit) => ({ id: unit.id, title: unit.title ?? '', summary: unit.summary ?? '' })), conceptLimit: config.value.llm.conceptLimit, targetSessionId: session.id, targetMessageId: messageId, targetAssistantMessageId: assistantMessageId, disclosure: promptDisclosureContext({ unitIds: input.sourceUnitIds ?? [], messageIds: input.sourceMessageIds ?? [], includeFullContent: input.includeFullContent ?? false, suppressContent: true, includeConceptDetails: true, expandedRefIds: expandedSessionConceptPaths }) }), status: 'pending', scopeLabel: `${session.title} · 追问` })
       db.run('UPDATE messages SET metadata = ? WHERE id = ?', [JSON.stringify({ mode: 'follow_up', topicId: primaryTopicId ?? null, topicIds, parentNodeId: parentNode.id, taskId, answerMessageId: assistantMessageId }), messageId])
       writeSourceReferences(session.id, input.sourceUnitIds ?? [], input.sourceMessageIds ?? [], input.includeFullContent ?? false)
     })

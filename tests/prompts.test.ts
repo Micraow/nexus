@@ -9,6 +9,8 @@ import {
   buildSegmentationPrompt,
   buildSessionTriagePrompt,
   buildTitleSummaryPrompt,
+  CONTEXT_RUNTIME_PROTOCOL,
+  MAX_EXPANSION_CONTENT_CHARS,
   formatDisclosureContext,
   formatMaintenanceActionApi,
   maintenanceActionDefinition,
@@ -16,7 +18,6 @@ import {
   maintenanceToolCallSuggestion,
   listMaintenanceMcpTools,
   NEXUS_HARNESS_PROMPT,
-  CONTEXT_RUNTIME_PROTOCOL,
   MAINTENANCE_ACTION_API,
   parseDisclosureContext,
   PROGRESSIVE_DISCLOSURE_PROTOCOL,
@@ -43,6 +44,13 @@ describe('conversation prompt', () => {
     expect(prompt).toContain(CONTEXT_RUNTIME_PROTOCOL)
     expect(prompt).toContain('nexus_search_evidence')
     expect(prompt).toContain('paste_mode')
+  })
+
+  it('uses a minimal harness for metadata prompts and the runtime profile for conversation prompts', () => {
+    const minimal = buildTitleSummaryPrompt(session, unit, [{ id: 'm', sessionId: 's', role: 'user' as const, content: '短内容', orderInSession: 0 }], [])
+    const conversation = buildConversationPrompt({ question: '继续', context: '' })
+    expect(minimal).not.toContain('DISCLOSURE_INDEX（首层目录与已展开记录）:')
+    expect(conversation).toContain(CONTEXT_RUNTIME_PROTOCOL)
   })
 
   it('requests Session metadata and carries the current exploration path', () => {
@@ -301,6 +309,15 @@ describe('prompt harness and progressive disclosure', () => {
     const pendingBlock = rendered.match(/"pending_ref_ids": \[([\s\S]*?)\]/u)?.[1] ?? ''
     expect((pendingBlock.match(/"(?:root|concept_\d+)"/gu) ?? []).length).toBe(64)
     expect(parsed?.roots[0]?.refID).toBe('root')
+  })
+
+  it('bounds expansion content and marks truncated evidence', () => {
+    const rendered = formatDisclosureContext({
+      roots: [{ refID: 'root', title: '根', summary: '摘要' }],
+      expansions: [{ refID: 'root', content: JSON.stringify({ message: { id: 'm1', content: 'x'.repeat(MAX_EXPANSION_CONTENT_CHARS * 3) } }) }],
+    })
+    expect(rendered.length).toBeLessThan(MAX_EXPANSION_CONTENT_CHARS * 2)
+    expect(rendered).toContain('content_truncated')
   })
 
   it('preserves compact maintenance root pages and their opaque IDs across parsing', () => {

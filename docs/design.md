@@ -462,6 +462,8 @@ API 服务支持结构化输出时，同时使用接口级 JSON Schema；Prompt 
 
 每个任务 Prompt 都先拼接版本化的固定前缀 `NEXUS_HARNESS_PROMPT`、`PROGRESSIVE_DISCLOSURE_PROTOCOL` 和 `CONTEXT_RUNTIME_PROTOCOL`，再附加该任务的规格和数据。固定前缀按字节保持稳定（当前 `PROMPT_VERSION=2026-09-v10-context-runtime`），任务重试或披露续跑只能替换动态数据段，不能删改行为契约。
 
+任务按 profile 选择最小契约：`minimal` 仅携带基础 JSON/不可信输入规则，`concept` 增加 Concept 与披露规则，`conversation` 增加上下文运行时，`maintenance` 增加维护披露和动作规则。这样 triage、segmentation、title、summary 不会为无关协议付出固定 token 成本。
+
 当任务需要参考较大的知识树时，Prompt 在 `DISCLOSURE_INDEX` 中提供首层目录和已经展开的记录。目录项至少包含不透明的 `refID`、`title` 和 `summary`；摘要是导航线索，不得冒充消息原文。展开记录可提供 `children`（下一层同样只含 `refID`/标题/摘要）和明确披露的结构化 `content`。Concept、Session、KnowledgeUnit、Message 的 content 都带 `entity_type`、原始 `id`、归属及该实体允许披露的正文，动作 ID 只能从这些结构化证据逐字复制。没有实际目录时会明确要求 `disclosure_requests: []`；`DISCLOSURE_INDEX` 文字标签本身永远不是可请求的 refID。当前 `PROMPT_VERSION` 为 `2026-09-v10-context-runtime`。
 
 #### 6.0.1 证据切块与上下文预算（Phase 2）
