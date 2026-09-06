@@ -931,11 +931,18 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.tasks.find((task) => task.id === taskId)?.prompt).toContain(childId)
 
     const second = store.applyTaskResult(taskId, JSON.stringify({
+      reason: '根主题已检查，继续读取子主题详情。',
+      suggestions: [],
+      disclosure_requests: [{ refID: childId, depth: 1 }],
+    }))
+    expect(second.continued, second.errors.join('; ')).toBe(true)
+
+    const third = store.applyTaskResult(taskId, JSON.stringify({
       reason: '已检查根主题及其子主题，未发现需要修改的地方。',
       suggestions: [],
       disclosure_requests: [],
     }))
-    expect(second.ok, second.errors.join('; ')).toBe(true)
+    expect(third.ok, third.errors.join('; ')).toBe(true)
     expect(store.tasks.find((task) => task.id === taskId)?.status).toBe('success')
     expect(store.tasks.find((task) => task.id === taskId)?.parsedResult).toContain('未发现需要修改')
   })
@@ -1458,7 +1465,7 @@ describe('direct concept extraction import pipeline', () => {
       const body = JSON.parse(String(init?.body)) as { messages?: Array<{ content?: string }> }
       prompts.push(body.messages?.[0]?.content ?? '')
       requestIndex += 1
-      const content = requestIndex < 3
+      const content = requestIndex < 9
         ? JSON.stringify({ reason: `继续检查第 ${requestIndex} 批引用。`, suggestions: [], disclosure_requests: [] })
         : JSON.stringify({ reason: '已完成全部根主题审计，未发现需要修改的地方。', suggestions: [], disclosure_requests: [] })
       return { ok: true, json: async () => ({ choices: [{ message: { content } }] }) } as Response
@@ -1473,10 +1480,10 @@ describe('direct concept extraction import pipeline', () => {
     })
     const taskId = store.createMaintenanceTask()
     await expect(store.executeTask(taskId)).resolves.toEqual({ ok: true })
-    expect(requestIndex).toBe(3)
+    expect(requestIndex).toBe(9)
     const secondDisclosure = parseDisclosureContext(prompts[1])!
     const expandedRoots = secondDisclosure.expansions?.filter((expansion) => expansion.content != null) ?? []
-    expect(expandedRoots.length).toBeLessThanOrEqual(24)
+    expect(expandedRoots.length).toBeLessThanOrEqual(4)
     expect(secondDisclosure.round).toBe(1)
   })
 
@@ -1486,6 +1493,7 @@ describe('direct concept extraction import pipeline', () => {
     store.createRelation(rootId, childId, 'hierarchy')
     const responses = [
       JSON.stringify({ reason: '首轮需要展开根分支。', suggestions: [], disclosure_requests: [{ refID: rootId, depth: 64 }] }),
+      JSON.stringify({ reason: '根主题已检查，继续请求子主题详情。', suggestions: [], disclosure_requests: [{ refID: childId, depth: 1 }] }),
       JSON.stringify({ reason: '已完成根分支审计，未发现需要修改的地方。', suggestions: [], disclosure_requests: [] }),
     ]
     let requestIndex = 0
@@ -1513,7 +1521,7 @@ describe('direct concept extraction import pipeline', () => {
     expect(store.tasks.find((item) => item.id === taskId)?.status).toBe('running')
 
     await expect(execution).resolves.toEqual({ ok: true })
-    expect(requestIndex).toBe(2)
+    expect(requestIndex).toBe(3)
     expect(store.tasks.find((item) => item.id === taskId)).toEqual(expect.objectContaining({ status: 'success' }))
   })
 

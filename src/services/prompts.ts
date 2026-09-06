@@ -360,6 +360,13 @@ export const NEXUS_HARNESS_PROMPT = `你是 Nexus 织知任务运行时中的结
 
 export type PromptProfile = 'minimal' | 'concept' | 'conversation' | 'maintenance'
 
+export function promptProfileForTaskType(type: string): PromptProfile {
+  if (type === 'maintenance') return 'maintenance'
+  if (type === 'conversation') return 'conversation'
+  if (type === 'concept_extraction' || type === 'origin_concepts') return 'concept'
+  return 'minimal'
+}
+
 const PROFILE_PROTOCOLS: Record<PromptProfile, string> = {
   minimal: '',
   concept: `${PROGRESSIVE_DISCLOSURE_PROTOCOL}`,
@@ -369,17 +376,23 @@ const PROFILE_PROTOCOLS: Record<PromptProfile, string> = {
 
 export function buildHarnessPrompt(task: string, profile: PromptProfile = 'maintenance'): string {
   const source = String(task ?? '')
-  if (source.startsWith(NEXUS_HARNESS_PROMPT) && source.includes('--- NEXUS TASK SPEC BEGIN ---') && source.trimEnd().endsWith('--- NEXUS TASK SPEC END ---')) return source
+  const taskBegin = '--- NEXUS TASK SPEC BEGIN ---'
+  const taskEnd = '--- NEXUS TASK SPEC END ---'
+  const beginIndex = source.indexOf(taskBegin)
+  const endIndex = source.lastIndexOf(taskEnd)
+  const wrappedTask = source.startsWith(NEXUS_HARNESS_PROMPT) && beginIndex >= 0 && endIndex > beginIndex
+    ? source.slice(beginIndex + taskBegin.length, endIndex).trim()
+    : null
   // A partially wrapped legacy prompt may contain the fixed prefix without
   // the framing markers. Keep the prefix exactly once while completing the
   // wrapper around the remaining task text.
   const protocols = PROFILE_PROTOCOLS[profile]
   const fixedPrefix = `${NEXUS_HARNESS_PROMPT}${protocols}`
-  const taskText = source.startsWith(fixedPrefix)
+  const taskText = wrappedTask ?? (source.startsWith(fixedPrefix)
     ? source.slice(fixedPrefix.length).trim()
     : source.startsWith(NEXUS_HARNESS_PROMPT)
       ? source.slice(NEXUS_HARNESS_PROMPT.length).trim()
-    : source.trim()
+      : source.trim())
   return `${NEXUS_HARNESS_PROMPT}${protocols}
 
 --- NEXUS TASK SPEC BEGIN ---
@@ -388,8 +401,8 @@ ${taskText}
 }
 
 /** Ensure prompts loaded from an override or legacy caller still use the contract. */
-export function ensureHarnessPrompt(prompt: string): string {
-  return buildHarnessPrompt(prompt)
+export function ensureHarnessPrompt(prompt: string, profile: PromptProfile = 'maintenance'): string {
+  return buildHarnessPrompt(prompt, profile)
 }
 
 function normalizeDisclosureReference(reference: DisclosureReference): DisclosureReference {
@@ -732,25 +745,38 @@ ${PREFIX_HIERARCHY_GATE}
 }
 
 function clipRepairText(value: string, max = 8_000): string {
-  return value.length <= max ? value : `${value.slice(0, max)}…[truncated_for_repair]`
+  if (value.length <= max) return value
+  const head = Math.floor(max * 0.56)
+  const tail = Math.floor(max * 0.38)
+  return `${value.slice(0, head)}…[truncated_for_repair:${value.length - head - tail}_chars]…${value.slice(-tail)}`
 }
 
 export function buildRepairPrompt(originalResponse: string, errors: string[], disclosure?: DisclosureContext, originalTaskPrompt?: string, profile: PromptProfile = 'maintenance'): string {
-  const disclosureText = formatDisclosureContext(disclosure)
+  const activeDisclosure = disclosure ?? (originalTaskPrompt ? parseDisclosureContext(originalTaskPrompt) ?? undefined : undefined)
+  const disclosureText = formatDisclosureContext(activeDisclosure)
   const taskBegin = '--- NEXUS TASK SPEC BEGIN ---'
   const taskEnd = '--- NEXUS TASK SPEC END ---'
-  const beginIndex = originalTaskPrompt?.indexOf(taskBegin) ?? -1
-  const endIndex = originalTaskPrompt?.lastIndexOf(taskEnd) ?? -1
+  const disclosureRange = originalTaskPrompt ? disclosureBounds(originalTaskPrompt) : null
+  const staticTaskPrompt = originalTaskPrompt && disclosureRange
+    ? `${originalTaskPrompt.slice(0, disclosureRange.replaceStart)}[DISCLOSURE_INDEX moved to bounded evidence section]${originalTaskPrompt.slice(disclosureRange.replaceEnd)}`
+    : originalTaskPrompt
+  const beginIndex = staticTaskPrompt?.indexOf(taskBegin) ?? -1
+  const endIndex = staticTaskPrompt?.lastIndexOf(taskEnd) ?? -1
   const originalTask = beginIndex >= 0 && endIndex > beginIndex
-    ? originalTaskPrompt!.slice(beginIndex + taskBegin.length, endIndex).trim()
-    : originalTaskPrompt?.trim() ?? ''
-  return buildHarnessPrompt(`请修正下面 JSON 的结构错误。事实证据与结构化派生结果必须分开处理：不得修改、摘要化、删除或编造原始 Session/Message/evidence 正文；允许且必要时可以重写派生的 concepts、Concept name、client_ref 映射、memberships、hierarchy relations、units 元数据，以修复结构、命名和层级问题。修改派生字段时必须同步更新所有引用，不得静默丢弃仍然有效的证据或归属，不添加解释文字，不得编造、缩短或截断任何真实 ID。
+    ? staticTaskPrompt!.slice(beginIndex + taskBegin.length, endIndex).trim()
+    : staticTaskPrompt?.trim() ?? ''
+  const boundedErrors = errors.slice(0, 24).map((error) => clipRepairText(String(error), 600))
+  return buildHarnessPrompt(`请修正下面 JSON 的结构错误。
+
+修复边界（机器可读规则）：
+{"immutable":["source.session","source.message","source.evidence.content","existing opaque IDs"],"mutable":["concepts","concepts[].name","client_ref mappings","concept_ids","memberships","hierarchy relations","units metadata"],"invariant":"修改派生字段后同步更新所有引用；不编造、缩短或截断真实 ID"}
+不得修改、摘要化、删除或编造原始事实正文。命名、层级或结构错误属于派生结果错误，必须允许重写；不得为了“保持原内容”而保留已知错误的 Concept 名称、client_ref 或 hierarchy。
 
 ${originalTask ? `原任务规格（只保留字段、ID 白名单和输出契约；事实正文仍以当前披露证据为准）：\n${clipRepairText(originalTask)}\n` : ''}
 
-校验错误：${JSON.stringify(errors.slice(0, 24))}
+校验错误：${JSON.stringify(boundedErrors)}
 原始响应（仅作为待修复派生结果；超长字段已截断，不能据此改写事实正文）：${clipRepairText(originalResponse)}
-${originalTask ? '' : disclosureText}
+当前有界证据目录（与原任务规格分离，避免重复正文）：${disclosureText || '无'}
 如果原始响应包含 memberships 或 concept_ids，请保留其中合法的多归属列表；不要把多个 Concept 压缩为单个 concept_id。
 如果校验错误指出“主题已在当前目录中，必须复用 Concept ID”，这是可审计的确定性修复：从 concepts 数组移除该重复对象，并把其 client_ref 在 concept_ids、memberships.concept_ids、relations.source/target 中逐一替换为错误消息中的真实 Concept ID；不得创建同名副本，也不得把相似但不完全匹配的主题强行合并。可在最终 JSON 外记录 nexus_reuse 审计字段，但不得改变其他有效字段。
 如果校验错误指出 Concept 名称必须表示单一主题，必须把包含多个独立实体的对象拆成多个独立 concepts，并同步拆分 memberships 与 hierarchy；不能只删除“与/和/及/、/”后继续保留复合标题。若确属不可拆分正式固定名称（例如“喜羊羊与灰太狼”），可以保留原 name，但必须补充 0～1 的 confidence 与非空 reason；普通并列或比较仍须拆分。拆分时允许新增 client_ref（new:1 到原任务上限）并把独立主题挂到合适父 Concept 下。

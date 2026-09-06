@@ -271,6 +271,28 @@ describe('prompt harness and progressive disclosure', () => {
     expect(repair).toContain('喜羊羊与灰太狼')
   })
 
+  it('rebuilds an already wrapped prompt with the requested task profile', () => {
+    const minimal = buildHarnessPrompt('只返回 JSON：{"ok":true}', 'minimal')
+    expect(minimal).not.toContain(PROGRESSIVE_DISCLOSURE_PROTOCOL)
+    const concept = buildHarnessPrompt(minimal, 'concept')
+    expect(concept).toContain(PROGRESSIVE_DISCLOSURE_PROTOCOL)
+    expect(concept).not.toContain(CONTEXT_RUNTIME_PROTOCOL)
+    expect(buildHarnessPrompt(concept, 'minimal')).toBe(minimal)
+  })
+
+  it('keeps the repair output contract tail and separates dynamic disclosure evidence', () => {
+    const disclosure = formatDisclosureContext({
+      roots: [{ refID: 'concept_1', title: '主题', summary: '摘要' }],
+      expansions: [{ refID: 'concept_1', content: JSON.stringify({ concept: { id: 'concept_1', name: '主题' } }) }],
+    })
+    const task = buildHarnessPrompt(`任务开头\n${'x'.repeat(12_000)}\n只返回 JSON：{"important_tail":true}${disclosure}`, 'concept')
+    const repair = buildRepairPrompt('{"bad":true}', ['层级错误'], undefined, task, 'concept')
+    expect(repair).toContain('只返回 JSON：{"important_tail":true}')
+    expect(repair).toContain('"immutable"')
+    expect(repair).toContain('concept_1')
+    expect((repair.match(/DISCLOSURE_INDEX（首层目录与已展开记录）:/gu) ?? []).length).toBe(1)
+  })
+
   it('renders and parses recursive references without exposing content in child refs', () => {
     const context = {
       roots: [{ refID: 'concept_root', title: '网络', summary: '网络基础' }],

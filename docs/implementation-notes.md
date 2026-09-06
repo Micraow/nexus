@@ -175,3 +175,12 @@ parent expansion's `children` are navigation references only and never count
 as disclosure of each child's `content`. If a parent and one of its already
 listed children are requested in the same batch, both requests are processed;
 the child request must not be removed as redundant.
+### Prompt profile normalization
+
+Persisted and imported tasks are normalized with the profile implied by their
+task type. Rewrapping extracts the task specification and rebuilds the fixed
+prefix, so a legacy or incorrectly wrapped triage/title prompt cannot inherit
+the maintenance and context-runtime protocols. Repair prompts remove the
+dynamic disclosure block from the copied task specification, preserve both
+the beginning and the output-contract tail, and append one bounded current
+disclosure section.

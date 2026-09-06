@@ -5,7 +5,7 @@ import { httpRequest } from '@/services/http'
 import { DEFAULT_API_CONCURRENCY, DEFAULT_API_RETRIES, DEFAULT_CONCEPT_LIMIT, DEFAULT_TOKEN_BUDGET, normalizeApiConcurrency, normalizeApiRetries, normalizeConceptLimit, normalizeTokenBudget, parseConfigText, readConfigText, writeConfig } from '@/services/config'
 import { buildGraph, graphSnapshotIsProgressiveCompatible, graphStats, graphViewFallbackIsCompatible, resolveVisibleConceptIds, toggleExpandedConceptIds } from '@/services/graph'
 import { buildSearchDocuments, searchKnowledge } from '@/services/search'
-import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildOriginConceptPrompt, buildRepairPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, ensureHarnessPrompt, formatMaintenanceActionApi, listMaintenanceMcpTools, listedDisclosureRefIds, MAINTENANCE_ACTION_API, MAX_DISCLOSURE_DEPTH, MAX_DISCLOSURE_REQUESTS_PER_ROUND, maintenanceToolCallSuggestion, parseDisclosureContext, PROMPT_VERSION, renderQuickPhrase, replaceDisclosureContext } from '@/services/prompts'
+import { buildConceptPrompt, buildConversationPrompt, buildMaintenancePrompt, buildOriginConceptPrompt, buildRepairPrompt, buildSessionTriagePrompt, buildTitleSummaryPrompt, ensureHarnessPrompt, formatMaintenanceActionApi, listMaintenanceMcpTools, listedDisclosureRefIds, MAINTENANCE_ACTION_API, MAX_DISCLOSURE_DEPTH, MAX_DISCLOSURE_REQUESTS_PER_ROUND, maintenanceToolCallSuggestion, parseDisclosureContext, promptProfileForTaskType, PROMPT_VERSION, renderQuickPhrase, replaceDisclosureContext } from '@/services/prompts'
 import { conversationMessageBranchNodeId } from '@/services/conversation'
 import { hasCompoundConceptConnector, importPayloadSchema, normalizeOriginConceptResultForReuse, parseImportPayload, validateConceptIdList, validateConceptMemberships, validateConceptName, validateDisclosureRequests, validateOriginConceptResult, validateSegmentationResult, validateUnitText } from '@/services/validation'
 import type { DisclosureContext, PromptProfile } from '@/services/prompts'
@@ -169,7 +169,7 @@ function taskFromRow(row: Row): LLMTask {
     model: row.model == null ? null : text(row.model),
     promptVersion: text(row.prompt_version),
     inputRevision: text(row.input_revision),
-    prompt: ensureHarnessPrompt(text(row.prompt)),
+    prompt: ensureHarnessPrompt(text(row.prompt), promptProfileForTaskType(text(row.type))),
     response,
     parsedResult,
     validationErrors: row.validation_errors == null ? null : text(row.validation_errors),
@@ -1051,7 +1051,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     db.run(
       `INSERT INTO llm_tasks(id, type, mode, provider_id, model, prompt_version, input_revision, prompt, response, parsed_result, validation_errors, status, phase, retry_count, error_message, created_at, updated_at, scope_label)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
-      [id, task.type, task.mode, task.providerId ?? null, task.model ?? null, task.promptVersion, task.inputRevision, ensureHarnessPrompt(task.prompt), task.response ?? null, task.parsedResult ?? null, task.validationErrors ?? null, status, phase, errorMessage, now, now, task.scopeLabel ?? null],
+      [id, task.type, task.mode, task.providerId ?? null, task.model ?? null, task.promptVersion, task.inputRevision, ensureHarnessPrompt(task.prompt, promptProfileForTaskType(task.type)), task.response ?? null, task.parsedResult ?? null, task.validationErrors ?? null, status, phase, errorMessage, now, now, task.scopeLabel ?? null],
     )
     return id
   }
@@ -1152,7 +1152,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       records.tasks.forEach((item: LLMTask) => {
         const status = normalizeTaskStatus(item.type, item.status)
         const errorMessage = status !== item.status ? LEGACY_SEGMENTATION_RETIRED_REASON : item.errorMessage ?? null
-        db.run('INSERT INTO llm_tasks(id, type, mode, provider_id, model, prompt_version, input_revision, prompt, response, parsed_result, validation_errors, status, phase, retry_count, error_message, created_at, updated_at, scope_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.type, item.mode, item.providerId ?? null, item.model ?? null, item.promptVersion, item.inputRevision, ensureHarnessPrompt(item.prompt), item.response ?? null, item.parsedResult ?? null, item.validationErrors ?? null, status, item.phase ?? taskPhaseForStatus(status), item.retryCount, errorMessage, item.createdAt, item.updatedAt, item.scopeLabel ?? null])
+        db.run('INSERT INTO llm_tasks(id, type, mode, provider_id, model, prompt_version, input_revision, prompt, response, parsed_result, validation_errors, status, phase, retry_count, error_message, created_at, updated_at, scope_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [item.id, item.type, item.mode, item.providerId ?? null, item.model ?? null, item.promptVersion, item.inputRevision, ensureHarnessPrompt(item.prompt, promptProfileForTaskType(item.type)), item.response ?? null, item.parsedResult ?? null, item.validationErrors ?? null, status, item.phase ?? taskPhaseForStatus(status), item.retryCount, errorMessage, item.createdAt, item.updatedAt, item.scopeLabel ?? null])
       })
       records.manual_edges.forEach((item: ManualGraphEdge) => db.run('INSERT INTO manual_graph_edges(id, source_type, source_ref_id, target_type, target_ref_id, label, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [item.id, item.sourceType, item.sourceRefId, item.targetType, item.targetRefId, item.label ?? null, item.createdAt]))
       if (Array.isArray(records.graph_layout)) records.graph_layout.forEach((item: GraphLayoutEntry) => db.run('INSERT INTO graph_layout(node_type, ref_id, x, y, fixed, layout_version) VALUES (?, ?, ?, ?, ?, ?)', [item.nodeType, item.refId, item.x, item.y, item.fixed ? 1 : 0, item.layoutVersion ?? 1]))
@@ -1695,7 +1695,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     // Keep the current disclosure catalog in a repair prompt so a user can
     // correct an invalid response without losing the IDs they were shown.
     const disclosure = status === 'needs_review' && response ? parseDisclosureContext(task.prompt) : null
-    const profile: PromptProfile = task.type === 'maintenance' ? 'maintenance' : task.type === 'conversation' ? 'conversation' : task.type === 'concept_extraction' || task.type === 'origin_concepts' ? 'concept' : 'minimal'
+    const profile: PromptProfile = promptProfileForTaskType(task.type)
     const nextPrompt = status === 'needs_review' && response ? buildRepairPrompt(response, errors ?? [], disclosure ?? undefined, task.prompt, profile) : task.prompt
     transitionTask(taskId, event, {
       ...(response !== undefined ? { response } : {}),
