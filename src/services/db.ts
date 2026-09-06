@@ -15,7 +15,7 @@ const STORAGE_KEY = 'nexus:sqlite:v1'
 const BROWSER_STORAGE_DB = 'nexus:storage'
 const BROWSER_STORAGE_STORE = 'kv'
 const BACKUP_STORAGE_PREFIX = 'nexus:sqlite:backup:'
-const CURRENT_SCHEMA_VERSION = 9
+const CURRENT_SCHEMA_VERSION = 10
 
 export interface DatabaseIntegrityReport {
   ok: boolean
@@ -97,6 +97,14 @@ CREATE TABLE IF NOT EXISTS evidence_chunks (
 );
 CREATE INDEX IF NOT EXISTS idx_evidence_chunks_session ON evidence_chunks(session_id, message_id, chunk_index);
 CREATE INDEX IF NOT EXISTS idx_evidence_chunks_hash ON evidence_chunks(content_hash);
+CREATE TABLE IF NOT EXISTS session_working_memory (
+  session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+  summary TEXT NOT NULL DEFAULT '',
+  decisions_json TEXT NOT NULL DEFAULT '[]',
+  unresolved_json TEXT NOT NULL DEFAULT '[]',
+  revision INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS knowledge_units (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -373,6 +381,21 @@ const migrations: Array<{ version: number; apply: (database: Database) => void }
       `)
     },
   },
+  {
+    version: 10,
+    apply(database) {
+      database.run(`
+        CREATE TABLE IF NOT EXISTS session_working_memory (
+          session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+          summary TEXT NOT NULL DEFAULT '',
+          decisions_json TEXT NOT NULL DEFAULT '[]',
+          unresolved_json TEXT NOT NULL DEFAULT '[]',
+          revision INTEGER NOT NULL DEFAULT 1,
+          updated_at TEXT NOT NULL
+        );
+      `)
+    },
+  },
 ]
 
 export class SqliteStore {
@@ -577,6 +600,14 @@ export class SqliteStore {
       );
       CREATE INDEX IF NOT EXISTS idx_evidence_chunks_session ON evidence_chunks(session_id, message_id, chunk_index);
       CREATE INDEX IF NOT EXISTS idx_evidence_chunks_hash ON evidence_chunks(content_hash);
+      CREATE TABLE IF NOT EXISTS session_working_memory (
+        session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+        summary TEXT NOT NULL DEFAULT '',
+        decisions_json TEXT NOT NULL DEFAULT '[]',
+        unresolved_json TEXT NOT NULL DEFAULT '[]',
+        revision INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL
+      );
     `)
     this.requireDb().run(
       "UPDATE llm_tasks SET status = 'cancelled', error_message = COALESCE(NULLIF(error_message, ''), ?) WHERE type = 'segmentation' AND status IN ('pending', 'running', 'needs_review')",

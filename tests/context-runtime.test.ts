@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Message } from '@/types/domain'
-import { buildWorkingMemory, formatEvidenceCards, indexEvidence, searchEvidence } from '@/services/context-runtime'
+import { buildWorkingMemory, contextToolCall, formatEvidenceCards, indexEvidence, searchEvidence } from '@/services/context-runtime'
 
 const message = (id: string, content: string): Message => ({ id, sessionId: 's1', unitId: null, role: 'user', content, orderInSession: 0, timestamp: null, metadata: null })
 
@@ -26,5 +26,11 @@ describe('context runtime', () => {
     expect(memory.summary).toBe('已有摘要')
     expect(memory.sessionId).toBe('s1')
     expect(memory.revision).toBe(1)
+  })
+
+  it('supports tool-compatible evidence reads and disclosure requests', () => {
+    const chunks = indexEvidence([message('m1', '拥塞控制证据')])
+    expect(contextToolCall('nexus_search_evidence', JSON.stringify({ query: '拥塞' }), chunks)).toMatchObject({ kind: 'evidence' })
+    expect(contextToolCall('nexus_expand_ref', { refID: 'unit_1' }, chunks)).toEqual({ kind: 'disclosure', refID: 'unit_1' })
   })
 })

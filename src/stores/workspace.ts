@@ -263,6 +263,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       })
       evidenceChunks.value = expected
     } else evidenceChunks.value = indexed
+    const loadedMemories: Record<string, SessionWorkingMemory> = {}
+    db.query<Row>('SELECT * FROM session_working_memory').forEach((row) => {
+      const parseList = (value: unknown): string[] => { try { const parsed = JSON.parse(text(value)); return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [] } catch { return [] } }
+      loadedMemories[text(row.session_id)] = { sessionId: text(row.session_id), summary: text(row.summary), decisions: parseList(row.decisions_json), unresolvedQuestions: parseList(row.unresolved_json), revision: number(row.revision, 1), updatedAt: text(row.updated_at) }
+    })
+    workingMemories.value = loadedMemories
     units.value = db.query<Row>('SELECT * FROM knowledge_units ORDER BY created_at DESC').map(unitFromRow)
     concepts.value = db.query<Row>('SELECT * FROM concepts ORDER BY name COLLATE NOCASE').map(conceptFromRow)
     aliases.value = db.query<Row>('SELECT * FROM concept_aliases ORDER BY alias COLLATE NOCASE').map((row) => ({
@@ -373,6 +379,16 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   function refreshTasksOnly(): void {
     tasks.value = db.query<Row>('SELECT * FROM llm_tasks ORDER BY created_at DESC').map(taskFromRow)
+  }
+
+  function persistWorkingMemory(sessionId: string, summaryOverride?: string): void {
+    const session = sessions.value.find((item) => item.id === sessionId)
+    if (!session) return
+    const history = db.query<Row>('SELECT * FROM messages WHERE session_id = ? ORDER BY order_in_session', [sessionId]).map(messageFromRow)
+    const previous = workingMemories.value[sessionId] ?? null
+    const memory = buildWorkingMemory({ sessionId, summary: summaryOverride ?? session.summary ?? '', messages: history, previous, maxRecent: 8 })
+    workingMemories.value = { ...workingMemories.value, [sessionId]: memory }
+    db.run('INSERT INTO session_working_memory(session_id, summary, decisions_json, unresolved_json, revision, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET summary=excluded.summary, decisions_json=excluded.decisions_json, unresolved_json=excluded.unresolved_json, revision=excluded.revision, updated_at=excluded.updated_at', [sessionId, memory.summary, JSON.stringify(memory.decisions), JSON.stringify(memory.unresolvedQuestions), memory.revision, memory.updatedAt])
   }
 
   function setStreamingTaskText(taskId: string, value: string): void {
@@ -3424,6 +3440,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         // Session state correct for both new conversations and follow-ups,
         // including answers that contain no KnowledgeUnit.
         db.run('UPDATE sessions SET title = ?, summary = ?, message_count = (SELECT COUNT(*) FROM messages WHERE session_id = ?), unit_count = (SELECT COUNT(*) FROM knowledge_units WHERE session_id = ?), revision = revision + 1, updated_at = ? WHERE id = ?', [nextTitle, nextSummary, targetId, targetId, now, targetId])
+        persistWorkingMemory(targetId, nextSummary)
         if (nextTitle !== currentTitle) db.run('UPDATE nav_tree_nodes SET label = ? WHERE session_id = ? AND parent_id IS NULL', [nextTitle, targetId])
         transitionTaskInTransaction(taskId, 'accept_validated_result', {
           response: responseText,
@@ -4287,6 +4304,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       db.run('DELETE FROM knowledge_units')
       db.run('DELETE FROM messages')
       db.run('DELETE FROM evidence_chunks')
+      db.run('DELETE FROM session_working_memory')
       db.run('DELETE FROM sessions')
       db.run('DELETE FROM concepts')
       db.run('DELETE FROM llm_tasks')

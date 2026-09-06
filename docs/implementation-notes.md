@@ -30,7 +30,7 @@
 
 上下文运行时（Phase 2）补充：原始 Message 始终完整保存在 `messages`，但模型上下文不再等同于原文全文。数据库 v9 新增 `evidence_chunks` 派生索引，按 Message 保存稳定的 `chunk_id`、字符区间、token 估算、内容 hash 和来源 Session。索引可由本地事实重建，删除知识库时一并清理；它不是新的知识边界，也不会替代原始消息。`services/context-runtime.ts` 提供按关键词、Session/Message 范围和 token 预算召回 EvidenceCard 的纯函数，Prompt 粘贴和 API 任务可共享同一证据格式。
 
-对话上下文（Phase 4）默认只保留最近 8 条分支消息，并在其前附加有界的 Session 工作记忆摘要；被省略的原文仍可通过本地证据索引按需读取。`includeFullContent` 仍兼容旧 UI，但内部转换为有预算的证据卡片，不再无条件拼接整个 KnowledgeUnit 的所有原文。
+对话上下文（Phase 4）默认只保留最近 8 条分支消息，并在其前附加有界的 Session 工作记忆摘要；被省略的原文仍可通过本地证据索引按需读取。数据库 v10 新增 `session_working_memory` 派生表，保存摘要、决策和未解决问题列表及 revision；原始消息不被覆盖。`includeFullContent` 仍兼容旧 UI，但内部转换为有预算的证据卡片，不再无条件拼接整个 KnowledgeUnit 的所有原文。
 
 证据工具协议（Phase 3）：`services/context-runtime.ts` 暴露 `nexus_search_evidence`、`nexus_read_evidence` 和 `nexus_expand_ref` 三个工具定义。API 模式将它们与维护 MCP 工具一并发送；工具结果只追加有预算的 EvidenceCard，最多连续 8 个工具轮次。`nexus_expand_ref` 仍映射到兼容的 `disclosure_requests`，因此 Prompt 粘贴模式继续使用原有单文本续轮协议；两种模式共享同一 ID 白名单和本地证据索引。
 - 维护响应在 `suggestions=[]`、未提供 `disclosure_requests` 但目录仍有 pending refs 时，会由应用按最多 96 个引用一批自动生成下一轮请求；Concept/Session 使用有限深度展开，避免把上千个引用一次性塞给模型。维护任务最多 16 轮，仍未完成才进入人工检查。
