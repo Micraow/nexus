@@ -23,6 +23,25 @@ export interface EvidenceSearchOptions {
   maxTokens?: number
 }
 
+export const CONTEXT_RUNTIME_TOOLS = [
+  { name: 'nexus_search_evidence', description: '按问题检索相关本地证据片段；只返回摘要和有限 excerpt。', parameters: { type: 'object', additionalProperties: false, properties: { query: { type: 'string' }, max_tokens: { type: 'integer', minimum: 200, maximum: 3000 } }, required: ['query'] } },
+  { name: 'nexus_read_evidence', description: '读取指定证据片段或消息的有限正文；不会默认展开整个文件或 KnowledgeUnit。', parameters: { type: 'object', additionalProperties: false, properties: { refID: { type: 'string' }, max_tokens: { type: 'integer', minimum: 200, maximum: 3000 } }, required: ['refID'] } },
+  { name: 'nexus_expand_ref', description: '请求一个已列出的披露引用进入下一轮上下文。', parameters: { type: 'object', additionalProperties: false, properties: { refID: { type: 'string' } }, required: ['refID'] } },
+] as const
+
+export function contextToolCall(name: string, rawArguments: unknown, chunks: EvidenceChunk[]): { kind: 'evidence'; cards: EvidenceCard[] } | { kind: 'disclosure'; refID: string } | null {
+  let args: Record<string, unknown> = {}
+  try { args = typeof rawArguments === 'string' ? JSON.parse(rawArguments) : (rawArguments && typeof rawArguments === 'object' ? rawArguments as Record<string, unknown> : {}) } catch { return null }
+  const refID = typeof args.refID === 'string' ? args.refID.trim() : ''
+  if (name === 'nexus_expand_ref') return refID ? { kind: 'disclosure', refID } : null
+  if (name === 'nexus_read_evidence') {
+    const selected = chunks.filter((chunk) => chunk.id === refID || chunk.messageId === refID)
+    return refID ? { kind: 'evidence', cards: searchEvidence(selected, { maxTokens: Number(args.max_tokens) || 1200, maxResults: 8 }) } : null
+  }
+  if (name === 'nexus_search_evidence') return { kind: 'evidence', cards: searchEvidence(chunks, { query: typeof args.query === 'string' ? args.query : '', maxTokens: Number(args.max_tokens) || 1200 }) }
+  return null
+}
+
 export function indexEvidence(messages: Message[], maxTokens = 420): EvidenceChunk[] {
   return buildEvidenceChunks(messages, maxTokens)
 }

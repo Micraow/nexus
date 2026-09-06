@@ -11,7 +11,7 @@ import { hasCompoundConceptConnector, importPayloadSchema, normalizeOriginConcep
 import type { DisclosureContext } from '@/services/prompts'
 import { combineSegmentationChunks, splitMessageChunks } from '@/utils/chunks'
 import { buildEvidenceChunks } from '@/utils/chunks'
-import { buildWorkingMemory, formatEvidenceCards, searchEvidence } from '@/services/context-runtime'
+import { buildWorkingMemory, contextToolCall, CONTEXT_RUNTIME_TOOLS, formatEvidenceCards, searchEvidence } from '@/services/context-runtime'
 import { wouldCreateHierarchyCycle } from '@/utils/graph-rules'
 import { createId, isoNow, normalizeText, parseIsoTimestamp, stableHash } from '@/utils/id'
 import { parseMetadata } from '@/utils/metadata'
@@ -3493,6 +3493,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     let repairAttempts = 0
     const maxRepairAttempts = normalizeApiRetries(config.value.llm.retries, DEFAULT_API_RETRIES)
     let maintenanceToolsDisabled = false
+    let runtimePrompt = task.prompt
+    let contextToolRounds = 0
     try {
       // Transport retries and semantic repair retries are deliberately kept
       // separate. A malformed provider response must first produce a repair
@@ -3516,7 +3518,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           const requestBody: Record<string, unknown> = {
             model: currentTask.model || provider.model,
             temperature: 0,
-            messages: [{ role: 'user', content: currentTask.prompt }],
+            messages: [{ role: 'user', content: runtimePrompt }],
           }
           if (config.value.llm.stream && currentTask.type === 'conversation') requestBody.stream = true
           // Expose maintenance operations as OpenAI-compatible functions when
@@ -3535,6 +3537,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
             // selection and is accepted by more OpenAI-compatible endpoints.
             // Providers that support tools still return message.tool_calls;
             // unsupported ones can use the plain-JSON fallback below.
+          }
+          if (!maintenanceToolsDisabled) {
+            requestBody.tools = [
+              ...((requestBody.tools as unknown[]) ?? []),
+              ...CONTEXT_RUNTIME_TOOLS.map((tool) => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } })),
+            ]
           }
           const providerBaseUrl = provider.baseUrl.replace(/\/+$/, '')
           const endpoint = /\/chat\/completions$/i.test(providerBaseUrl) ? providerBaseUrl : `${providerBaseUrl}/chat/completions`
@@ -3637,6 +3645,27 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           }
           const message = payload.choices?.[0]?.message
           let content = typeof message?.content === 'string' ? message.content : ''
+          const contextCalls = (message?.tool_calls ?? [])
+            .map((call) => call.function ?? {})
+            .filter((call) => String(call.name ?? '').startsWith('nexus_') && String(call.name ?? '') !== 'nexus_maintenance_create_concept')
+          if (contextCalls.length && contextToolRounds < 8) {
+            contextToolRounds += 1
+            const evidenceCards = [] as ReturnType<typeof searchEvidence>
+            const disclosureRefs: string[] = []
+            for (const call of contextCalls) {
+              const result = contextToolCall(call.name ?? '', call.arguments ?? '', evidenceChunks.value)
+              if (!result) continue
+              if (result.kind === 'evidence') evidenceCards.push(...result.cards)
+              else disclosureRefs.push(result.refID)
+            }
+            if (disclosureRefs.length) {
+              content = JSON.stringify({ reason: '模型请求展开本地证据。', suggestions: [], disclosure_requests: [...new Set(disclosureRefs)].map((refID) => ({ refID, depth: 1 })) })
+            } else if (evidenceCards.length) {
+              const evidenceText = formatEvidenceCards(evidenceCards.slice(0, 12))
+              runtimePrompt = `${runtimePrompt}\n\n--- CONTEXT_RUNTIME_EVIDENCE ---\n${evidenceText}\n--- END_CONTEXT_RUNTIME_EVIDENCE ---`
+              continue
+            }
+          }
           const toolCalls: Array<{ name?: string; arguments?: string | Record<string, unknown> }> = currentTask.type === 'maintenance'
             ? (message?.tool_calls?.length
               ? message.tool_calls.map((call) => call.function ?? {})

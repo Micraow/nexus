@@ -468,6 +468,14 @@ API 服务支持结构化输出时，同时使用接口级 JSON Schema；Prompt 
 
 原始消息和模型上下文是两个层次。`messages.content` 是不可变事实；数据库 v9 的 `evidence_chunks` 是可重建索引，每个切片带 `message_id`、`char_start/char_end`、`token_count`、`content_hash` 和稳定 `id`。切片只用于检索和披露，不构成 KnowledgeUnit 边界。上下文服务按关键词/范围召回切片，并在 `maxTokens` 下排序截取；默认返回摘要或相关 excerpt，只有用户明确选择完整证据时才提高预算。API 和 Prompt 粘贴模式都使用相同的证据卡片 JSON，不依赖供应商的 system/developer 消息角色。
 
+#### 6.0.2 统一证据工具（Phase 3）
+
+上下文运行时提供三个可选工具：`nexus_search_evidence`（关键词召回）、`nexus_read_evidence`（按片段或 Message 读取有限正文）和 `nexus_expand_ref`（请求已列出的披露引用）。API 模式通过 OpenAI-compatible function tools 调用，应用在本地执行并把 EvidenceCard 追加到下一轮 Prompt；连续工具轮次最多 8 次。Prompt 粘贴模式不需要工具调用，模型仍可返回 `disclosure_requests`，其中 `nexus_expand_ref` 语义映射到同一续轮状态机。工具调用不会绕过证据 ID 白名单，也不会把整个实体或文件自动发送给模型。
+
+#### 6.0.3 Session 工作记忆（Phase 4）
+
+追问上下文由 Session 摘要、当前导航分支和最近 8 条消息组成；较早原文不再按固定 40 条直接注入。工作记忆是可重建的派生摘要，原始 Message 和 EvidenceChunk 永远保留。摘要只用于减少上下文，不得作为写入 Concept、归属或关系的唯一证据；需要证据时必须通过证据卡片或披露记录回读。
+
 模型需要更多证据时，可以在输出 JSON 中返回 `disclosure_requests`，例如 `{ "refID": "目录中已有的 ID", "depth": 1 }`。本地先校验数组、唯一 `refID`、引用必须来自当前目录以及 `depth` 为 1～64 的整数；校验失败进入 `needs_review`，不应用任何部分结果。校验通过后，应用从本地事实表按 `refID` 递归展开指定层数，保留根引用和原文，替换 Prompt 中的动态 `DISCLOSURE_INDEX` 并将同一任务重新排队。任务最多连续披露 8 轮，超出后暂停供用户检查。
 
 全图维护首轮不再旁路发送完整 Concept、关系、阅读片段或消息表，只提供统计、所有真实根主题及其直接子引用、未归属消息所在 Session 和无法从 active Concept 到达的阅读片段。该目录开启 `audit_pending_refs`，每轮生成 `pending_ref_ids`；数组非空时，模型必须把全部 ID 批量放入 `disclosure_requests`，同时保持 `suggestions=[]`。本地拒绝提前结束以及同时携带建议和披露请求的响应，确保中间结果不会部分落库。已经只有 children、尚无 content 的导航 expansion 可以继续请求；若供应商在完整最终结果中冗余重复已经完成的请求，应用清空冗余请求后继续执行任务级校验。Prompt 版本不匹配的旧 pending 任务在网络请求前标记为 `stale`。
