@@ -241,7 +241,7 @@ Concept ID 导入 `message_concepts`，同时保留 metadata 原文以便回溯�
 - `target_session_id` 与来源 Session 可以相同，但跨 Session 是主要用途；
 - `source_unit_id` 和 `source_message_id` 至少有一个非空；
 - `order_in_context` 在同一目标 Session 内唯一、从 0 开始；
-- `include_full_content=0` 表示标题/摘要/Concept，`1` 表示附带完整原文；
+- `include_full_content=0` 表示标题/摘要/Concept，`1` 表示附带有预算的证据摘录；即使为 `1` 也不会无界发送完整原文，超出部分必须带 `content_truncated=true`；
 - 新 Session 的 KnowledgeUnit 归属于目标 Session，不修改来源单元。
 
 ### 3.11 LLMTask

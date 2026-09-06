@@ -709,7 +709,7 @@ LLM 只返回建议变更：合并、别名、创建/编辑/软删除（归档�
 
 用户在图谱或详情页多选 KnowledgeUnit，右侧上下文面板显示选择顺序、来源 Session、摘要/原文开关和预计 token 数。用户可以拖动调整顺序、移除单元或切换为完整消息。
 
-默认注入标题、摘要、关联 Concept 和来源 Session 标题；完整原文需要用户明确勾选。超出模型上下文上限时不得静默截断，必须提示用户移除单元、改用摘要或手动编辑上下文。实际使用的来源写入 ContextReference。
+默认注入标题、摘要、关联 Concept 和来源 Session 标题；用户明确勾选后才增加有预算的证据摘录。摘录超出预算时保留 `content_truncated=true` 标记并提示模型按需读取，不能把截断结果当作完整原文。实际使用的来源写入 ContextReference。
 
 上下文面板默认只展示根引用的摘要；用户可以逐层展开 Concept 的子主题、KnowledgeUnit 及其 Message 原文，再把任意层级的选中项加入上下文。这个 UI 展开与 Prompt 的 `DISCLOSURE_INDEX` 使用同一组 `refID`，但不会绕过本地权限或事实表校验。
 
