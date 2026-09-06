@@ -33,6 +33,8 @@
 对话上下文（Phase 4）默认只保留最近 8 条分支消息，并在其前附加有界的 Session 工作记忆摘要；被省略的原文仍可通过本地证据索引按需读取。数据库 v10 新增 `session_working_memory` 派生表，保存摘要、决策和未解决问题列表及 revision；原始消息不被覆盖。`includeFullContent` 仍兼容旧 UI，但内部转换为有预算的证据卡片，不再无条件拼接整个 KnowledgeUnit 的所有原文。
 
 证据工具协议（Phase 3）：`services/context-runtime.ts` 暴露 `nexus_search_evidence`、`nexus_read_evidence` 和 `nexus_expand_ref` 三个工具定义。API 模式将它们与维护 MCP 工具一并发送；工具结果只追加有预算的 EvidenceCard，最多连续 8 个工具轮次。`nexus_expand_ref` 仍映射到兼容的 `disclosure_requests`，因此 Prompt 粘贴模式继续使用原有单文本续轮协议；两种模式共享同一 ID 白名单和本地证据索引。
+
+Prompt 契约同步：`services/prompts.ts` 的固定 Harness 现在包含 `CONTEXT_RUNTIME_PROTOCOL`，以紧凑 JSON 默认值和短文本规则声明 `summary+excerpt` 默认披露、8 条历史消息、显式全文授权及三种证据工具。这样 Prompt 粘贴模式即使没有 API tool schema，也能遵守与 API 模式相同的上下文边界。
 - 维护响应在 `suggestions=[]`、未提供 `disclosure_requests` 但目录仍有 pending refs 时，会由应用按最多 96 个引用一批自动生成下一轮请求；Concept/Session 使用有限深度展开，避免把上千个引用一次性塞给模型。维护任务最多 16 轮，仍未完成才进入人工检查。
 - 全图维护面板允许填写可选的“用户附加维护要求”。该文本随任务 Prompt 固化并限制为 2000 个字符，只作为优先审计目标，不能缩小全图扫描范围；空输入与旧行为完全兼容。
 - 当前规模和已有 D3 力向布局、拖拽、键盘/ARIA、高亮及位置持久化已覆盖验收目标。布局使用 ForceAtlas2 类的分量级重力：每个由 hierarchy、manual 或强 related 边组成的结构分量保留自己的初始质心，展开新增子主题时只重新加热所属分量，弱 association/co-occurrence 边不会把独立团块绑成一个拖拽分量；新增节点以父主题附近的确定性坐标播种后交给 D3 弹簧、排斥和碰撞力完成过渡。在缺少性能基准和交互回归证据前不迁移 Sigma.js。若未来迁移，必须先以同一 fixture 对比初始布局稳定性、拖拽阈值、框选、无障碍和大图谱帧耗时。

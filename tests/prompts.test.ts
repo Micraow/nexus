@@ -16,6 +16,7 @@ import {
   maintenanceToolCallSuggestion,
   listMaintenanceMcpTools,
   NEXUS_HARNESS_PROMPT,
+  CONTEXT_RUNTIME_PROTOCOL,
   MAINTENANCE_ACTION_API,
   parseDisclosureContext,
   PROGRESSIVE_DISCLOSURE_PROTOCOL,
@@ -37,6 +38,13 @@ describe('unit metadata prompt', () => {
 })
 
 describe('conversation prompt', () => {
+  it('includes the context-runtime contract for prompt-paste providers', () => {
+    const prompt = buildHarnessPrompt('只返回 JSON：{"ok":true}')
+    expect(prompt).toContain(CONTEXT_RUNTIME_PROTOCOL)
+    expect(prompt).toContain('nexus_search_evidence')
+    expect(prompt).toContain('paste_mode')
+  })
+
   it('requests Session metadata and carries the current exploration path', () => {
     const prompt = buildConversationPrompt({
       question: '继续解释',

@@ -470,7 +470,7 @@ API 服务支持结构化输出时，同时使用接口级 JSON Schema；Prompt 
 
 #### 6.0.2 统一证据工具（Phase 3）
 
-上下文运行时提供三个可选工具：`nexus_search_evidence`（关键词召回）、`nexus_read_evidence`（按片段或 Message 读取有限正文）和 `nexus_expand_ref`（请求已列出的披露引用）。API 模式通过 OpenAI-compatible function tools 调用，应用在本地执行并把 EvidenceCard 追加到下一轮 Prompt；连续工具轮次最多 8 次。Prompt 粘贴模式不需要工具调用，模型仍可返回 `disclosure_requests`，其中 `nexus_expand_ref` 语义映射到同一续轮状态机。工具调用不会绕过证据 ID 白名单，也不会把整个实体或文件自动发送给模型。
+上下文运行时提供三个可选工具：`nexus_search_evidence`（关键词召回）、`nexus_read_evidence`（按片段或 Message 读取有限正文）和 `nexus_expand_ref`（请求已列出的披露引用）。API 模式通过 OpenAI-compatible function tools 调用，应用在本地执行并把 EvidenceCard 追加到下一轮 Prompt；连续工具轮次最多 8 次。Prompt 粘贴模式不需要工具调用，模型仍可返回 `disclosure_requests`，其中 `nexus_expand_ref` 语义映射到同一续轮状态机。`prompts.ts` 的 `CONTEXT_RUNTIME_PROTOCOL` 将这套规则同时写入单文本 Prompt，明确 `summary+excerpt` 默认策略、显式全文授权和 `content_truncated` 语义。工具调用不会绕过证据 ID 白名单，也不会把整个实体或文件自动发送给模型。
 
 #### 6.0.3 Session 工作记忆（Phase 4）
 
